@@ -74,20 +74,47 @@ There are two ways to register it:
 - **Project scope (included).** A ready-to-use [`.mcp.json`](.mcp.json) lives in
   this repo. Claude Code auto-detects it whenever you launch from this directory.
   Good for working *on* Cortex.
-- **User scope (everywhere).** To make the memory available in *every* project,
-  register it once at user scope:
+- **User scope (global — available in *every* project).** Register it once with
+  the Claude CLI:
 
   ```bash
-  claude mcp add --scope user cortex /Users/thomas/2ndbrain/bin/cortex-mcp \
+  claude mcp add --scope user cortex /usr/local/bin/cortex-mcp \
     -e CORTEX_SERVER_URL=http://localhost:8088 \
     -e CORTEX_AUTH_TOKEN=<your-token> \
     -e MEMORY_SOURCE=claude-code
   ```
 
-The MCP client now holds **no** database config — just the server URL and the
-auth token. The model, namespace defaults, and all backend wiring live on the
-server. The MCP client also stamps each save with the Claude Code session ID
-(read from `CLAUDE_CODE_SESSION_ID`) as the memory's `conversationId`.
+  Point `command` at your `cortex-mcp` binary — a release download placed on your
+  `PATH` (e.g. `/usr/local/bin/cortex-mcp`) or a local build (`./bin/cortex-mcp`
+  from `make build`). `--scope user` writes the server into your **global user
+  config**, `~/.claude.json`, under the top-level `mcpServers` key. The equivalent
+  manual entry (add it there yourself instead of running the CLI):
+
+  ```jsonc
+  // ~/.claude.json
+  {
+    "mcpServers": {
+      "cortex": {
+        "command": "/usr/local/bin/cortex-mcp",
+        "env": {
+          "CORTEX_SERVER_URL": "http://localhost:8088",
+          "CORTEX_AUTH_TOKEN": "<your-token>",
+          "MEMORY_SOURCE": "claude-code"
+        }
+      }
+    }
+  }
+  ```
+
+  Leave `CORTEX_AUTH_TOKEN` empty/absent if the server runs in open mode. To make
+  Claude *use* the memory on its own, also add the snippet from
+  [Make Claude do this automatically](#make-claude-do-this-automatically) to your
+  global `~/.claude/CLAUDE.md`.
+
+The MCP client holds **no** database config — just the server URL and the auth
+token. The model, namespace defaults, and all backend wiring live on the server.
+The MCP client also stamps each save with the Claude Code session ID (read from
+`CLAUDE_CODE_SESSION_ID`) as the memory's `conversationId`.
 
 > **Ports:** this stack maps NATS to host `4223`, Weaviate to host `8081`, and
 > the **cortex-server to host `8088`** (instead of `8080`, which collides with
@@ -96,7 +123,9 @@ server. The MCP client also stamps each save with the Claude Code session ID
 > `http://localhost:8088`.
 
 Verify it's connected with `/mcp` inside Claude — you should see `cortex` with
-three tools: `cortex_memory_save`, `cortex_memory_search`, `cortex_memory_delete`.
+its tools: `cortex_memory_save`, `cortex_memory_search`, `cortex_memory_delete`,
+`cortex_memory_link`, `cortex_memory_unlink`, `cortex_session_summarize`, and
+`cortex_recall_session`.
 
 ## Web UI
 
