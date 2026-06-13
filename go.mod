@@ -4,6 +4,7 @@ go 1.26.4
 
 require (
 	connectrpc.com/connect v1.20.0
+	connectrpc.com/grpcreflect v1.3.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
 	github.com/modelcontextprotocol/go-sdk v1.6.1

@@ -375,6 +375,30 @@ make logs   # worker should log: indexed id=1111... dims=1024
 (Requires the `nats` CLI in the container image; otherwise just use the Claude
 tools, which publish the same payload.)
 
+## gRPC reflection (Bruno, grpcurl, Postman)
+
+The server exposes the same API over **gRPC** — Connect serves the Connect, gRPC,
+and gRPC-Web protocols on one port — with **server reflection** enabled, so gRPC
+clients can introspect and call it without a local `.proto`.
+
+```bash
+# local (h2c, plaintext)
+grpcurl -plaintext localhost:8088 list
+grpcurl -plaintext localhost:8088 list cortex.v1.MemoryService
+grpcurl -plaintext -d '{"query":"go","namespace":"*","limit":3}' \
+  localhost:8088 cortex.v1.MemoryService/Search
+
+# through Traefik (TLS) — no -plaintext
+grpcurl cortex.example.com:443 list
+```
+
+In **Bruno** (or Postman): create a gRPC request pointing at the server
+(`localhost:8088` plaintext, or `cortex.example.com:443` with TLS); reflection
+populates the method list automatically. When the server has a token, add an
+`authorization` metadata header with value `Bearer <token>` — actual RPC calls go
+through the auth interceptor. Reflection itself is open (it exposes only the
+schema, which is already public in `proto/`).
+
 ## Releases
 
 Pushing a version tag (`git tag v1.2.3 && git push --tags`) triggers two

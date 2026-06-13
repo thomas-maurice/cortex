@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"connectrpc.com/grpcreflect"
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
 
@@ -133,6 +134,14 @@ func main() {
 	path, handler := cortexv1connect.NewMemoryServiceHandler(svc,
 		connect.WithInterceptors(rpc.ServerLogInterceptor(log), rpc.ServerAuthInterceptor(auth)))
 	mux.Handle(path, handler)
+	// gRPC server reflection so tools like grpcurl, Bruno, and Postman can
+	// introspect and call the API without a local .proto. Reflection exposes only
+	// the schema (method + message names, already public in proto/); actual RPC
+	// calls still pass through the auth interceptor above. Both the v1 and v1alpha
+	// reflection services are mounted for broad client compatibility.
+	reflector := grpcreflect.NewStaticReflector(cortexv1connect.MemoryServiceName)
+	mux.Handle(grpcreflect.NewHandlerV1(reflector))
+	mux.Handle(grpcreflect.NewHandlerV1Alpha(reflector))
 	// Web UI: login mints a JWT, the embedded SPA is the catch-all route.
 	mux.Handle("/auth/login", rpc.LoginHandler(jwtMgr, uiUser, uiPass, "admin", log))
 	mux.Handle("/", ui.Handler())
