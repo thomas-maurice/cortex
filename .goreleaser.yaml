@@ -1,0 +1,60 @@
+# GoReleaser builds the downloadable binaries (the Docker image is built
+# separately by .github/workflows/build.yml, which needs the Node UI stage).
+# Runs on tag push via .github/workflows/release.yml.
+version: 2
+
+project_name: cortex
+
+# cortex-server go:embeds ui/dist, so the UI must be built before compiling.
+before:
+  hooks:
+    - sh -c "cd ui && npm ci && npm run build"
+
+builds:
+  - id: server
+    main: ./cmd/server
+    binary: cortex-server
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    ldflags: ["-s -w -X main.version={{ .Version }}"]
+  - id: worker
+    main: ./cmd/worker
+    binary: cortex-worker
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    ldflags: ["-s -w -X main.version={{ .Version }}"]
+  - id: mcp
+    main: ./cmd/mcp
+    binary: cortex-mcp
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    ldflags: ["-s -w -X main.version={{ .Version }}"]
+  - id: cli
+    main: ./cmd/cli
+    binary: cortex
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    ldflags: ["-s -w -X main.version={{ .Version }}"]
+
+# One archive per OS/arch containing all four binaries.
+archives:
+  - id: cortex
+    name_template: "cortex_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+
+checksum:
+  name_template: "checksums.txt"
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-dev-{{ .ShortCommit }}"
+
+release:
+  github:
+    owner: thomas-maurice
+    name: cortex
+  draft: false
+  prerelease: auto

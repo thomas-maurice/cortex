@@ -1,0 +1,493 @@
+// Command mcp is the MCP server Claude connects to over stdio. It is a thin
+// client of the Cortex Connect RPC server: every tool call is a single RPC.
+// It holds no NATS/Weaviate/Ollama connection of its own.
+package main
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
+
+	"connectrpc.com/connect"
+	"github.com/google/uuid"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	cortexv1 "github.com/thomas-maurice/cortex/gen/cortex/v1"
+	"github.com/thomas-maurice/cortex/gen/cortex/v1/cortexv1connect"
+	"github.com/thomas-maurice/cortex/internal/rpc"
+)
+
+// version is the build version, injected at release time via
+// -ldflags "-X main.version=...". Defaults to "dev" for un-stamped builds.
+var version = "dev"
+
+func env(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
+
+func envFloat(key string, def float32) float32 {
+	if v := os.Getenv(key); v != "" {
+		if f, err := strconv.ParseFloat(v, 32); err == nil {
+			return float32(f)
+		}
+	}
+	return def
+}
+
+// resolveDefaultNamespace picks the namespace used when a tool call omits one.
+// An explicit DEFAULT_NAMESPACE env always wins (per-project override). Otherwise
+// it is detected from the launch directory: the full git origin remote URL (e.g.
+// "git@github.com:thomas-maurice/cortex.git") if the cwd is a repo with an origin,
+// else the directory basename, else "global". This gives each project its own
+// memory scope automatically.
+func resolveDefaultNamespace() string {
+	if ns := os.Getenv("DEFAULT_NAMESPACE"); ns != "" {
+		return ns
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		return "global"
+	}
+	if url, err := gitRemoteURL(wd); err == nil && url != "" {
+		return url
+	}
+	if base := filepath.Base(wd); base != "" && base != "." && base != string(os.PathSeparator) {
+		return base
+	}
+	return "global"
+}
+
+// resolveConversationID picks the ID that ties this session's saves and summary
+// together, in priority order:
+//
+//  1. CORTEX_CONVERSATION_ID — an explicit override, the deterministic injection
+//     point for a hook/wrapper that knows the real session ID.
+//  2. CLAUDE_CODE_SESSION_ID — the real Claude Code session ID, IF it reaches the
+//     MCP server's env. Note: Claude Code does NOT reliably inject this into MCP
+//     subprocesses (empirically absent for a project .mcp.json server), so it
+//     may not be present even under Claude Code.
+//  3. A per-process UUID fallback — summaries still work within this process's
+//     lifetime, but won't survive an MCP restart and won't match the real session.
+//
+// A value that arrives unexpanded as a literal "${...}" (failed .mcp.json
+// expansion) is treated as absent. Either way the summary and the facts saved
+// during the session share one ID, so recall links them.
+func resolveConversationID(log *slog.Logger) string {
+	if cid := firstUsableEnv("CORTEX_CONVERSATION_ID", "CLAUDE_CODE_SESSION_ID"); cid != "" {
+		log.Info("conversation id resolved from env", "conversationId", cid)
+		return cid
+	}
+	cid := uuid.NewString()
+	log.Warn("no conversation id in env (set CORTEX_CONVERSATION_ID, or forward "+
+		"CLAUDE_CODE_SESSION_ID); using a per-process id that won't survive an MCP restart",
+		"conversationId", cid)
+	return cid
+}
+
+// firstUsableEnv returns the first env var that is set and not an unexpanded
+// "${...}" placeholder.
+func firstUsableEnv(keys ...string) string {
+	for _, k := range keys {
+		if v := os.Getenv(k); v != "" && !strings.HasPrefix(v, "${") {
+			return v
+		}
+	}
+	return ""
+}
+
+// gitRemoteURL returns the origin remote URL for the repo at dir, verbatim, or an
+// error if dir is not a repo / has no origin / git is unavailable.
+func gitRemoteURL(dir string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "git", "-C", dir, "remote", "get-url", "origin").Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// deps holds the RPC client and request defaults shared by all tool handlers.
+type deps struct {
+	client             cortexv1connect.MemoryServiceClient
+	defaultNamespace   string
+	source             string
+	conversationID     string
+	defaultMaxDistance float32
+}
+
+func main() {
+	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	var (
+		serverURL   = env("CORTEX_SERVER_URL", "http://localhost:8080")
+		authToken   = os.Getenv("CORTEX_AUTH_TOKEN")
+		defaultNS   = resolveDefaultNamespace()
+		source      = env("MEMORY_SOURCE", "claude-code")
+		maxDistance = envFloat("MAX_DISTANCE", 0) // 0 = no relevance cutoff
+	)
+
+	conversationID := resolveConversationID(log)
+
+	d := &deps{
+		client:             rpc.NewClient(serverURL, authToken),
+		defaultNamespace:   defaultNS,
+		source:             source,
+		conversationID:     conversationID,
+		defaultMaxDistance: maxDistance,
+	}
+
+	server := mcp.NewServer(&mcp.Implementation{
+		Name:    "cortex",
+		Version: version,
+	}, nil)
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name: "cortex_memory_save",
+		Description: "Save a memory to the user's second brain. Use this PROACTIVELY and OFTEN — " +
+			"whenever the user states a fact, preference, decision, plan, or piece of context worth " +
+			"recalling in a future session. Do not wait to be asked. Write a self-contained note of " +
+			"one to a few sentences that captures enough surrounding context to be understood months " +
+			"later on its own (who/what/why, not just a keyword). Summarising a discussion or a " +
+			"conclusion into one rich memory is encouraged. Scope it with a namespace (e.g. the " +
+			"project or topic) and tags. Indexing is asynchronous and durable; saving is cheap, so " +
+			"err on the side of saving more.",
+	}, d.save)
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name: "cortex_memory_search",
+		Description: "Semantic search over the user's stored memories. Consult this PROACTIVELY at the " +
+			"start of a task or when the user refers to past work, preferences, or decisions, to recall " +
+			"context from previous sessions before answering. Returns the most relevant memories for a " +
+			"natural-language query, optionally filtered by namespace, required/excluded tags, and a " +
+			"relevance cutoff (maxDistance) that drops weak matches.",
+	}, d.search)
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "cortex_memory_delete",
+		Description: "Delete a memory by its ID (as returned by cortex_memory_search).",
+	}, d.del)
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name: "cortex_memory_link",
+		Description: "Create an explicit, durable link between two existing memories so they are connected " +
+			"in the user's knowledge graph and can be traversed together. Use this PROACTIVELY when you " +
+			"notice two memories are meaningfully related — e.g. a decision and the bug that motivated it, " +
+			"a preference and the project it applies to, or two facts about the same system — to build up " +
+			"structure the user can navigate visually. The link is bidirectional. Pass two memory IDs as " +
+			"returned by cortex_memory_search or cortex_recall_session (the memories must already be indexed, " +
+			"so link IDs you got from a search, not one you just saved this turn).",
+	}, d.link)
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "cortex_memory_unlink",
+		Description: "Remove the explicit link between two memories (by their IDs). The inverse of cortex_memory_link.",
+	}, d.unlink)
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name: "cortex_session_summarize",
+		Description: "Save/update a running summary of the CURRENT conversation so it can be recalled later " +
+			"by meaning (e.g. \"the session where we patched the router\"). Call this PROACTIVELY and " +
+			"FREQUENTLY — after each meaningful step or topic shift, and again before the session ends — " +
+			"NOT just once. There is exactly ONE summary per conversation; each call REPLACES it, so always " +
+			"pass the full, current summary (a short paragraph covering what the session is about, what was " +
+			"done, and key outcomes), not a delta. Keeping it fresh is what makes later recall accurate; a " +
+			"stale summary means the session is remembered wrong. You do not provide an ID — the server ties " +
+			"the summary to this session automatically.",
+	}, d.summarize)
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name: "cortex_recall_session",
+		Description: "Recall a PAST conversation by describing it in natural language (e.g. \"when we debugged " +
+			"the WireGuard MTU on my router\"). Returns the best-matching conversation summary AND the " +
+			"individual facts/memories saved during that session. Use this when the user refers to a previous " +
+			"session or asks \"remember when we…\" — it reconstructs the context of that whole conversation, " +
+			"not just isolated facts.",
+	}, d.recall)
+
+	log.Info("cortex mcp server starting on stdio", "namespace", defaultNS, "server", serverURL)
+	if err := server.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
+		log.Error("server run", "err", err)
+		os.Exit(1)
+	}
+}
+
+// ---- memory_save ----
+
+type SaveIn struct {
+	Text      string   `json:"text" jsonschema:"the memory content to store; a self-contained note of one to a few sentences that captures the fact AND enough context to be understood on its own later"`
+	Namespace string   `json:"namespace,omitempty" jsonschema:"optional namespace to scope the memory (e.g. a project name); defaults to the server's configured namespace"`
+	Tags      []string `json:"tags,omitempty" jsonschema:"optional free-form tags for later filtering"`
+}
+
+type SaveOut struct {
+	ID     string `json:"id" jsonschema:"the assigned memory ID"`
+	Status string `json:"status" jsonschema:"queued once accepted for async indexing"`
+}
+
+func (d *deps) save(ctx context.Context, _ *mcp.CallToolRequest, in SaveIn) (*mcp.CallToolResult, SaveOut, error) {
+	text := strings.TrimSpace(in.Text)
+	if text == "" {
+		return nil, SaveOut{}, fmt.Errorf("text must not be empty")
+	}
+	ns := in.Namespace
+	if ns == "" {
+		ns = d.defaultNamespace
+	}
+
+	resp, err := d.client.Save(ctx, connect.NewRequest(&cortexv1.SaveRequest{
+		Text:           text,
+		Namespace:      ns,
+		Tags:           in.Tags,
+		Source:         d.source,
+		ConversationId: d.conversationID,
+	}))
+	if err != nil {
+		return nil, SaveOut{}, err
+	}
+
+	out := SaveOut{ID: resp.Msg.GetId(), Status: resp.Msg.GetStatus()}
+	msg := fmt.Sprintf("Memory queued for indexing (id=%s, namespace=%s)", out.ID, ns)
+	return text2result(msg), out, nil
+}
+
+// ---- memory_search ----
+
+type SearchIn struct {
+	Query       string   `json:"query" jsonschema:"natural-language query to semantically match against stored memories"`
+	Namespace   string   `json:"namespace,omitempty" jsonschema:"optional namespace filter; omit to search the default namespace, pass \"*\" to search across all namespaces"`
+	Limit       int      `json:"limit,omitempty" jsonschema:"max results to return (default 5)"`
+	Tags        []string `json:"tags,omitempty" jsonschema:"only return memories carrying ALL of these tags"`
+	ExcludeTags []string `json:"excludeTags,omitempty" jsonschema:"drop memories carrying ANY of these tags"`
+	MaxDistance float32  `json:"maxDistance,omitempty" jsonschema:"relevance cutoff (cosine distance, ~0=identical, larger=less related); results farther than this are dropped; omit to use the server default"`
+}
+
+type SearchHit struct {
+	ID        string   `json:"id"`
+	Text      string   `json:"text"`
+	Namespace string   `json:"namespace"`
+	Tags      []string `json:"tags,omitempty"`
+	Distance  float32  `json:"distance"`
+	Model     string   `json:"model,omitempty"`
+	LinkedIDs []string `json:"linkedIds,omitempty"`
+}
+
+type SearchOut struct {
+	Hits []SearchHit `json:"hits"`
+}
+
+func (d *deps) search(ctx context.Context, _ *mcp.CallToolRequest, in SearchIn) (*mcp.CallToolResult, SearchOut, error) {
+	query := strings.TrimSpace(in.Query)
+	if query == "" {
+		return nil, SearchOut{}, fmt.Errorf("query must not be empty")
+	}
+
+	maxDist := in.MaxDistance
+	if maxDist <= 0 {
+		maxDist = d.defaultMaxDistance
+	}
+
+	resp, err := d.client.Search(ctx, connect.NewRequest(&cortexv1.SearchRequest{
+		Query:       query,
+		Namespace:   in.Namespace, // server resolves "" -> default, "*" -> all
+		Limit:       int32(in.Limit),
+		Tags:        in.Tags,
+		ExcludeTags: in.ExcludeTags,
+		MaxDistance: maxDist,
+	}))
+	if err != nil {
+		return nil, SearchOut{}, err
+	}
+
+	hits := resp.Msg.GetHits()
+	out := SearchOut{Hits: make([]SearchHit, 0, len(hits))}
+	var b strings.Builder
+	if len(hits) == 0 {
+		b.WriteString("No memories found.")
+	}
+	for i, h := range hits {
+		m := h.GetMemory()
+		out.Hits = append(out.Hits, SearchHit{
+			ID:        m.GetId(),
+			Text:      m.GetText(),
+			Namespace: m.GetNamespace(),
+			Tags:      m.GetTags(),
+			Distance:  h.GetDistance(),
+			Model:     m.GetModel(),
+			LinkedIDs: m.GetLinkedIds(),
+		})
+		fmt.Fprintf(&b, "%d. id=%s [%s] (dist %.3f) %s\n", i+1, m.GetId(), m.GetNamespace(), h.GetDistance(), m.GetText())
+	}
+	return text2result(strings.TrimSpace(b.String())), out, nil
+}
+
+// ---- memory_delete ----
+
+type DeleteIn struct {
+	ID string `json:"id" jsonschema:"the memory ID to delete"`
+}
+
+type DeleteOut struct {
+	Status string `json:"status"`
+}
+
+func (d *deps) del(ctx context.Context, _ *mcp.CallToolRequest, in DeleteIn) (*mcp.CallToolResult, DeleteOut, error) {
+	id := strings.TrimSpace(in.ID)
+	if id == "" {
+		return nil, DeleteOut{}, fmt.Errorf("id must not be empty")
+	}
+	resp, err := d.client.Delete(ctx, connect.NewRequest(&cortexv1.DeleteRequest{Id: id}))
+	if err != nil {
+		return nil, DeleteOut{}, err
+	}
+	return text2result("deleted " + id), DeleteOut{Status: resp.Msg.GetStatus()}, nil
+}
+
+// ---- memory_link / memory_unlink ----
+
+type LinkIn struct {
+	ID       string `json:"id" jsonschema:"first memory ID to link (from cortex_memory_search or cortex_recall_session)"`
+	TargetID string `json:"targetId" jsonschema:"second memory ID to link"`
+}
+
+type LinkOut struct {
+	LinkedIDs []string `json:"linkedIds" jsonschema:"the updated link set of the first memory"`
+}
+
+func (d *deps) link(ctx context.Context, _ *mcp.CallToolRequest, in LinkIn) (*mcp.CallToolResult, LinkOut, error) {
+	id := strings.TrimSpace(in.ID)
+	target := strings.TrimSpace(in.TargetID)
+	if id == "" || target == "" {
+		return nil, LinkOut{}, fmt.Errorf("id and targetId must not be empty")
+	}
+	resp, err := d.client.Link(ctx, connect.NewRequest(&cortexv1.LinkRequest{Id: id, TargetId: target}))
+	if err != nil {
+		return nil, LinkOut{}, err
+	}
+	return text2result(fmt.Sprintf("linked %s <-> %s", id, target)), LinkOut{LinkedIDs: resp.Msg.GetLinkedIds()}, nil
+}
+
+type UnlinkIn struct {
+	ID       string `json:"id" jsonschema:"first memory ID"`
+	TargetID string `json:"targetId" jsonschema:"second memory ID"`
+}
+
+type UnlinkOut struct {
+	LinkedIDs []string `json:"linkedIds" jsonschema:"the remaining link set of the first memory"`
+}
+
+func (d *deps) unlink(ctx context.Context, _ *mcp.CallToolRequest, in UnlinkIn) (*mcp.CallToolResult, UnlinkOut, error) {
+	id := strings.TrimSpace(in.ID)
+	target := strings.TrimSpace(in.TargetID)
+	if id == "" || target == "" {
+		return nil, UnlinkOut{}, fmt.Errorf("id and targetId must not be empty")
+	}
+	resp, err := d.client.Unlink(ctx, connect.NewRequest(&cortexv1.UnlinkRequest{Id: id, TargetId: target}))
+	if err != nil {
+		return nil, UnlinkOut{}, err
+	}
+	return text2result(fmt.Sprintf("unlinked %s <-> %s", id, target)), UnlinkOut{LinkedIDs: resp.Msg.GetLinkedIds()}, nil
+}
+
+// ---- session_summarize ----
+
+type SummarizeIn struct {
+	Text      string `json:"text" jsonschema:"the full, current summary of THIS conversation — a short paragraph (what it's about, what was done, key outcomes); replaces any prior summary for the session"`
+	Namespace string `json:"namespace,omitempty" jsonschema:"optional namespace to scope the summary; defaults to the server's configured namespace"`
+}
+
+type SummarizeOut struct {
+	ConversationID string `json:"conversationId"`
+	Status         string `json:"status"`
+}
+
+func (d *deps) summarize(ctx context.Context, _ *mcp.CallToolRequest, in SummarizeIn) (*mcp.CallToolResult, SummarizeOut, error) {
+	text := strings.TrimSpace(in.Text)
+	if text == "" {
+		return nil, SummarizeOut{}, fmt.Errorf("text must not be empty")
+	}
+	if d.conversationID == "" {
+		return nil, SummarizeOut{}, fmt.Errorf("no conversation ID available (CLAUDE_CODE_SESSION_ID is unset), cannot summarize the session")
+	}
+	resp, err := d.client.SummarizeSession(ctx, connect.NewRequest(&cortexv1.SummarizeSessionRequest{
+		ConversationId: d.conversationID,
+		Text:           text,
+		Namespace:      in.Namespace,
+	}))
+	if err != nil {
+		return nil, SummarizeOut{}, err
+	}
+	out := SummarizeOut{ConversationID: resp.Msg.GetConversationId(), Status: resp.Msg.GetStatus()}
+	return text2result("session summary updated (conversation=" + out.ConversationID + ")"), out, nil
+}
+
+// ---- recall_session ----
+
+type RecallIn struct {
+	Query       string  `json:"query" jsonschema:"natural-language description of the past conversation to recall (e.g. 'when we patched the router')"`
+	Namespace   string  `json:"namespace,omitempty" jsonschema:"optional namespace filter; omit for default, pass \"*\" for all namespaces"`
+	FactLimit   int     `json:"factLimit,omitempty" jsonschema:"max facts to return for the matched conversation (default 50)"`
+	MaxDistance float32 `json:"maxDistance,omitempty" jsonschema:"relevance cutoff on the summary match; omit to use the server default"`
+}
+
+type RecallOut struct {
+	Matched bool        `json:"matched"`
+	Summary string      `json:"summary,omitempty"`
+	Facts   []SearchHit `json:"facts,omitempty"`
+}
+
+func (d *deps) recall(ctx context.Context, _ *mcp.CallToolRequest, in RecallIn) (*mcp.CallToolResult, RecallOut, error) {
+	query := strings.TrimSpace(in.Query)
+	if query == "" {
+		return nil, RecallOut{}, fmt.Errorf("query must not be empty")
+	}
+	resp, err := d.client.RecallSession(ctx, connect.NewRequest(&cortexv1.RecallSessionRequest{
+		Query:       query,
+		Namespace:   in.Namespace,
+		FactLimit:   int32(in.FactLimit),
+		MaxDistance: in.MaxDistance,
+	}))
+	if err != nil {
+		return nil, RecallOut{}, err
+	}
+
+	if !resp.Msg.GetMatched() {
+		return text2result("No matching past session found."), RecallOut{Matched: false}, nil
+	}
+
+	sum := resp.Msg.GetSummary()
+	facts := resp.Msg.GetFacts()
+	out := RecallOut{Matched: true, Summary: sum.GetText(), Facts: make([]SearchHit, 0, len(facts))}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "Session summary (conversation=%s):\n%s\n", sum.GetConversationId(), sum.GetText())
+	if len(facts) > 0 {
+		b.WriteString("\nFacts from that session:\n")
+	}
+	for i, f := range facts {
+		out.Facts = append(out.Facts, SearchHit{
+			ID:        f.GetId(),
+			Text:      f.GetText(),
+			Namespace: f.GetNamespace(),
+			Tags:      f.GetTags(),
+			Model:     f.GetModel(),
+		})
+		fmt.Fprintf(&b, "%d. [%s] %s\n", i+1, f.GetNamespace(), f.GetText())
+	}
+	return text2result(strings.TrimSpace(b.String())), out, nil
+}
+
+func text2result(msg string) *mcp.CallToolResult {
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{&mcp.TextContent{Text: msg}},
+	}
+}

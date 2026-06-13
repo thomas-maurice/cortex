@@ -1,0 +1,400 @@
+# Cortex — a second brain for Claude
+
+Self-hosted, local-first **memory layer** behind an MCP server. Claude saves
+facts and recalls them by meaning across sessions. Go, Connect RPC, NATS
+JetStream, Weaviate, Ollama. Built to grow well beyond memory.
+
+```
+Claude ──stdio──► cortex-mcp ─┐
+                              ├─Connect RPC─► cortex-server ──save──► NATS ──► worker ──► Ollama ──► Weaviate
+host shell ─────► cortex CLI ─┘                    └─────────search──► Ollama embed ──► Weaviate (gRPC nearVector)
+```
+
+The **cortex-server** is the single owner of NATS, Weaviate, and Ollama. The MCP
+server and the CLI are **thin clients** that only speak Connect RPC to it — they
+hold no database connection of their own. This lets you self-host the brain once
+and reach it from several machines.
+
+- **Writes** are async + durable (NATS): a burst of saves queues and drains at
+  the embedder's pace; nothing is lost if a backend is down.
+- **Search** is synchronous (server → Ollama + Weaviate): a tool call needs an
+  answer now. Weaviate is queried over **gRPC**, not GraphQL.
+- **Auth** is a shared bearer token (`CORTEX_AUTH_TOKEN`); unset = open (local
+  dev only). Structured behind an `Authenticator` interface so OIDC / per-client
+  API keys can slot in later.
+
+Full rationale in [`docs/DESIGN.md`](docs/DESIGN.md); background research in
+[`docs/RESEARCH.md`](docs/RESEARCH.md).
+
+## Requirements
+
+- **Docker + Docker Compose** — runs the whole backing stack.
+- **Go 1.26+** — to build the host-side MCP binary that Claude execs.
+- **Ollama** — **required**, and the heart of the system: it generates every
+  embedding (for both saving and searching). It runs as a container in this
+  stack, so there's nothing to install separately, but Cortex **cannot save or
+  search without it**, and you must pull an embedding model into it before use
+  (`make model`, or `make bootstrap` which does it for you). Default model:
+  `qwen3-embedding:0.6b`. See [Embedding model](#embedding-model) to choose another.
+
+> If you already run Ollama natively on the host (port 11434), remove the
+> `ollama` service from `docker-compose.yml` and point `OLLAMA_URL` at your host
+> instance instead — Cortex talks to it over HTTP either way.
+
+## Quickstart
+
+```bash
+# 1. Bring up infra (nats, weaviate, ollama, worker, server) and pull the model
+export CORTEX_AUTH_TOKEN=$(openssl rand -hex 16)   # the shared client token
+make bootstrap          # = docker compose up -d --build + ollama pull qwen3-embedding:0.6b
+
+# 2. Build the host-side binaries (the MCP client Claude execs, and the CLI)
+make build              # -> ./bin/cortex-server, cortex-mcp, cortex-worker, cortex
+
+# 3. Point Claude at it (see below), then in a Claude session:
+#    "save a memory: I prefer Go for backend services"
+#    "search your memory for my language preference"
+```
+
+> Regenerate the protobuf-generated Go code with `make proto` after editing
+> anything in `proto/` (needs `buf`).
+
+`make help` lists every target. `make logs` tails the indexer. `make nuke` wipes
+all data volumes.
+
+## Wiring into Claude Code
+
+Claude Code discovers MCP servers from a `.mcp.json` file and, on startup, execs
+the `cortex-mcp` binary over **stdio**, passing the env in that file. The binary
+registers the server (`cortex`) and its tools; from then on Claude calls those
+tools on its own judgement, guided by their descriptions.
+
+There are two ways to register it:
+
+- **Project scope (included).** A ready-to-use [`.mcp.json`](.mcp.json) lives in
+  this repo. Claude Code auto-detects it whenever you launch from this directory.
+  Good for working *on* Cortex.
+- **User scope (everywhere).** To make the memory available in *every* project,
+  register it once at user scope:
+
+  ```bash
+  claude mcp add --scope user cortex /Users/thomas/2ndbrain/bin/cortex-mcp \
+    -e CORTEX_SERVER_URL=http://localhost:8088 \
+    -e CORTEX_AUTH_TOKEN=<your-token> \
+    -e MEMORY_SOURCE=claude-code
+  ```
+
+The MCP client now holds **no** database config — just the server URL and the
+auth token. The model, namespace defaults, and all backend wiring live on the
+server. The MCP client also stamps each save with the Claude Code session ID
+(read from `CLAUDE_CODE_SESSION_ID`) as the memory's `conversationId`.
+
+> **Ports:** this stack maps NATS to host `4223`, Weaviate to host `8081`, and
+> the **cortex-server to host `8088`** (instead of `8080`, which collides with
+> another local stack). Inside the compose network the standard ports are used;
+> only the host-side mappings differ. The CLI/MCP client reach the server at
+> `http://localhost:8088`.
+
+Verify it's connected with `/mcp` inside Claude — you should see `cortex` with
+three tools: `cortex_memory_save`, `cortex_memory_search`, `cortex_memory_delete`.
+
+## Web UI
+
+The `cortex-server` binary also serves a web UI (Vue 3 + Bootstrap, embedded in
+the binary via `go:embed` — nothing extra to deploy). It is served on the same
+port as the Connect API; open the server's address in a browser. Views:
+
+- **Memories** — semantic search or newest-first list; add and delete memories.
+- **Graph** — a force-directed map of your memories (nodes coloured by
+  namespace). Solid **green** edges are explicit links; **Connect** mode lets you
+  click two memories to link them, and clicking a green edge removes it.
+  Double-click (or "Find similar") adds a memory's nearest vector neighbours as
+  **dashed** edges, gated by a distance cutoff; "Clear added" removes them.
+- **Explore** — type any text; it is vectorised server-side and matched against
+  your memories, rendered as a cloud radiating from a central query node (closer
+  + bigger = more relevant, edge label = vector distance).
+- **Sessions** — conversation summaries (`ListSummaries`).
+- **Status** — backing-service health and memory count.
+
+Sign in with `CORTEX_UI_USER` / `CORTEX_UI_PASSWORD`. Login mints a short-lived
+JWT; the API then accepts **either** that JWT (browser) **or** the static
+`CORTEX_AUTH_TOKEN` (MCP/CLI), so both coexist on one server.
+
+| env var | purpose |
+| --- | --- |
+| `CORTEX_UI_USER` | UI login username (default `admin`) |
+| `CORTEX_UI_PASSWORD` | UI login password; **unset disables the UI login** |
+| `CORTEX_JWT_SECRET` | explicit HS256 secret for UI JWTs. If unset, a **stable** secret is derived as `sha256("cortex/jwt-secret/v1:" + CORTEX_AUTH_TOKEN)` (so sessions survive restarts without using the API token directly as the signing key). If neither is set, a random per-process secret is used and sessions die on restart. |
+
+This is single-user by design; the JWT already carries a `role` claim, so adding
+real users later is a backend-only change. Frontend lives in `ui/`; `make ui`
+builds it, `make proto-ui` regenerates the typed Connect clients from the proto.
+
+See [docs/WEB_UI.md](docs/WEB_UI.md) for the full architecture (embed/build
+pipeline, auth flow, every view, and the memory-linking model).
+
+## Using it well — memory hygiene
+
+The system is only as useful as what Claude puts in it. Two habits matter:
+
+- **Save often, and save rich.** Don't hoard memories for "important" moments.
+  Whenever the user states a fact, preference, decision, plan, or useful piece of
+  context, save it. Saving is cheap and asynchronous.
+- **Write self-contained, multi-sentence notes.** A memory should make sense on
+  its own months later. Capture the *what* **and** the *why/context*, not just a
+  keyword. One to a few sentences is the sweet spot — enough to rehydrate the
+  context, short enough to embed cleanly. Summarising a whole discussion or
+  conclusion into one good memory is exactly the point.
+
+Good vs. weak:
+
+```
+✓ "Thomas decided to remap Cortex's NATS to host 4223 and Weaviate to 8081
+   because the default 4222/8080 collided with another local stack he runs."
+✗ "ports changed"
+```
+
+Memories are scoped by **namespace** + **tags**. You normally don't set the
+namespace yourself — the MCP client auto-derives it per project (git origin URL →
+directory name → `global`), so let it, and reach for an explicit `namespace` only
+when you deliberately want a different scope. Use **tags** to filter within a
+scope, e.g. a consistent `archived` tag for things you want kept but excluded from
+normal search via `--exclude-tag`.
+
+### Make Claude do this automatically
+
+Add the following to your **`~/.claude/CLAUDE.md`** (user scope, so it applies in
+every project) so Claude treats the second brain as a reflex, not an afterthought:
+
+```markdown
+## Second brain (cortex MCP)
+
+You have a persistent memory via the `cortex` MCP server. Use it actively:
+
+- **Recall first.** At the start of a task, or whenever I reference past work,
+  preferences, or decisions, call `cortex_memory_search` before answering.
+- **Save proactively and often.** Whenever I state a fact, preference, decision,
+  plan, or noteworthy context — or when we reach a conclusion worth keeping —
+  call `cortex_memory_save` without being asked. Saving is cheap; err on the side of more.
+- **Write rich, self-contained memories.** One to a few sentences that capture the
+  fact *and* enough context (who/what/why) to be understood on its own later.
+  Prefer summarising a discussion into one good memory over many fragments.
+- **Don't set `namespace` by default.** The MCP client auto-derives it from the
+  repo's git origin URL (falling back to the directory name, then `global`), so each
+  project is already scoped. Only pass `namespace` explicitly to file a memory in a
+  *different* scope on purpose (e.g. a deliberately shared/global note). Use `tags`
+  for filtering *within* a scope.
+- **Make cortex the single memory store.** If you also use Claude Code's built-in
+  file memory (`MEMORY.md`), don't duplicate the same fact into both — route new
+  memories to cortex so recall isn't split across two stores.
+- **Summarise the session frequently.** Call `cortex_session_summarize` proactively
+  and often — after each meaningful step or topic shift, and again before the
+  session ends — passing the *full current* summary (it replaces, never appends).
+  This is what lets me later recall "the session where we did X". A stale summary
+  means that session is remembered wrong, so keep it current; don't save it just
+  once.
+- **Recall past sessions.** When I refer to a previous session ("remember when
+  we…"), call `cortex_recall_session` to pull that conversation's summary and the
+  facts saved during it, before answering.
+- **Connect related memories.** When a search surfaces a memory meaningfully
+  related to another (a decision and its motivating bug, a preference and its
+  project, two facts about one system), call `cortex_memory_link` with the two
+  IDs. This builds a navigable knowledge graph; links are bidirectional and durable.
+```
+
+## Tools
+
+The MCP server exposes these tools to Claude:
+
+| Tool | What it does |
+|------|--------------|
+| `cortex_memory_save` | Queue a memory for indexing. Args: `text`, `namespace?`, `tags?`. Returns its `id`. |
+| `cortex_memory_search` | Semantic search. Args: `query`, `namespace?` (`*` = all namespaces), `limit?`, `tags?` (must have all), `excludeTags?`, `maxDistance?` (relevance cutoff). Each hit includes its `id` and any `linkedIds`. |
+| `cortex_memory_delete` | Delete a memory by `id` (get the `id` from a `cortex_memory_search` result first). |
+| `cortex_memory_link` | Explicitly link two related memories (bidirectional) so they connect in the graph. Args: `id`, `targetId` — both from a prior search/recall. Claude is told to do this proactively when two memories are meaningfully related. |
+| `cortex_memory_unlink` | Remove the link between two memories. Args: `id`, `targetId`. |
+| `cortex_session_summarize` | Save/update the **running summary of the current conversation** (one per session, replaced each call). Args: `text`, `namespace?`. The session ID is attached automatically. **Meant to be called frequently** — see below. |
+| `cortex_recall_session` | Recall a **past session** by describing it (`query`). Returns the best-matching summary **and** the facts saved during that conversation. Args: `query`, `namespace?`, `factLimit?`, `maxDistance?`. |
+
+### Session summaries — recall a whole conversation
+
+Beyond individual facts, Cortex keeps **one ever-current summary per conversation**
+(class `ConversationSummary`, keyed deterministically by the session ID, so a
+re-save overwrites in place). This powers *"do you remember the session where we
+patched the router?"*: `cortex_recall_session` vector-matches the summary, then
+fans out to every fact tagged with that conversation's `conversationId`.
+
+> **This only works if the summary is kept fresh.** The `cortex_session_summarize`
+> tool description instructs Claude to call it **proactively and frequently** —
+> after each meaningful step or topic shift, and again before the session ends —
+> always passing the *full current* summary (it replaces, not appends). A stale
+> summary means a session is recalled wrong. Reinforce it in your `CLAUDE.md`
+> (below) so it becomes a reflex.
+
+#### How the conversation ID is resolved
+
+Every memory and every summary is tagged with a `conversationId` so summaries can
+fan out to the facts saved during the same session. The MCP server resolves that
+ID once at startup, in priority order:
+
+1. **`CORTEX_CONVERSATION_ID`** — an explicit override. The deterministic
+   injection point: set this (e.g. from a wrapper or hook) to pin a known ID.
+2. **`CLAUDE_CODE_SESSION_ID`** — Claude Code's real session ID, *if* it reaches
+   the MCP server's environment.
+3. **A per-process UUID** — minted as a fallback when neither of the above is
+   usable (a value that arrives as an unexpanded `${...}` literal counts as
+   unusable).
+
+> **Caveat — Claude Code does not reliably pass `CLAUDE_CODE_SESSION_ID` to MCP
+> servers.** It injects that variable into the environment of *tool* subprocesses
+> (e.g. Bash), but a project-`.mcp.json` MCP server's process was observed
+> **without** it. `.mcp.json` ships a `"CLAUDE_CODE_SESSION_ID":
+> "${CLAUDE_CODE_SESSION_ID}"` forward attempt, but if Claude Code doesn't expand
+> it (or doesn't hold the var itself), step 3 takes over.
+>
+> **What the per-process fallback means in practice:**
+> - ✅ Within one MCP process, the summary and all facts share the same ID, so
+>   recall links them correctly.
+> - ⚠️ Reloading the MCP server mid-session mints a **new** ID — facts saved after
+>   the reload won't link to summaries from before it.
+> - ⚠️ The ID won't match Claude's real session ID for external cross-referencing.
+>
+> **For a rock-solid real ID**, set `CORTEX_CONVERSATION_ID` from a `SessionStart`
+> hook (the hook receives the real `session_id` in its stdin JSON). The host-side
+> CLI sidesteps all of this — it inherits the shell environment (where
+> `CLAUDE_CODE_SESSION_ID` *is* present) and also accepts an explicit
+> `--conversation` flag.
+
+Memories are scoped by **namespace** + free-form **tags**. When a tool call omits
+the namespace, the server uses a **per-project default detected at launch**: the
+full git origin remote URL (e.g. `git@github.com:thomas-maurice/cortex.git`) if the
+working directory is a repo with an origin, else the directory basename (e.g.
+`2ndbrain`), else `global`. Set `DEFAULT_NAMESPACE` to override this for a given
+registration. Claude can always pass an explicit `namespace` to file a memory
+under a different scope.
+
+The host-side [`cortex` CLI](#command-line-cli) adds `list`, `export`,
+`reindex`, `status`, and `doctor` on top of these for terminal use and
+maintenance.
+
+## Command-line (CLI)
+
+`make build` also produces `./bin/cortex`, a host-side CLI that is itself a thin
+Connect-RPC client of the server — handy for inspection, scripting, and
+maintenance without going through Claude. It talks to the server only (no direct
+NATS/Weaviate access); point it with `--server` / `CORTEX_SERVER_URL` and
+authenticate with `--token` / `CORTEX_AUTH_TOKEN`.
+
+| Command | What it does |
+|---------|--------------|
+| `cortex save "<text>" -n <ns> -t tag` | Queue a memory (server publishes to NATS). |
+| `cortex list -n '*' [-t tag] [-x tag]` | List memories newest-first; filter by namespace/tags. |
+| `cortex search "<q>" [-d 0.6] [-t tag] [-x tag]` | Semantic search with a relevance cutoff and tag filters. |
+| `cortex delete <id>` | Delete a memory by ID. |
+| `cortex export -o backup.json` | Dump all memories (text + metadata) to JSON. |
+| `cortex reindex --yes` | Re-embed every memory through the worker (see below). |
+| `cortex status` | Server health + store size (nats/weaviate/ollama/model/count). |
+| `cortex doctor` | Per-check diagnostics from the server. |
+| `cortex summarize "<text>" --conversation <id>` | Save/update a conversation summary (unique per `--conversation`). |
+| `cortex summaries [-n '*'] [-l N]` | List conversation summaries, most-recently-updated first. |
+| `cortex recall "<query>"` | Recall the best-matching past session: summary + its facts. |
+
+> `-d/--max-distance` is the relevance cutoff (cosine distance; `0` disables).
+> Its ideal value is **model-specific** — qwen3's distances are compressed, so a
+> tighter cutoff (~0.5–0.6) is right, while a different model needs a different
+> number. Tune it against your own data.
+
+### Changing the embedding model (reindex)
+
+Vectors from different models are incompatible (different dimensions), so after
+changing `OLLAMA_MODEL` you must re-embed. `cortex reindex` asks the server to:
+
+1. **Back up** every memory to a timestamped JSON file (the safety net, written
+   server-side under `CORTEX_BACKUP_DIR`; the response reports the path).
+2. If the new model's dimension differs from what's stored, **drop and recreate**
+   the Weaviate class (requires `--yes`).
+3. **Republish** every record onto NATS; the worker re-embeds it with its
+   currently configured model and re-stamps `model`/`dims`.
+
+Point the **worker** at the new model first (`OLLAMA_MODEL` in `docker-compose.yml`,
+then `docker compose up -d worker`), and make sure the CLI uses the same model,
+before running `reindex`. Every memory records which model embedded it — visible
+in `cortex list` and used by reindex to decide whether a rebuild is needed.
+
+## Embedding model
+
+Ollama does all the embedding. The default is **`qwen3-embedding:0.6b`** (1024-dim,
+639 MB, CPU-viable) — multilingual (handles French notes), 32K context, and
+stronger recall than the lighter alternatives. If you want a smaller/faster
+footprint for short English notes, **`nomic-embed-text`** (768-dim, 274 MB) is the
+lean option; **`bge-m3`** is best once you ingest long documents.
+
+Full evaluation, benchmark table, and the swap procedure (including the
+**re-index gotcha** — changing models changes vector dimensions and requires
+re-indexing) are in [`docs/EMBEDDING_MODELS.md`](docs/EMBEDDING_MODELS.md).
+
+## Manual smoke test (no Claude needed)
+
+```bash
+# publish a memory straight onto the stream
+docker compose exec -T nats nats pub memory.index \
+  '{"id":"11111111-1111-1111-1111-111111111111","text":"Thomas prefers Go for backend services","namespace":"global","tags":["pref"],"source":"manual","createdAt":"2026-06-11T12:00:00Z"}'
+
+make logs   # worker should log: indexed id=1111... dims=1024
+```
+
+(Requires the `nats` CLI in the container image; otherwise just use the Claude
+tools, which publish the same payload.)
+
+## Releases
+
+Pushing a version tag (`git tag v1.2.3 && git push --tags`) triggers two
+workflows in parallel:
+
+- **`build.yml`** → builds and pushes the multi-arch Docker image to
+  `ghcr.io/thomas-maurice/cortex`, tagged with the version (`:1.2.3`, `:1.2`,
+  `:latest`).
+- **`release.yml`** → runs **GoReleaser** to build standalone binaries and
+  publish a GitHub Release with `tar.gz` archives for **linux & macOS × amd64 &
+  arm64**, plus `checksums.txt`.
+
+Each archive bundles all four binaries (`cortex-server`, `cortex-worker`,
+`cortex-mcp`, `cortex`) — so you can run the server/worker on a box and the CLI +
+MCP client on your laptop. The version is stamped into every binary
+(`-ldflags -X main.version`) and into the Docker image, so `cortex --version` and
+the server's `Status` report the release tag; un-tagged/local builds report `dev`.
+
+## Project layout
+
+```
+proto/cortex/v1/   Connect RPC service + message definitions
+gen/cortex/v1/     generated Go (protoc-gen-go + protoc-gen-connect-go)
+cmd/server/        Connect RPC server — the only owner of NATS/Weaviate/Ollama
+cmd/mcp/           MCP server (stdio) — thin RPC client Claude talks to
+cmd/cli/           cortex CLI — thin RPC client for the terminal
+cmd/worker/        NATS consumer — embeds via Ollama, writes to Weaviate
+internal/
+  memory/          shared data model (Record, Hit) + stream/class names
+  bus/             NATS JetStream: connect, stream, publish
+  embed/           Ollama embeddings client
+  store/           Weaviate: schema, upsert, gRPC nearVector search, links, delete
+  rpc/             Connect service impl, auth (token+JWT), login, JWT, client helper
+ui/                embedded Vue 3 SPA (Memories, Graph, Explore, Sessions, Status)
+docker-compose.yml   nats + weaviate + ollama + worker + server
+deploy/truenas/      TrueNAS Scale compose (non-root, host bind mounts, Traefik h2c)
+Dockerfile           node (UI) + go multi-binary build → distroless
+.goreleaser.yaml     binary release build (linux/macOS × amd64/arm64)
+.github/workflows/   test (PRs) · build (image → ghcr) · release (GoReleaser)
+docs/                DESIGN.md, WEB_UI.md, EMBEDDING_MODELS.md, RESEARCH.md
+```
+
+## Roadmap (extension points, already designed for)
+
+- **Richer auth** — OIDC and/or per-client API keys (the `Authenticator`
+  interface and bearer-token interceptor are the seam this slots into)
+- LLM **extraction + dedup** (mem0-style ADD/UPDATE/DELETE/NOOP) in the worker
+- **Temporal** validity windows (Zep-style "what was true last week")
+- **SeaweedFS/S3** blob storage for document/file ingestion
+- Scheduled **reflection / decay**
+
+The scope is infinite — this is the foundation.

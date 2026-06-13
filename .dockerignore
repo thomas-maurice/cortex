@@ -1,0 +1,7 @@
+.git
+bin
+ui/node_modules
+ui/dist
+*.exe
+.env
+cortex-backup-*.json

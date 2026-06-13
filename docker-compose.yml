@@ -1,0 +1,82 @@
+name: cortex
+services:
+  nats:
+    image: nats:2.12-alpine
+    command:
+      - -js
+      - -sd
+      - /data
+      - -m
+      - "8222"
+    ports:
+      - 4223:4222 # client (4223 on host to avoid colliding with other local NATS)
+      - 8223:8222 # monitoring
+    volumes:
+      - nats_data:/data
+    restart: unless-stopped
+  weaviate:
+    image: cr.weaviate.io/semitechnologies/weaviate:1.38.0
+    ports:
+      - 8081:8080 # REST (8081 on host to avoid colliding with other local services)
+      - 50051:50051 # gRPC
+    environment:
+      QUERY_DEFAULTS_LIMIT: 25
+      AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: "true"
+      PERSISTENCE_DATA_PATH: /var/lib/weaviate
+      DEFAULT_VECTORIZER_MODULE: none
+      ENABLE_MODULES: ""
+      CLUSTER_HOSTNAME: cortex
+    volumes:
+      - weaviate_data:/var/lib/weaviate
+    restart: unless-stopped
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - 11434:11434
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: unless-stopped
+  # Indexing worker: NATS -> Ollama embed -> Weaviate. The only writer.
+  worker:
+    image: ${CORTEX_IMAGE:-ghcr.io/thomas-maurice/cortex:latest}
+    entrypoint: ["/usr/local/bin/cortex-worker"]
+    environment:
+      NATS_URL: nats://nats:4222
+      OLLAMA_URL: http://ollama:11434
+      OLLAMA_MODEL: qwen3-embedding:0.6b
+      WEAVIATE_HOST: weaviate:8080
+      WEAVIATE_GRPC_HOST: weaviate:50051
+    depends_on:
+      - nats
+      - weaviate
+      - ollama
+    restart: unless-stopped
+  # Connect RPC server: the single owner of NATS + Weaviate + Ollama. The MCP
+  # server and cortex CLI are thin clients of this. Set CORTEX_AUTH_TOKEN in the
+  # environment (or a .env file) before exposing the host port off localhost.
+  server:
+    image: ${CORTEX_IMAGE:-ghcr.io/thomas-maurice/cortex:latest}
+    entrypoint: ["/usr/local/bin/cortex-server"]
+    ports:
+      - 8088:8080 # 8088 on host to avoid colliding with other local services
+    environment:
+      CORTEX_LISTEN: :8080
+      NATS_URL: nats://nats:4222
+      OLLAMA_URL: http://ollama:11434
+      OLLAMA_MODEL: qwen3-embedding:0.6b
+      WEAVIATE_HOST: weaviate:8080
+      WEAVIATE_GRPC_HOST: weaviate:50051
+      DEFAULT_NAMESPACE: global
+      MEMORY_SOURCE: cortex
+      CORTEX_AUTH_TOKEN: ${CORTEX_AUTH_TOKEN:-}
+      CORTEX_UI_USER: ${CORTEX_UI_USER:-admin}
+      CORTEX_UI_PASSWORD: ${CORTEX_UI_PASSWORD:-admin}
+    depends_on:
+      - nats
+      - weaviate
+      - ollama
+    restart: unless-stopped
+volumes:
+  nats_data:
+  weaviate_data:
+  ollama_data:

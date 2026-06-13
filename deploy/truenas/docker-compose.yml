@@ -1,0 +1,110 @@
+# Cortex stack for TrueNAS Scale (custom app / "Install via YAML").
+#
+# Sample values below — change the hostnames, auth token, and dataset path.
+# Before first start, create the datasets and give them to the apps user:
+#   mkdir -p /mnt/tank/apps/cortex/{nats,weaviate,ollama}
+#   chown -R 568:568 /mnt/tank/apps/cortex
+#
+# Networking: nats/weaviate/ollama publish NO host ports (internal compose
+# network only). cortex-server is exposed via Traefik using the h2c scheme,
+# which is REQUIRED — the server speaks HTTP/2 cleartext (gRPC/Connect). The
+# server container must share Traefik's docker network, the same way your other
+# Traefik-fronted apps do.
+
+name: cortex
+
+services:
+  nats:
+    container_name: cortex-nats
+    image: nats:2.12-alpine
+    user: '568:568'
+    command:
+      - -js
+      - -sd
+      - /data
+      - -m
+      - '8222'
+    volumes:
+      - /mnt/tank/apps/cortex/nats:/data
+    restart: always
+
+  weaviate:
+    container_name: cortex-weaviate
+    image: cr.weaviate.io/semitechnologies/weaviate:1.38.0
+    user: '568:568'
+    environment:
+      QUERY_DEFAULTS_LIMIT: 25
+      AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: 'true'
+      PERSISTENCE_DATA_PATH: /var/lib/weaviate
+      DEFAULT_VECTORIZER_MODULE: none
+      ENABLE_MODULES: ''
+      CLUSTER_HOSTNAME: cortex
+    volumes:
+      - /mnt/tank/apps/cortex/weaviate:/var/lib/weaviate
+    restart: always
+
+  ollama:
+    container_name: cortex-ollama
+    image: ollama/ollama:latest
+    user: '568:568'
+    environment:
+      # Non-root, so keep models off the default /root/.ollama path.
+      HOME: /models
+      OLLAMA_MODELS: /models
+    volumes:
+      - /mnt/tank/apps/cortex/ollama:/models
+    restart: always
+
+  # Indexing worker: NATS -> Ollama embed -> Weaviate. The only writer.
+  worker:
+    container_name: cortex-worker
+    image: ghcr.io/thomas-maurice/cortex:latest
+    user: '568:568'
+    entrypoint: ['/usr/local/bin/cortex-worker']
+    environment:
+      NATS_URL: nats://nats:4222
+      OLLAMA_URL: http://ollama:11434
+      OLLAMA_MODEL: qwen3-embedding:0.6b
+      WEAVIATE_HOST: weaviate:8080
+      WEAVIATE_GRPC_HOST: weaviate:50051
+    depends_on:
+      - nats
+      - weaviate
+      - ollama
+    restart: always
+
+  # Connect RPC server. Fronted by Traefik over h2c. Set a real CORTEX_AUTH_TOKEN
+  # since it is reachable off-host.
+  server:
+    container_name: cortex-server
+    image: ghcr.io/thomas-maurice/cortex:latest
+    user: '568:568'
+    entrypoint: ['/usr/local/bin/cortex-server']
+    environment:
+      CORTEX_LISTEN: ':8080'
+      NATS_URL: nats://nats:4222
+      OLLAMA_URL: http://ollama:11434
+      OLLAMA_MODEL: qwen3-embedding:0.6b
+      WEAVIATE_HOST: weaviate:8080
+      WEAVIATE_GRPC_HOST: weaviate:50051
+      DEFAULT_NAMESPACE: global
+      MEMORY_SOURCE: cortex
+      CORTEX_AUTH_TOKEN: changeme-generate-a-long-random-token
+      # Web UI login (served by the same server, fronted by Traefik over h2c).
+      CORTEX_UI_USER: admin
+      CORTEX_UI_PASSWORD: changeme-set-a-ui-password
+    labels:
+      traefik.enable: 'true'
+      traefik.http.routers.cortex-https.entrypoints: https
+      traefik.http.routers.cortex-https.rule: Host(`cortex.example.com`) || Host(`cortex.lan.example.com`)
+      traefik.http.routers.cortex-https.service: cortex
+      traefik.http.routers.cortex.entrypoints: http
+      traefik.http.routers.cortex.rule: Host(`cortex.example.com`) || Host(`cortex.lan.example.com`)
+      traefik.http.routers.cortex.service: cortex
+      traefik.http.services.cortex.loadbalancer.server.port: '8080'
+      traefik.http.services.cortex.loadbalancer.server.scheme: h2c
+    depends_on:
+      - nats
+      - weaviate
+      - ollama
+    restart: always

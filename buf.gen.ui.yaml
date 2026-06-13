@@ -1,0 +1,14 @@
+# TS Connect-ES client generation for the web UI. Run via `make proto-ui`
+# (separate from buf.gen.yaml so the Go generation is untouched). Requires
+# `npm install` in ui/ first — the plugin binaries live in ui/node_modules.
+version: v2
+clean: true
+plugins:
+  - local: ui/node_modules/.bin/protoc-gen-es
+    out: ui/src/gen
+    opt:
+      - target=ts
+  - local: ui/node_modules/.bin/protoc-gen-connect-es
+    out: ui/src/gen
+    opt:
+      - target=ts

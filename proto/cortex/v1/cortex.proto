@@ -1,0 +1,235 @@
+syntax = "proto3";
+
+package cortex.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/thomas-maurice/cortex/gen/cortex/v1;cortexv1";
+
+// MemoryService is the single entry point to the Cortex second brain. The MCP
+// server and the cortex CLI are thin clients of this service: all access to
+// NATS (writes) and Weaviate/Ollama (reads) happens server-side, never in the
+// clients.
+service MemoryService {
+  // Save queues a memory for asynchronous, durable indexing (NATS JetStream).
+  rpc Save(SaveRequest) returns (SaveResponse) {}
+  // Search runs a semantic (vector) search over stored memories.
+  rpc Search(SearchRequest) returns (SearchResponse) {}
+  // List returns stored memories newest-first, without a vector query.
+  rpc List(ListRequest) returns (ListResponse) {}
+  // Delete removes a memory by ID.
+  rpc Delete(DeleteRequest) returns (DeleteResponse) {}
+  // Status is a fast health/connectivity probe of the backing services.
+  rpc Status(StatusRequest) returns (StatusResponse) {}
+  // Doctor runs deeper diagnostics and returns a per-check breakdown.
+  rpc Doctor(DoctorRequest) returns (DoctorResponse) {}
+  // Reindex re-embeds memories through the worker (e.g. after a model change).
+  rpc Reindex(ReindexRequest) returns (ReindexResponse) {}
+  // Dead manages dead-lettered memories (list / requeue / purge).
+  rpc Dead(DeadRequest) returns (DeadResponse) {}
+  // SummarizeSession upserts the ever-current summary for one conversation.
+  rpc SummarizeSession(SummarizeSessionRequest) returns (SummarizeSessionResponse) {}
+  // RecallSession vector-matches a conversation summary and returns it together
+  // with the individual facts saved during that conversation.
+  rpc RecallSession(RecallSessionRequest) returns (RecallSessionResponse) {}
+  // ListSummaries lists conversation summaries, most-recently-updated first.
+  rpc ListSummaries(ListSummariesRequest) returns (ListSummariesResponse) {}
+  // Link creates a bidirectional link between two memories (id <-> target_id).
+  rpc Link(LinkRequest) returns (LinkResponse) {}
+  // Unlink removes the bidirectional link between two memories.
+  rpc Unlink(UnlinkRequest) returns (UnlinkResponse) {}
+}
+
+// Memory is one stored memory. Only `text` is ever embedded; every other field
+// is filterable metadata and never participates in a vector search.
+message Memory {
+  string id = 1;
+  string text = 2;
+  string namespace = 3;
+  repeated string tags = 4;
+  string source = 5;
+  google.protobuf.Timestamp created_at = 6;
+  string model = 7; // embedding model that produced the vector (provenance)
+  int32 dims = 8;   // vector dimension (provenance)
+  string conversation_id = 9; // client session that created the memory (provenance)
+  repeated string linked_ids = 10; // ids of memories explicitly linked to this one (bidirectional)
+}
+
+message SaveRequest {
+  string text = 1;
+  string namespace = 2; // optional; server default when empty
+  repeated string tags = 3;
+  string source = 4; // optional; server default when empty
+  string conversation_id = 5; // optional; client session ID for provenance
+}
+
+message SaveResponse {
+  string id = 1;
+  string status = 2; // "queued"
+}
+
+message SearchRequest {
+  string query = 1;
+  string namespace = 2; // "" = server default, "*" = all namespaces
+  int32 limit = 3;      // default 5
+  repeated string tags = 4;         // memory must carry ALL of these
+  repeated string exclude_tags = 5; // drop memories carrying ANY of these
+  float max_distance = 6;           // relevance cutoff; <=0 = server default
+  int32 autocut = 7;                // Weaviate autocut jumps; <=0 disables
+}
+
+message Hit {
+  Memory memory = 1;
+  float distance = 2;
+}
+
+message SearchResponse {
+  repeated Hit hits = 1;
+}
+
+message ListRequest {
+  string namespace = 1; // "" = server default, "*" = all namespaces
+  int32 limit = 2;      // default 20
+  repeated string tags = 3;
+  repeated string exclude_tags = 4;
+}
+
+message ListResponse {
+  repeated Memory memories = 1;
+}
+
+message DeleteRequest {
+  string id = 1;
+}
+
+message DeleteResponse {
+  string status = 1; // "deleted"
+}
+
+message StatusRequest {}
+
+message StatusResponse {
+  bool nats_ok = 1;
+  bool weaviate_ok = 2;
+  bool ollama_ok = 3;
+  string model = 4;        // configured embedding model
+  int32 dims = 5;          // probed embedding dimension (0 if ollama down)
+  int64 memory_count = 6;  // total stored memories
+  string version = 7;
+}
+
+message DoctorRequest {}
+
+message Check {
+  string name = 1;
+  bool ok = 2;
+  string detail = 3;
+}
+
+message DoctorResponse {
+  repeated Check checks = 1;
+  bool healthy = 2; // true iff every check is ok
+}
+
+message ReindexRequest {
+  string namespace = 1;    // "" = server default, "*" = all
+  bool force_rebuild = 2;  // permit a destructive class rebuild on dim change
+}
+
+message ReindexResponse {
+  int32 republished = 1;
+  bool rebuilt = 2;     // whether the class was dropped & recreated
+  int32 old_dims = 3;
+  int32 new_dims = 4;
+  string backup_path = 5; // server-side snapshot written before any rebuild
+  string message = 6;
+}
+
+enum DeadAction {
+  DEAD_ACTION_UNSPECIFIED = 0;
+  DEAD_ACTION_LIST = 1;
+  DEAD_ACTION_REQUEUE = 2;
+  DEAD_ACTION_PURGE = 3;
+}
+
+message DeadLetter {
+  Memory record = 1;
+  string error = 2;
+  int32 deliveries = 3;
+  google.protobuf.Timestamp failed_at = 4;
+}
+
+message DeadRequest {
+  DeadAction action = 1;
+}
+
+message DeadResponse {
+  repeated DeadLetter dead_letters = 1; // populated on LIST
+  int32 affected = 2;                   // requeued or purged count
+}
+
+// ConversationSummary is the ever-current digest of one conversation, unique per
+// conversation_id. Only `text` is embedded; the rest is metadata.
+message ConversationSummary {
+  string conversation_id = 1;
+  string text = 2;
+  string namespace = 3;
+  string source = 4;
+  google.protobuf.Timestamp created_at = 5;
+  google.protobuf.Timestamp updated_at = 6;
+  string model = 7;
+  int32 dims = 8;
+  float distance = 9; // populated on recall (vector match to the query)
+}
+
+message SummarizeSessionRequest {
+  string conversation_id = 1; // required: the conversation this summary digests
+  string text = 2;            // the (possibly updated) summary text
+  string namespace = 3;       // optional; server default when empty
+  string source = 4;          // optional; server default when empty
+}
+
+message SummarizeSessionResponse {
+  string conversation_id = 1;
+  string status = 2; // "queued"
+}
+
+message RecallSessionRequest {
+  string query = 1;        // natural-language description of the session to find
+  string namespace = 2;    // "" = server default, "*" = all namespaces
+  int32 fact_limit = 3;    // max facts to return for the matched conversation (default 50)
+  float max_distance = 4;  // relevance cutoff on the summary match; <=0 = server default
+}
+
+message RecallSessionResponse {
+  bool matched = 1;                // false if no summary matched within the cutoff
+  ConversationSummary summary = 2; // the best-matching summary (unset if !matched)
+  repeated Memory facts = 3;       // facts sharing summary.conversation_id, newest first
+}
+
+message ListSummariesRequest {
+  string namespace = 1; // "" = server default, "*" = all namespaces
+  int32 limit = 2;      // default 20
+}
+
+message ListSummariesResponse {
+  repeated ConversationSummary summaries = 1; // most-recently-updated first
+}
+
+message LinkRequest {
+  string id = 1;        // one endpoint
+  string target_id = 2; // the other endpoint
+}
+
+message LinkResponse {
+  repeated string linked_ids = 1; // updated link set of `id`
+}
+
+message UnlinkRequest {
+  string id = 1;
+  string target_id = 2;
+}
+
+message UnlinkResponse {
+  repeated string linked_ids = 1; // remaining link set of `id`
+}
