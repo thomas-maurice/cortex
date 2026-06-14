@@ -160,6 +160,36 @@ func (s *Service) Search(ctx context.Context, req *connect.Request[cortexv1.Sear
 	return connect.NewResponse(out), nil
 }
 
+// SearchSimilar finds neighbours of an existing memory by reusing its stored
+// vector (Weaviate nearObject) — it never calls the embedder, so it costs no
+// inference regardless of how large the seed memory is. This is the backend for
+// the UI's "find similar"; the seed memory itself is excluded by the store.
+func (s *Service) SearchSimilar(ctx context.Context, req *connect.Request[cortexv1.SearchSimilarRequest]) (*connect.Response[cortexv1.SearchResponse], error) {
+	id := strings.TrimSpace(req.Msg.GetId())
+	if id == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id must not be empty"))
+	}
+
+	hits, err := s.store.SearchByID(ctx, id, store.SearchOpts{
+		Namespace:   resolveNamespace(req.Msg.GetNamespace(), s.cfg.DefaultNamespace),
+		Limit:       int(req.Msg.GetLimit()),
+		MaxDistance: req.Msg.GetMaxDistance(),
+		Autocut:     int(req.Msg.GetAutocut()),
+		IncludeTags: req.Msg.GetTags(),
+		AnyTags:     req.Msg.GetAnyTags(),
+		ExcludeTags: req.Msg.GetExcludeTags(),
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	out := &cortexv1.SearchResponse{Hits: make([]*cortexv1.Hit, 0, len(hits))}
+	for _, h := range hits {
+		out.Hits = append(out.Hits, hitToProto(h))
+	}
+	return connect.NewResponse(out), nil
+}
+
 func (s *Service) List(ctx context.Context, req *connect.Request[cortexv1.ListRequest]) (*connect.Response[cortexv1.ListResponse], error) {
 	recs, err := s.store.List(ctx, store.ListOpts{
 		Namespace:   resolveNamespace(req.Msg.GetNamespace(), s.cfg.DefaultNamespace),

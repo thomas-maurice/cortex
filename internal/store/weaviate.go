@@ -502,6 +502,57 @@ func (s *Store) Search(ctx context.Context, vector []float32, opts SearchOpts) (
 	return excludeTagged(hits, func(h memory.Hit) []string { return h.Tags }, opts.ExcludeTags), nil
 }
 
+// SearchByID runs a nearObject query: it finds the stored memories most similar
+// to the memory with the given id by REUSING that memory's existing stored
+// vector — Weaviate never re-embeds and the text never leaves the store. This is
+// the "find similar to this one" primitive; it must be preferred over embedding a
+// memory's own text back into a query. The seed memory itself (distance 0) is
+// excluded from the results.
+func (s *Store) SearchByID(ctx context.Context, id string, opts SearchOpts) ([]memory.Hit, error) {
+	limit := opts.Limit
+	if limit <= 0 {
+		limit = 5
+	}
+
+	nearObject := (&graphql.NearObjectArgumentBuilder{}).WithID(id)
+	if opts.MaxDistance > 0 {
+		nearObject = nearObject.WithDistance(opts.MaxDistance)
+	}
+
+	// Request one extra so the seed object (always the closest hit) can be dropped
+	// without shrinking the result set below the caller's limit.
+	query := s.client.Experimental().Search().
+		WithCollection(memory.ClassName).
+		WithProperties(memoryProps...).
+		WithMetadata(&graphql.Metadata{ID: true, Distance: true}).
+		WithNearObject(nearObject).
+		WithLimit(limit + 1)
+
+	if opts.Autocut > 0 {
+		query = query.WithAutocut(opts.Autocut)
+	}
+	if where := buildWhere(opts.Namespace, opts.ConversationID, opts.IncludeTags, opts.AnyTags); where != nil {
+		query = query.WithWhere(where)
+	}
+
+	res, err := query.Do(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("near-object search: %w", err)
+	}
+
+	hits := make([]memory.Hit, 0, len(res))
+	for _, r := range res {
+		if r.ID == id {
+			continue // the seed memory itself
+		}
+		hits = append(hits, memory.Hit{Record: resultToRecord(r), Distance: r.Metadata.Distance})
+		if len(hits) >= limit {
+			break
+		}
+	}
+	return excludeTagged(hits, func(h memory.Hit) []string { return h.Tags }, opts.ExcludeTags), nil
+}
+
 // List returns stored memories newest-first with optional namespace/tag
 // filtering. Unlike Search it runs no vector query (still over gRPC), so results
 // carry no distance.

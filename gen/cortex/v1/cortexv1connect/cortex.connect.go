@@ -40,6 +40,9 @@ const (
 	MemoryServiceUpdateMemoryProcedure = "/cortex.v1.MemoryService/UpdateMemory"
 	// MemoryServiceSearchProcedure is the fully-qualified name of the MemoryService's Search RPC.
 	MemoryServiceSearchProcedure = "/cortex.v1.MemoryService/Search"
+	// MemoryServiceSearchSimilarProcedure is the fully-qualified name of the MemoryService's
+	// SearchSimilar RPC.
+	MemoryServiceSearchSimilarProcedure = "/cortex.v1.MemoryService/SearchSimilar"
 	// MemoryServiceListProcedure is the fully-qualified name of the MemoryService's List RPC.
 	MemoryServiceListProcedure = "/cortex.v1.MemoryService/List"
 	// MemoryServiceDeleteProcedure is the fully-qualified name of the MemoryService's Delete RPC.
@@ -89,6 +92,10 @@ type MemoryServiceClient interface {
 	UpdateMemory(context.Context, *connect.Request[v1.UpdateMemoryRequest]) (*connect.Response[v1.UpdateMemoryResponse], error)
 	// Search runs a semantic (vector) search over stored memories.
 	Search(context.Context, *connect.Request[v1.SearchRequest]) (*connect.Response[v1.SearchResponse], error)
+	// SearchSimilar finds memories similar to an EXISTING memory (by id), reusing
+	// that memory's stored vector — it never re-embeds. Use it for "more like this
+	// one" instead of feeding a memory's own text back through Search.
+	SearchSimilar(context.Context, *connect.Request[v1.SearchSimilarRequest]) (*connect.Response[v1.SearchResponse], error)
 	// List returns stored memories newest-first, without a vector query.
 	List(context.Context, *connect.Request[v1.ListRequest]) (*connect.Response[v1.ListResponse], error)
 	// Delete removes a memory by ID.
@@ -152,6 +159,12 @@ func NewMemoryServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			httpClient,
 			baseURL+MemoryServiceSearchProcedure,
 			connect.WithSchema(memoryServiceMethods.ByName("Search")),
+			connect.WithClientOptions(opts...),
+		),
+		searchSimilar: connect.NewClient[v1.SearchSimilarRequest, v1.SearchResponse](
+			httpClient,
+			baseURL+MemoryServiceSearchSimilarProcedure,
+			connect.WithSchema(memoryServiceMethods.ByName("SearchSimilar")),
 			connect.WithClientOptions(opts...),
 		),
 		list: connect.NewClient[v1.ListRequest, v1.ListResponse](
@@ -252,6 +265,7 @@ type memoryServiceClient struct {
 	save                    *connect.Client[v1.SaveRequest, v1.SaveResponse]
 	updateMemory            *connect.Client[v1.UpdateMemoryRequest, v1.UpdateMemoryResponse]
 	search                  *connect.Client[v1.SearchRequest, v1.SearchResponse]
+	searchSimilar           *connect.Client[v1.SearchSimilarRequest, v1.SearchResponse]
 	list                    *connect.Client[v1.ListRequest, v1.ListResponse]
 	delete                  *connect.Client[v1.DeleteRequest, v1.DeleteResponse]
 	status                  *connect.Client[v1.StatusRequest, v1.StatusResponse]
@@ -282,6 +296,11 @@ func (c *memoryServiceClient) UpdateMemory(ctx context.Context, req *connect.Req
 // Search calls cortex.v1.MemoryService.Search.
 func (c *memoryServiceClient) Search(ctx context.Context, req *connect.Request[v1.SearchRequest]) (*connect.Response[v1.SearchResponse], error) {
 	return c.search.CallUnary(ctx, req)
+}
+
+// SearchSimilar calls cortex.v1.MemoryService.SearchSimilar.
+func (c *memoryServiceClient) SearchSimilar(ctx context.Context, req *connect.Request[v1.SearchSimilarRequest]) (*connect.Response[v1.SearchResponse], error) {
+	return c.searchSimilar.CallUnary(ctx, req)
 }
 
 // List calls cortex.v1.MemoryService.List.
@@ -370,6 +389,10 @@ type MemoryServiceHandler interface {
 	UpdateMemory(context.Context, *connect.Request[v1.UpdateMemoryRequest]) (*connect.Response[v1.UpdateMemoryResponse], error)
 	// Search runs a semantic (vector) search over stored memories.
 	Search(context.Context, *connect.Request[v1.SearchRequest]) (*connect.Response[v1.SearchResponse], error)
+	// SearchSimilar finds memories similar to an EXISTING memory (by id), reusing
+	// that memory's stored vector — it never re-embeds. Use it for "more like this
+	// one" instead of feeding a memory's own text back through Search.
+	SearchSimilar(context.Context, *connect.Request[v1.SearchSimilarRequest]) (*connect.Response[v1.SearchResponse], error)
 	// List returns stored memories newest-first, without a vector query.
 	List(context.Context, *connect.Request[v1.ListRequest]) (*connect.Response[v1.ListResponse], error)
 	// Delete removes a memory by ID.
@@ -429,6 +452,12 @@ func NewMemoryServiceHandler(svc MemoryServiceHandler, opts ...connect.HandlerOp
 		MemoryServiceSearchProcedure,
 		svc.Search,
 		connect.WithSchema(memoryServiceMethods.ByName("Search")),
+		connect.WithHandlerOptions(opts...),
+	)
+	memoryServiceSearchSimilarHandler := connect.NewUnaryHandler(
+		MemoryServiceSearchSimilarProcedure,
+		svc.SearchSimilar,
+		connect.WithSchema(memoryServiceMethods.ByName("SearchSimilar")),
 		connect.WithHandlerOptions(opts...),
 	)
 	memoryServiceListHandler := connect.NewUnaryHandler(
@@ -529,6 +558,8 @@ func NewMemoryServiceHandler(svc MemoryServiceHandler, opts ...connect.HandlerOp
 			memoryServiceUpdateMemoryHandler.ServeHTTP(w, r)
 		case MemoryServiceSearchProcedure:
 			memoryServiceSearchHandler.ServeHTTP(w, r)
+		case MemoryServiceSearchSimilarProcedure:
+			memoryServiceSearchSimilarHandler.ServeHTTP(w, r)
 		case MemoryServiceListProcedure:
 			memoryServiceListHandler.ServeHTTP(w, r)
 		case MemoryServiceDeleteProcedure:
@@ -578,6 +609,10 @@ func (UnimplementedMemoryServiceHandler) UpdateMemory(context.Context, *connect.
 
 func (UnimplementedMemoryServiceHandler) Search(context.Context, *connect.Request[v1.SearchRequest]) (*connect.Response[v1.SearchResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cortex.v1.MemoryService.Search is not implemented"))
+}
+
+func (UnimplementedMemoryServiceHandler) SearchSimilar(context.Context, *connect.Request[v1.SearchSimilarRequest]) (*connect.Response[v1.SearchResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cortex.v1.MemoryService.SearchSimilar is not implemented"))
 }
 
 func (UnimplementedMemoryServiceHandler) List(context.Context, *connect.Request[v1.ListRequest]) (*connect.Response[v1.ListResponse], error) {

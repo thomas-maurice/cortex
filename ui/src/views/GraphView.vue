@@ -388,9 +388,11 @@ async function expandSemantic(id) {
   if (!node?.mem) return
   notice.value = ''
   try {
-    // maxDistance is a server-side relevance cutoff — weaker matches are dropped
-    // rather than drawn, so we never link unrelated memories.
-    const res = await memoryClient.search({ query: node.mem.text, namespace: '*', limit: 6, maxDistance: cutoff.value })
+    // searchSimilar reuses the memory's stored vector server-side (Weaviate
+    // nearObject) — it does NOT re-embed the text, so big memories cost no
+    // inference. maxDistance is a server-side relevance cutoff so we never link
+    // unrelated memories; the seed memory is excluded by the server.
+    const res = await memoryClient.searchSimilar({ id: node.mem.id, namespace: '*', limit: 6, maxDistance: cutoff.value })
     const hits = res.hits.filter((h) => 'm:' + h.memory.id !== id)
     if (hits.length === 0) {
       notice.value = `No memories within distance ${cutoff.value} of "${truncate(node.mem.text, 30)}".`

@@ -496,6 +496,101 @@ export class SearchRequest extends Message<SearchRequest> {
 }
 
 /**
+ * @generated from message cortex.v1.SearchSimilarRequest
+ */
+export class SearchSimilarRequest extends Message<SearchSimilarRequest> {
+  /**
+   * the seed memory whose neighbours to find
+   *
+   * @generated from field: string id = 1;
+   */
+  id = "";
+
+  /**
+   * "" = server default, "*" = all namespaces
+   *
+   * @generated from field: string namespace = 2;
+   */
+  namespace = "";
+
+  /**
+   * default 5
+   *
+   * @generated from field: int32 limit = 3;
+   */
+  limit = 0;
+
+  /**
+   * neighbour must carry ALL of these
+   *
+   * @generated from field: repeated string tags = 4;
+   */
+  tags: string[] = [];
+
+  /**
+   * drop neighbours carrying ANY of these
+   *
+   * @generated from field: repeated string exclude_tags = 5;
+   */
+  excludeTags: string[] = [];
+
+  /**
+   * relevance cutoff; <=0 = server default
+   *
+   * @generated from field: float max_distance = 6;
+   */
+  maxDistance = 0;
+
+  /**
+   * Weaviate autocut jumps; <=0 disables
+   *
+   * @generated from field: int32 autocut = 7;
+   */
+  autocut = 0;
+
+  /**
+   * neighbour must carry AT LEAST ONE of these
+   *
+   * @generated from field: repeated string any_tags = 8;
+   */
+  anyTags: string[] = [];
+
+  constructor(data?: PartialMessage<SearchSimilarRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "cortex.v1.SearchSimilarRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "namespace", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "limit", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 4, name: "tags", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
+    { no: 5, name: "exclude_tags", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
+    { no: 6, name: "max_distance", kind: "scalar", T: 2 /* ScalarType.FLOAT */ },
+    { no: 7, name: "autocut", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 8, name: "any_tags", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): SearchSimilarRequest {
+    return new SearchSimilarRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): SearchSimilarRequest {
+    return new SearchSimilarRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): SearchSimilarRequest {
+    return new SearchSimilarRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: SearchSimilarRequest | PlainMessage<SearchSimilarRequest> | undefined, b: SearchSimilarRequest | PlainMessage<SearchSimilarRequest> | undefined): boolean {
+    return proto3.util.equals(SearchSimilarRequest, a, b);
+  }
+}
+
+/**
  * @generated from message cortex.v1.Hit
  */
 export class Hit extends Message<Hit> {

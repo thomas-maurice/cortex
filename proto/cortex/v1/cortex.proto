@@ -20,6 +20,10 @@ service MemoryService {
   rpc UpdateMemory(UpdateMemoryRequest) returns (UpdateMemoryResponse) {}
   // Search runs a semantic (vector) search over stored memories.
   rpc Search(SearchRequest) returns (SearchResponse) {}
+  // SearchSimilar finds memories similar to an EXISTING memory (by id), reusing
+  // that memory's stored vector — it never re-embeds. Use it for "more like this
+  // one" instead of feeding a memory's own text back through Search.
+  rpc SearchSimilar(SearchSimilarRequest) returns (SearchResponse) {}
   // List returns stored memories newest-first, without a vector query.
   rpc List(ListRequest) returns (ListResponse) {}
   // Delete removes a memory by ID.
@@ -126,6 +130,17 @@ message SearchRequest {
   float max_distance = 6;           // relevance cutoff; <=0 = server default
   int32 autocut = 7;                // Weaviate autocut jumps; <=0 disables
   repeated string any_tags = 8;     // memory must carry AT LEAST ONE of these
+}
+
+message SearchSimilarRequest {
+  string id = 1;                    // the seed memory whose neighbours to find
+  string namespace = 2;             // "" = server default, "*" = all namespaces
+  int32 limit = 3;                  // default 5
+  repeated string tags = 4;         // neighbour must carry ALL of these
+  repeated string exclude_tags = 5; // drop neighbours carrying ANY of these
+  float max_distance = 6;           // relevance cutoff; <=0 = server default
+  int32 autocut = 7;                // Weaviate autocut jumps; <=0 disables
+  repeated string any_tags = 8;     // neighbour must carry AT LEAST ONE of these
 }
 
 message Hit {

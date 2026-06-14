@@ -3,7 +3,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { DeadRequest, DeadResponse, DeleteRequest, DeleteResponse, DismissDuplicateRequest, DismissDuplicateResponse, DoctorRequest, DoctorResponse, IndexQueueRequest, IndexQueueResponse, LinkRequest, LinkResponse, ListDuplicateCandidatesRequest, ListDuplicateCandidatesResponse, ListRequest, ListResponse, ListSummariesRequest, ListSummariesResponse, PullModelRequest, PullModelResponse, RecallSessionRequest, RecallSessionResponse, ReindexRequest, ReindexResponse, SaveRequest, SaveResponse, SearchRequest, SearchResponse, StatusRequest, StatusResponse, SummarizeSessionRequest, SummarizeSessionResponse, UnlinkRequest, UnlinkResponse, UpdateMemoryRequest, UpdateMemoryResponse } from "./cortex_pb.js";
+import { DeadRequest, DeadResponse, DeleteRequest, DeleteResponse, DismissDuplicateRequest, DismissDuplicateResponse, DoctorRequest, DoctorResponse, IndexQueueRequest, IndexQueueResponse, LinkRequest, LinkResponse, ListDuplicateCandidatesRequest, ListDuplicateCandidatesResponse, ListRequest, ListResponse, ListSummariesRequest, ListSummariesResponse, PullModelRequest, PullModelResponse, RecallSessionRequest, RecallSessionResponse, ReindexRequest, ReindexResponse, SaveRequest, SaveResponse, SearchRequest, SearchResponse, SearchSimilarRequest, StatusRequest, StatusResponse, SummarizeSessionRequest, SummarizeSessionResponse, UnlinkRequest, UnlinkResponse, UpdateMemoryRequest, UpdateMemoryResponse } from "./cortex_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -50,6 +50,19 @@ export const MemoryService = {
     search: {
       name: "Search",
       I: SearchRequest,
+      O: SearchResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * SearchSimilar finds memories similar to an EXISTING memory (by id), reusing
+     * that memory's stored vector — it never re-embeds. Use it for "more like this
+     * one" instead of feeding a memory's own text back through Search.
+     *
+     * @generated from rpc cortex.v1.MemoryService.SearchSimilar
+     */
+    searchSimilar: {
+      name: "SearchSimilar",
+      I: SearchSimilarRequest,
       O: SearchResponse,
       kind: MethodKind.Unary,
     },
