@@ -10,8 +10,8 @@ import (
 
 	"github.com/weaviate/weaviate-go-client/v5/weaviate"
 	"github.com/weaviate/weaviate-go-client/v5/weaviate/filters"
-	wgrpc "github.com/weaviate/weaviate-go-client/v5/weaviate/grpc"
 	"github.com/weaviate/weaviate-go-client/v5/weaviate/graphql"
+	wgrpc "github.com/weaviate/weaviate-go-client/v5/weaviate/grpc"
 	"github.com/weaviate/weaviate/entities/models"
 	pb "github.com/weaviate/weaviate/grpc/generated/protocol/v1"
 
@@ -135,6 +135,8 @@ func memoryProperties() []*models.Property {
 		{Name: "dims", DataType: []string{"int"}},
 		{Name: "conversationId", DataType: []string{"text"}},
 		{Name: "linkedIds", DataType: []string{"text[]"}},
+		{Name: "dupCandidates", DataType: []string{"text[]"}},
+		{Name: "notDuplicateOf", DataType: []string{"text[]"}},
 	}
 }
 
@@ -212,6 +214,8 @@ func (s *Store) Upsert(ctx context.Context, rec memory.Record, vector []float32)
 		"dims":           rec.Dims,
 		"conversationId": rec.ConversationID,
 		"linkedIds":      rec.LinkedIDs,
+		"dupCandidates":  rec.DupCandidates,
+		"notDuplicateOf": rec.NotDuplicateOf,
 	}, vector)
 }
 
@@ -313,6 +317,46 @@ func (s *Store) SetLinks(ctx context.Context, id string, links []string) error {
 	return nil
 }
 
+// SetNotDuplicateOf replaces a memory's notDuplicateOf list via a Weaviate merge
+// (PATCH), leaving the vector and all other properties untouched. Used by
+// DismissDuplicate to record the bidirectional "confirmed not a duplicate"
+// decision that the worker consults when recomputing candidates.
+func (s *Store) SetNotDuplicateOf(ctx context.Context, id string, ids []string) error {
+	if ids == nil {
+		ids = []string{}
+	}
+	err := s.client.Data().Updater().
+		WithMerge().
+		WithClassName(memory.ClassName).
+		WithID(id).
+		WithProperties(map[string]interface{}{"notDuplicateOf": ids}).
+		Do(ctx)
+	if err != nil {
+		return fmt.Errorf("set notDuplicateOf: %w", err)
+	}
+	return nil
+}
+
+// SetDupCandidates replaces a memory's dupCandidates list via a Weaviate merge
+// (PATCH), leaving the vector and other properties untouched. Used by
+// DismissDuplicate to drop a now-adjudicated pair from the review list
+// immediately, without waiting for the next reindex to recompute it.
+func (s *Store) SetDupCandidates(ctx context.Context, id string, ids []string) error {
+	if ids == nil {
+		ids = []string{}
+	}
+	err := s.client.Data().Updater().
+		WithMerge().
+		WithClassName(memory.ClassName).
+		WithID(id).
+		WithProperties(map[string]interface{}{"dupCandidates": ids}).
+		Do(ctx)
+	if err != nil {
+		return fmt.Errorf("set dupCandidates: %w", err)
+	}
+	return nil
+}
+
 // Ready reports whether Weaviate is up and serving. Used by Status/Doctor.
 func (s *Store) Ready(ctx context.Context) error {
 	ok, err := s.client.Misc().ReadyChecker().Do(ctx)
@@ -349,7 +393,7 @@ func (s *Store) Count(ctx context.Context, namespace string) (int, error) {
 }
 
 // memoryProps is the property set fetched for both search and list.
-var memoryProps = []string{"text", "namespace", "tags", "source", "createdAt", "model", "dims", "conversationId", "linkedIds"}
+var memoryProps = []string{"text", "namespace", "tags", "source", "createdAt", "model", "dims", "conversationId", "linkedIds", "dupCandidates", "notDuplicateOf"}
 
 // buildWhere combines exact namespace + conversationId filters with tag
 // filters: includeTags ("has ALL of these", ContainsAll) and anyTags ("has at
@@ -490,6 +534,49 @@ func (s *Store) List(ctx context.Context, opts ListOpts) ([]memory.Record, error
 	return excludeTagged(recs, func(r memory.Record) []string { return r.Tags }, opts.ExcludeTags), nil
 }
 
+// ListWithCandidates returns memories that the worker flagged with at least one
+// duplicate candidate, newest-first. It is the read side of the heuristic dedup:
+// the review tool / UI surface these so a human or the agent can adjudicate.
+//
+// It scans the namespace and filters for a non-empty dupCandidates in Go rather
+// than with a Weaviate IsNull filter, which would require the class to be created
+// with indexNullState=true (not the case for existing deployments). A personal
+// store is small enough that scanning is cheap — the same assumption Count and
+// reindex already rely on. No vector query, so results carry no distance.
+func (s *Store) ListWithCandidates(ctx context.Context, namespace string, limit int) ([]memory.Record, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+
+	query := s.client.Experimental().Search().
+		WithCollection(memory.ClassName).
+		WithProperties(memoryProps...).
+		WithMetadata(&graphql.Metadata{ID: true}).
+		WithSort(graphql.Sort{Path: []string{"createdAt"}, Order: graphql.Desc}).
+		WithLimit(allCount)
+	if where := buildWhere(namespace, "", nil, nil); where != nil {
+		query = query.WithWhere(where)
+	}
+
+	res, err := query.Do(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list candidates query: %w", err)
+	}
+
+	recs := make([]memory.Record, 0)
+	for _, r := range res {
+		rec := resultToRecord(r)
+		if len(rec.DupCandidates) == 0 {
+			continue
+		}
+		recs = append(recs, rec)
+		if len(recs) >= limit {
+			break
+		}
+	}
+	return recs, nil
+}
+
 // summaryProps is the property set fetched when reading conversation summaries.
 var summaryProps = []string{"text", "conversationId", "namespace", "source", "createdAt", "updatedAt", "model", "dims"}
 
@@ -587,6 +674,8 @@ func resultToRecord(r graphql.SearchResult) memory.Record {
 		Dims:           propInt(p, "dims"),
 		ConversationID: propString(p, "conversationId"),
 		LinkedIDs:      propStrings(p, "linkedIds"),
+		DupCandidates:  propStrings(p, "dupCandidates"),
+		NotDuplicateOf: propStrings(p, "notDuplicateOf"),
 	}
 	if ca := propString(p, "createdAt"); ca != "" {
 		rec.CreatedAt, _ = time.Parse(time.RFC3339, ca)
@@ -629,6 +718,8 @@ func objectToRecord(id string, raw models.PropertySchema) memory.Record {
 		Dims:           restInt(p, "dims"),
 		ConversationID: restString(p, "conversationId"),
 		LinkedIDs:      restStrings(p, "linkedIds"),
+		DupCandidates:  restStrings(p, "dupCandidates"),
+		NotDuplicateOf: restStrings(p, "notDuplicateOf"),
 	}
 	if ca := restString(p, "createdAt"); ca != "" {
 		rec.CreatedAt, _ = time.Parse(time.RFC3339, ca)

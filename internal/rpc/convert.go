@@ -20,6 +20,8 @@ func recordToProto(r memory.Record) *cortexv1.Memory {
 		Dims:           int32(r.Dims),
 		ConversationId: r.ConversationID,
 		LinkedIds:      r.LinkedIDs,
+		DupCandidates:  r.DupCandidates,
+		NotDuplicateOf: r.NotDuplicateOf,
 	}
 }
 

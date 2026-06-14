@@ -43,6 +43,12 @@ service MemoryService {
   rpc Link(LinkRequest) returns (LinkResponse) {}
   // Unlink removes the bidirectional link between two memories.
   rpc Unlink(UnlinkRequest) returns (UnlinkResponse) {}
+  // ListDuplicateCandidates returns memories the worker flagged as likely
+  // duplicates, each with the resolved candidate memories, for human/agent review.
+  rpc ListDuplicateCandidates(ListDuplicateCandidatesRequest) returns (ListDuplicateCandidatesResponse) {}
+  // DismissDuplicate records that two memories are confirmed NOT duplicates, so
+  // the worker stops re-flagging the pair on future re-indexing.
+  rpc DismissDuplicate(DismissDuplicateRequest) returns (DismissDuplicateResponse) {}
 }
 
 // Memory is one stored memory. Only `text` is ever embedded; every other field
@@ -58,6 +64,15 @@ message Memory {
   int32 dims = 8;   // vector dimension (provenance)
   string conversation_id = 9; // client session that created the memory (provenance)
   repeated string linked_ids = 10; // ids of memories explicitly linked to this one (bidirectional)
+  // dup_candidates are ids of memories the worker flagged as likely duplicates of
+  // this one at index time (vector distance within DEDUP_DISTANCE). A heuristic
+  // review hint, NOT a confirmed link — the worker never deletes/merges on its
+  // own; a human or the agent adjudicates via review_candidates / the graph UI.
+  repeated string dup_candidates = 11;
+  // not_duplicate_of are ids a reviewer confirmed are NOT duplicates of this
+  // memory (bidirectional). The worker excludes these when recomputing
+  // dup_candidates, so a dismissed pair is never re-flagged.
+  repeated string not_duplicate_of = 12;
 }
 
 message SaveRequest {
@@ -262,4 +277,32 @@ message UnlinkRequest {
 
 message UnlinkResponse {
   repeated string linked_ids = 1; // remaining link set of `id`
+}
+
+message ListDuplicateCandidatesRequest {
+  string namespace = 1; // "" = server default, "*" = all namespaces
+  int32 limit = 2;      // max flagged memories to return (default 50)
+}
+
+// DuplicateGroup is one flagged memory together with the existing memories it
+// resembles. The candidates are resolved to full memories (text included) so a
+// reviewer can judge without a second lookup; a candidate id that no longer
+// exists (deleted since flagging) is omitted.
+message DuplicateGroup {
+  Memory memory = 1;             // the flagged memory
+  repeated Memory candidates = 2; // the memories it is a likely duplicate of
+}
+
+message ListDuplicateCandidatesResponse {
+  repeated DuplicateGroup groups = 1;
+}
+
+message DismissDuplicateRequest {
+  string id = 1;        // one memory
+  string target_id = 2; // the other memory it is confirmed NOT a duplicate of
+}
+
+message DismissDuplicateResponse {
+  // not_duplicate_of is the updated confirmed-not-duplicate set of `id`.
+  repeated string not_duplicate_of = 1;
 }

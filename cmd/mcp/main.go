@@ -227,6 +227,29 @@ func main() {
 			"not just isolated facts.",
 	}, d.recall)
 
+	mcp.AddTool(server, &mcp.Tool{
+		Name: "cortex_review_candidates",
+		Description: "Review likely-duplicate memories the system flagged automatically. Returns groups, each " +
+			"a flagged memory plus the existing memories it closely resembles (by vector similarity). These are " +
+			"HEURISTIC hints, NOT confirmed duplicates — the system never deletes or merges on its own. Read each " +
+			"group and decide PER PAIR: if two memories say the same thing, delete the redundant one with " +
+			"cortex_memory_delete (keep the richer/newer wording); if one SUPERSEDES the other (e.g. a value " +
+			"changed), delete the stale one; if they are merely related but distinct, leave them and optionally " +
+			"connect them with cortex_memory_link; if they are genuinely separate, call cortex_dismiss_duplicate so " +
+			"the pair is never flagged again. Use this when " +
+			"the user asks to clean up / deduplicate their memory, or proactively at the start of a session to keep " +
+			"the store tidy. Scope with namespace (omit for default, \"*\" for all).",
+	}, d.reviewCandidates)
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name: "cortex_dismiss_duplicate",
+		Description: "Record that two memories are NOT duplicates of each other, so the system stops flagging the " +
+			"pair in cortex_review_candidates on future re-indexing. Use this when reviewing duplicate candidates " +
+			"and you decide two flagged memories are genuinely distinct (related but not redundant). The decision " +
+			"is bidirectional and durable. Pass the two memory IDs (as returned by cortex_review_candidates). This " +
+			"does NOT delete or link anything — it only suppresses the false-positive duplicate flag.",
+	}, d.dismissDuplicate)
+
 	log.Info("cortex mcp server starting on stdio", "namespace", defaultNS, "server", serverURL)
 	if err := server.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
 		log.Error("server run", "err", err)
@@ -511,6 +534,98 @@ func (d *deps) recall(ctx context.Context, _ *mcp.CallToolRequest, in RecallIn) 
 		fmt.Fprintf(&b, "%d. [%s] %s\n", i+1, f.GetNamespace(), f.GetText())
 	}
 	return text2result(strings.TrimSpace(b.String())), out, nil
+}
+
+// ---- review_candidates ----
+
+type ReviewIn struct {
+	Namespace string `json:"namespace,omitempty" jsonschema:"optional namespace filter; omit for default, pass \"*\" for all namespaces"`
+	Limit     int    `json:"limit,omitempty" jsonschema:"max flagged memories to return (default 50)"`
+}
+
+type CandidateGroup struct {
+	Memory     SearchHit   `json:"memory"`
+	Candidates []SearchHit `json:"candidates"`
+}
+
+type ReviewOut struct {
+	Groups []CandidateGroup `json:"groups"`
+}
+
+func memToHit(m *cortexv1.Memory) SearchHit {
+	return SearchHit{
+		ID:        m.GetId(),
+		Text:      m.GetText(),
+		Namespace: m.GetNamespace(),
+		Tags:      m.GetTags(),
+		Model:     m.GetModel(),
+		LinkedIDs: m.GetLinkedIds(),
+	}
+}
+
+func (d *deps) reviewCandidates(ctx context.Context, _ *mcp.CallToolRequest, in ReviewIn) (*mcp.CallToolResult, ReviewOut, error) {
+	resp, err := d.client.ListDuplicateCandidates(ctx, connect.NewRequest(&cortexv1.ListDuplicateCandidatesRequest{
+		Namespace: in.Namespace,
+		Limit:     int32(in.Limit),
+	}))
+	if err != nil {
+		return nil, ReviewOut{}, err
+	}
+
+	groups := resp.Msg.GetGroups()
+	if len(groups) == 0 {
+		return text2result("No duplicate candidates flagged."), ReviewOut{Groups: []CandidateGroup{}}, nil
+	}
+
+	out := ReviewOut{Groups: make([]CandidateGroup, 0, len(groups))}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d flagged memor%s with duplicate candidates:\n", len(groups), plural(len(groups), "y", "ies"))
+	for i, g := range groups {
+		m := g.GetMemory()
+		cg := CandidateGroup{Memory: memToHit(m), Candidates: make([]SearchHit, 0, len(g.GetCandidates()))}
+		fmt.Fprintf(&b, "\n%d. [%s] (%s) %s\n", i+1, m.GetNamespace(), m.GetId(), m.GetText())
+		for _, c := range g.GetCandidates() {
+			cg.Candidates = append(cg.Candidates, memToHit(c))
+			fmt.Fprintf(&b, "   ~ likely duplicate of (%s) %s\n", c.GetId(), c.GetText())
+		}
+		out.Groups = append(out.Groups, cg)
+	}
+	return text2result(strings.TrimSpace(b.String())), out, nil
+}
+
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
+}
+
+// ---- dismiss_duplicate ----
+
+type DismissIn struct {
+	ID       string `json:"id" jsonschema:"first memory ID (from cortex_review_candidates)"`
+	TargetID string `json:"targetId" jsonschema:"second memory ID; confirmed NOT a duplicate of the first"`
+}
+
+type DismissOut struct {
+	NotDuplicateOf []string `json:"notDuplicateOf" jsonschema:"updated confirmed-not-duplicate set of the first memory"`
+}
+
+func (d *deps) dismissDuplicate(ctx context.Context, _ *mcp.CallToolRequest, in DismissIn) (*mcp.CallToolResult, DismissOut, error) {
+	id := strings.TrimSpace(in.ID)
+	target := strings.TrimSpace(in.TargetID)
+	if id == "" || target == "" {
+		return nil, DismissOut{}, fmt.Errorf("id and targetId must not be empty")
+	}
+	resp, err := d.client.DismissDuplicate(ctx, connect.NewRequest(&cortexv1.DismissDuplicateRequest{
+		Id:       id,
+		TargetId: target,
+	}))
+	if err != nil {
+		return nil, DismissOut{}, err
+	}
+	out := DismissOut{NotDuplicateOf: resp.Msg.GetNotDuplicateOf()}
+	return text2result(fmt.Sprintf("Marked %s and %s as not duplicates; they won't be flagged again.", id, target)), out, nil
 }
 
 func text2result(msg string) *mcp.CallToolResult {

@@ -46,6 +46,12 @@ services:
       OLLAMA_MODEL: qwen3-embedding:0.6b
       WEAVIATE_HOST: weaviate:8080
       WEAVIATE_GRPC_HOST: weaviate:50051
+      # Heuristic dedup: flag existing memories within this cosine distance of a
+      # newly indexed one as duplicate candidates (review via `cortex candidates`,
+      # the cortex_review_candidates MCP tool, or the graph UI). 0 disables it.
+      # Model-specific — qwen3 distances are compressed, so start tight (~0.1) and
+      # tune against your data. The worker never deletes/merges on its own.
+      DEDUP_DISTANCE: ${DEDUP_DISTANCE:-0}
     depends_on:
       - nats
       - weaviate

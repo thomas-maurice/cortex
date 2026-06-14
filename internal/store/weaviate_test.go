@@ -47,6 +47,12 @@ func TestResultToRecord(t *testing.T) {
 			"tags": &pb.ListValue{Kind: &pb.ListValue_TextValues{
 				TextValues: &pb.TextValues{Values: []string{"pref", "lang"}},
 			}},
+			"dupCandidates": &pb.ListValue{Kind: &pb.ListValue_TextValues{
+				TextValues: &pb.TextValues{Values: []string{"dup-1", "dup-2"}},
+			}},
+			"notDuplicateOf": &pb.ListValue{Kind: &pb.ListValue_TextValues{
+				TextValues: &pb.TextValues{Values: []string{"keep-1"}},
+			}},
 		},
 		Metadata: graphql.MetadataResult{Distance: 0.25},
 	}
@@ -59,6 +65,12 @@ func TestResultToRecord(t *testing.T) {
 	assert.Equal(t, 1024, rec.Dims)
 	assert.Equal(t, "sess-42", rec.ConversationID)
 	assert.Equal(t, 2026, rec.CreatedAt.Year())
+	// dupCandidates must decode like any other text[] property — the review tool
+	// and graph UI depend on it surviving the round-trip from Weaviate.
+	assert.Equal(t, []string{"dup-1", "dup-2"}, rec.DupCandidates)
+	// notDuplicateOf must survive the round-trip too: it is what the worker reads
+	// (threaded through reindex) to avoid re-flagging a dismissed pair.
+	assert.Equal(t, []string{"keep-1"}, rec.NotDuplicateOf)
 }
 
 // buildWhere encodes the tag-filter semantics that callers depend on:

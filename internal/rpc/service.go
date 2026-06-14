@@ -484,6 +484,78 @@ func (s *Service) Unlink(ctx context.Context, req *connect.Request[cortexv1.Unli
 	return connect.NewResponse(&cortexv1.UnlinkResponse{LinkedIds: aLinks}), nil
 }
 
+// ListDuplicateCandidates returns memories the worker flagged as likely
+// duplicates, each resolved to the full candidate memories it resembles, for
+// human/agent review. Candidates deleted since flagging are dropped; a group
+// whose candidates have all vanished is omitted entirely.
+func (s *Service) ListDuplicateCandidates(ctx context.Context, req *connect.Request[cortexv1.ListDuplicateCandidatesRequest]) (*connect.Response[cortexv1.ListDuplicateCandidatesResponse], error) {
+	flagged, err := s.store.ListWithCandidates(ctx,
+		resolveNamespace(req.Msg.GetNamespace(), s.cfg.DefaultNamespace),
+		int(req.Msg.GetLimit()))
+	if err != nil {
+		return nil, err
+	}
+
+	out := &cortexv1.ListDuplicateCandidatesResponse{Groups: make([]*cortexv1.DuplicateGroup, 0, len(flagged))}
+	for _, rec := range flagged {
+		cands := make([]*cortexv1.Memory, 0, len(rec.DupCandidates))
+		for _, id := range rec.DupCandidates {
+			c, found, err := s.store.Get(ctx, id)
+			if err != nil {
+				s.log.Warn("resolve dup candidate failed, skipping", "id", rec.ID, "candidate", id, "err", err)
+				continue
+			}
+			if !found {
+				continue // deleted since it was flagged
+			}
+			cands = append(cands, recordToProto(c))
+		}
+		if len(cands) == 0 {
+			continue
+		}
+		out.Groups = append(out.Groups, &cortexv1.DuplicateGroup{
+			Memory:     recordToProto(rec),
+			Candidates: cands,
+		})
+	}
+	return connect.NewResponse(out), nil
+}
+
+// DismissDuplicate records that two memories are confirmed NOT duplicates of
+// each other. It writes the decision bidirectionally (so neither side re-flags
+// the other when the worker recomputes candidates) and strips each from the
+// other's current dupCandidates so the pair leaves the review list immediately.
+// Shares linkMu with Link/Unlink to serialize the read-modify-write.
+func (s *Service) DismissDuplicate(ctx context.Context, req *connect.Request[cortexv1.DismissDuplicateRequest]) (*connect.Response[cortexv1.DismissDuplicateResponse], error) {
+	s.linkMu.Lock()
+	defer s.linkMu.Unlock()
+
+	a, b, err := s.linkEndpoints(ctx, req.Msg.GetId(), req.Msg.GetTargetId())
+	if err != nil {
+		return nil, err
+	}
+
+	aNot := addUnique(a.NotDuplicateOf, b.ID)
+	bNot := addUnique(b.NotDuplicateOf, a.ID)
+	if err := s.store.SetNotDuplicateOf(ctx, a.ID, aNot); err != nil {
+		return nil, fmt.Errorf("dismiss %s<->%s: updating %s failed (retry): %w", a.ID, b.ID, a.ID, err)
+	}
+	if err := s.store.SetNotDuplicateOf(ctx, b.ID, bNot); err != nil {
+		return nil, fmt.Errorf("dismiss %s<->%s: updating %s failed (graph may be left asymmetric, retry): %w", a.ID, b.ID, b.ID, err)
+	}
+
+	// Best-effort immediate cleanup of the review list; the durable guarantee is
+	// notDuplicateOf above, which the worker honours on the next reindex.
+	if err := s.store.SetDupCandidates(ctx, a.ID, removeString(a.DupCandidates, b.ID)); err != nil {
+		s.log.Warn("dismiss: clearing dupCandidates failed", "id", a.ID, "err", err)
+	}
+	if err := s.store.SetDupCandidates(ctx, b.ID, removeString(b.DupCandidates, a.ID)); err != nil {
+		s.log.Warn("dismiss: clearing dupCandidates failed", "id", b.ID, "err", err)
+	}
+
+	return connect.NewResponse(&cortexv1.DismissDuplicateResponse{NotDuplicateOf: aNot}), nil
+}
+
 // linkEndpoints validates two distinct, existing memory ids and returns both
 // records (with their current link sets). Shared by Link and Unlink.
 func (s *Service) linkEndpoints(ctx context.Context, idA, idB string) (memory.Record, memory.Record, error) {

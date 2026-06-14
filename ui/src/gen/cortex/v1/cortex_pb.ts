@@ -103,6 +103,25 @@ export class Memory extends Message<Memory> {
    */
   linkedIds: string[] = [];
 
+  /**
+   * dup_candidates are ids of memories the worker flagged as likely duplicates of
+   * this one at index time (vector distance within DEDUP_DISTANCE). A heuristic
+   * review hint, NOT a confirmed link — the worker never deletes/merges on its
+   * own; a human or the agent adjudicates via review_candidates / the graph UI.
+   *
+   * @generated from field: repeated string dup_candidates = 11;
+   */
+  dupCandidates: string[] = [];
+
+  /**
+   * not_duplicate_of are ids a reviewer confirmed are NOT duplicates of this
+   * memory (bidirectional). The worker excludes these when recomputing
+   * dup_candidates, so a dismissed pair is never re-flagged.
+   *
+   * @generated from field: repeated string not_duplicate_of = 12;
+   */
+  notDuplicateOf: string[] = [];
+
   constructor(data?: PartialMessage<Memory>) {
     super();
     proto3.util.initPartial(data, this);
@@ -121,6 +140,8 @@ export class Memory extends Message<Memory> {
     { no: 8, name: "dims", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
     { no: 9, name: "conversation_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 10, name: "linked_ids", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
+    { no: 11, name: "dup_candidates", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
+    { no: 12, name: "not_duplicate_of", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): Memory {
@@ -1862,6 +1883,228 @@ export class UnlinkResponse extends Message<UnlinkResponse> {
 
   static equals(a: UnlinkResponse | PlainMessage<UnlinkResponse> | undefined, b: UnlinkResponse | PlainMessage<UnlinkResponse> | undefined): boolean {
     return proto3.util.equals(UnlinkResponse, a, b);
+  }
+}
+
+/**
+ * @generated from message cortex.v1.ListDuplicateCandidatesRequest
+ */
+export class ListDuplicateCandidatesRequest extends Message<ListDuplicateCandidatesRequest> {
+  /**
+   * "" = server default, "*" = all namespaces
+   *
+   * @generated from field: string namespace = 1;
+   */
+  namespace = "";
+
+  /**
+   * max flagged memories to return (default 50)
+   *
+   * @generated from field: int32 limit = 2;
+   */
+  limit = 0;
+
+  constructor(data?: PartialMessage<ListDuplicateCandidatesRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "cortex.v1.ListDuplicateCandidatesRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "namespace", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "limit", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListDuplicateCandidatesRequest {
+    return new ListDuplicateCandidatesRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ListDuplicateCandidatesRequest {
+    return new ListDuplicateCandidatesRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ListDuplicateCandidatesRequest {
+    return new ListDuplicateCandidatesRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ListDuplicateCandidatesRequest | PlainMessage<ListDuplicateCandidatesRequest> | undefined, b: ListDuplicateCandidatesRequest | PlainMessage<ListDuplicateCandidatesRequest> | undefined): boolean {
+    return proto3.util.equals(ListDuplicateCandidatesRequest, a, b);
+  }
+}
+
+/**
+ * DuplicateGroup is one flagged memory together with the existing memories it
+ * resembles. The candidates are resolved to full memories (text included) so a
+ * reviewer can judge without a second lookup; a candidate id that no longer
+ * exists (deleted since flagging) is omitted.
+ *
+ * @generated from message cortex.v1.DuplicateGroup
+ */
+export class DuplicateGroup extends Message<DuplicateGroup> {
+  /**
+   * the flagged memory
+   *
+   * @generated from field: cortex.v1.Memory memory = 1;
+   */
+  memory?: Memory;
+
+  /**
+   * the memories it is a likely duplicate of
+   *
+   * @generated from field: repeated cortex.v1.Memory candidates = 2;
+   */
+  candidates: Memory[] = [];
+
+  constructor(data?: PartialMessage<DuplicateGroup>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "cortex.v1.DuplicateGroup";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "memory", kind: "message", T: Memory },
+    { no: 2, name: "candidates", kind: "message", T: Memory, repeated: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): DuplicateGroup {
+    return new DuplicateGroup().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): DuplicateGroup {
+    return new DuplicateGroup().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): DuplicateGroup {
+    return new DuplicateGroup().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: DuplicateGroup | PlainMessage<DuplicateGroup> | undefined, b: DuplicateGroup | PlainMessage<DuplicateGroup> | undefined): boolean {
+    return proto3.util.equals(DuplicateGroup, a, b);
+  }
+}
+
+/**
+ * @generated from message cortex.v1.ListDuplicateCandidatesResponse
+ */
+export class ListDuplicateCandidatesResponse extends Message<ListDuplicateCandidatesResponse> {
+  /**
+   * @generated from field: repeated cortex.v1.DuplicateGroup groups = 1;
+   */
+  groups: DuplicateGroup[] = [];
+
+  constructor(data?: PartialMessage<ListDuplicateCandidatesResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "cortex.v1.ListDuplicateCandidatesResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "groups", kind: "message", T: DuplicateGroup, repeated: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListDuplicateCandidatesResponse {
+    return new ListDuplicateCandidatesResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ListDuplicateCandidatesResponse {
+    return new ListDuplicateCandidatesResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ListDuplicateCandidatesResponse {
+    return new ListDuplicateCandidatesResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ListDuplicateCandidatesResponse | PlainMessage<ListDuplicateCandidatesResponse> | undefined, b: ListDuplicateCandidatesResponse | PlainMessage<ListDuplicateCandidatesResponse> | undefined): boolean {
+    return proto3.util.equals(ListDuplicateCandidatesResponse, a, b);
+  }
+}
+
+/**
+ * @generated from message cortex.v1.DismissDuplicateRequest
+ */
+export class DismissDuplicateRequest extends Message<DismissDuplicateRequest> {
+  /**
+   * one memory
+   *
+   * @generated from field: string id = 1;
+   */
+  id = "";
+
+  /**
+   * the other memory it is confirmed NOT a duplicate of
+   *
+   * @generated from field: string target_id = 2;
+   */
+  targetId = "";
+
+  constructor(data?: PartialMessage<DismissDuplicateRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "cortex.v1.DismissDuplicateRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "target_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): DismissDuplicateRequest {
+    return new DismissDuplicateRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): DismissDuplicateRequest {
+    return new DismissDuplicateRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): DismissDuplicateRequest {
+    return new DismissDuplicateRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: DismissDuplicateRequest | PlainMessage<DismissDuplicateRequest> | undefined, b: DismissDuplicateRequest | PlainMessage<DismissDuplicateRequest> | undefined): boolean {
+    return proto3.util.equals(DismissDuplicateRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message cortex.v1.DismissDuplicateResponse
+ */
+export class DismissDuplicateResponse extends Message<DismissDuplicateResponse> {
+  /**
+   * not_duplicate_of is the updated confirmed-not-duplicate set of `id`.
+   *
+   * @generated from field: repeated string not_duplicate_of = 1;
+   */
+  notDuplicateOf: string[] = [];
+
+  constructor(data?: PartialMessage<DismissDuplicateResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "cortex.v1.DismissDuplicateResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "not_duplicate_of", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): DismissDuplicateResponse {
+    return new DismissDuplicateResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): DismissDuplicateResponse {
+    return new DismissDuplicateResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): DismissDuplicateResponse {
+    return new DismissDuplicateResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: DismissDuplicateResponse | PlainMessage<DismissDuplicateResponse> | undefined, b: DismissDuplicateResponse | PlainMessage<DismissDuplicateResponse> | undefined): boolean {
+    return proto3.util.equals(DismissDuplicateResponse, a, b);
   }
 }
 

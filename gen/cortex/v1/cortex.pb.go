@@ -88,6 +88,15 @@ type Memory struct {
 	Dims           int32                  `protobuf:"varint,8,opt,name=dims,proto3" json:"dims,omitempty"`                                          // vector dimension (provenance)
 	ConversationId string                 `protobuf:"bytes,9,opt,name=conversation_id,json=conversationId,proto3" json:"conversation_id,omitempty"` // client session that created the memory (provenance)
 	LinkedIds      []string               `protobuf:"bytes,10,rep,name=linked_ids,json=linkedIds,proto3" json:"linked_ids,omitempty"`               // ids of memories explicitly linked to this one (bidirectional)
+	// dup_candidates are ids of memories the worker flagged as likely duplicates of
+	// this one at index time (vector distance within DEDUP_DISTANCE). A heuristic
+	// review hint, NOT a confirmed link — the worker never deletes/merges on its
+	// own; a human or the agent adjudicates via review_candidates / the graph UI.
+	DupCandidates []string `protobuf:"bytes,11,rep,name=dup_candidates,json=dupCandidates,proto3" json:"dup_candidates,omitempty"`
+	// not_duplicate_of are ids a reviewer confirmed are NOT duplicates of this
+	// memory (bidirectional). The worker excludes these when recomputing
+	// dup_candidates, so a dismissed pair is never re-flagged.
+	NotDuplicateOf []string `protobuf:"bytes,12,rep,name=not_duplicate_of,json=notDuplicateOf,proto3" json:"not_duplicate_of,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -188,6 +197,20 @@ func (x *Memory) GetConversationId() string {
 func (x *Memory) GetLinkedIds() []string {
 	if x != nil {
 		return x.LinkedIds
+	}
+	return nil
+}
+
+func (x *Memory) GetDupCandidates() []string {
+	if x != nil {
+		return x.DupCandidates
+	}
+	return nil
+}
+
+func (x *Memory) GetNotDuplicateOf() []string {
+	if x != nil {
+		return x.NotDuplicateOf
 	}
 	return nil
 }
@@ -2159,11 +2182,260 @@ func (x *UnlinkResponse) GetLinkedIds() []string {
 	return nil
 }
 
+type ListDuplicateCandidatesRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Namespace     string                 `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"` // "" = server default, "*" = all namespaces
+	Limit         int32                  `protobuf:"varint,2,opt,name=limit,proto3" json:"limit,omitempty"`        // max flagged memories to return (default 50)
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListDuplicateCandidatesRequest) Reset() {
+	*x = ListDuplicateCandidatesRequest{}
+	mi := &file_cortex_v1_cortex_proto_msgTypes[35]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListDuplicateCandidatesRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListDuplicateCandidatesRequest) ProtoMessage() {}
+
+func (x *ListDuplicateCandidatesRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_cortex_v1_cortex_proto_msgTypes[35]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListDuplicateCandidatesRequest.ProtoReflect.Descriptor instead.
+func (*ListDuplicateCandidatesRequest) Descriptor() ([]byte, []int) {
+	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{35}
+}
+
+func (x *ListDuplicateCandidatesRequest) GetNamespace() string {
+	if x != nil {
+		return x.Namespace
+	}
+	return ""
+}
+
+func (x *ListDuplicateCandidatesRequest) GetLimit() int32 {
+	if x != nil {
+		return x.Limit
+	}
+	return 0
+}
+
+// DuplicateGroup is one flagged memory together with the existing memories it
+// resembles. The candidates are resolved to full memories (text included) so a
+// reviewer can judge without a second lookup; a candidate id that no longer
+// exists (deleted since flagging) is omitted.
+type DuplicateGroup struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Memory        *Memory                `protobuf:"bytes,1,opt,name=memory,proto3" json:"memory,omitempty"`         // the flagged memory
+	Candidates    []*Memory              `protobuf:"bytes,2,rep,name=candidates,proto3" json:"candidates,omitempty"` // the memories it is a likely duplicate of
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DuplicateGroup) Reset() {
+	*x = DuplicateGroup{}
+	mi := &file_cortex_v1_cortex_proto_msgTypes[36]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DuplicateGroup) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DuplicateGroup) ProtoMessage() {}
+
+func (x *DuplicateGroup) ProtoReflect() protoreflect.Message {
+	mi := &file_cortex_v1_cortex_proto_msgTypes[36]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DuplicateGroup.ProtoReflect.Descriptor instead.
+func (*DuplicateGroup) Descriptor() ([]byte, []int) {
+	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{36}
+}
+
+func (x *DuplicateGroup) GetMemory() *Memory {
+	if x != nil {
+		return x.Memory
+	}
+	return nil
+}
+
+func (x *DuplicateGroup) GetCandidates() []*Memory {
+	if x != nil {
+		return x.Candidates
+	}
+	return nil
+}
+
+type ListDuplicateCandidatesResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Groups        []*DuplicateGroup      `protobuf:"bytes,1,rep,name=groups,proto3" json:"groups,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListDuplicateCandidatesResponse) Reset() {
+	*x = ListDuplicateCandidatesResponse{}
+	mi := &file_cortex_v1_cortex_proto_msgTypes[37]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListDuplicateCandidatesResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListDuplicateCandidatesResponse) ProtoMessage() {}
+
+func (x *ListDuplicateCandidatesResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_cortex_v1_cortex_proto_msgTypes[37]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListDuplicateCandidatesResponse.ProtoReflect.Descriptor instead.
+func (*ListDuplicateCandidatesResponse) Descriptor() ([]byte, []int) {
+	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{37}
+}
+
+func (x *ListDuplicateCandidatesResponse) GetGroups() []*DuplicateGroup {
+	if x != nil {
+		return x.Groups
+	}
+	return nil
+}
+
+type DismissDuplicateRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`                             // one memory
+	TargetId      string                 `protobuf:"bytes,2,opt,name=target_id,json=targetId,proto3" json:"target_id,omitempty"` // the other memory it is confirmed NOT a duplicate of
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DismissDuplicateRequest) Reset() {
+	*x = DismissDuplicateRequest{}
+	mi := &file_cortex_v1_cortex_proto_msgTypes[38]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DismissDuplicateRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DismissDuplicateRequest) ProtoMessage() {}
+
+func (x *DismissDuplicateRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_cortex_v1_cortex_proto_msgTypes[38]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DismissDuplicateRequest.ProtoReflect.Descriptor instead.
+func (*DismissDuplicateRequest) Descriptor() ([]byte, []int) {
+	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{38}
+}
+
+func (x *DismissDuplicateRequest) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *DismissDuplicateRequest) GetTargetId() string {
+	if x != nil {
+		return x.TargetId
+	}
+	return ""
+}
+
+type DismissDuplicateResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// not_duplicate_of is the updated confirmed-not-duplicate set of `id`.
+	NotDuplicateOf []string `protobuf:"bytes,1,rep,name=not_duplicate_of,json=notDuplicateOf,proto3" json:"not_duplicate_of,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *DismissDuplicateResponse) Reset() {
+	*x = DismissDuplicateResponse{}
+	mi := &file_cortex_v1_cortex_proto_msgTypes[39]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DismissDuplicateResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DismissDuplicateResponse) ProtoMessage() {}
+
+func (x *DismissDuplicateResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_cortex_v1_cortex_proto_msgTypes[39]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DismissDuplicateResponse.ProtoReflect.Descriptor instead.
+func (*DismissDuplicateResponse) Descriptor() ([]byte, []int) {
+	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{39}
+}
+
+func (x *DismissDuplicateResponse) GetNotDuplicateOf() []string {
+	if x != nil {
+		return x.NotDuplicateOf
+	}
+	return nil
+}
+
 var File_cortex_v1_cortex_proto protoreflect.FileDescriptor
 
 const file_cortex_v1_cortex_proto_rawDesc = "" +
 	"\n" +
-	"\x16cortex/v1/cortex.proto\x12\tcortex.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xa3\x02\n" +
+	"\x16cortex/v1/cortex.proto\x12\tcortex.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xf4\x02\n" +
 	"\x06Memory\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04text\x18\x02 \x01(\tR\x04text\x12\x1c\n" +
@@ -2177,7 +2449,9 @@ const file_cortex_v1_cortex_proto_rawDesc = "" +
 	"\x0fconversation_id\x18\t \x01(\tR\x0econversationId\x12\x1d\n" +
 	"\n" +
 	"linked_ids\x18\n" +
-	" \x03(\tR\tlinkedIds\"\xad\x01\n" +
+	" \x03(\tR\tlinkedIds\x12%\n" +
+	"\x0edup_candidates\x18\v \x03(\tR\rdupCandidates\x12(\n" +
+	"\x10not_duplicate_of\x18\f \x03(\tR\x0enotDuplicateOf\"\xad\x01\n" +
 	"\vSaveRequest\x12\x12\n" +
 	"\x04text\x18\x01 \x01(\tR\x04text\x12\x1c\n" +
 	"\tnamespace\x18\x02 \x01(\tR\tnamespace\x12\x12\n" +
@@ -2313,13 +2587,28 @@ const file_cortex_v1_cortex_proto_rawDesc = "" +
 	"\ttarget_id\x18\x02 \x01(\tR\btargetId\"/\n" +
 	"\x0eUnlinkResponse\x12\x1d\n" +
 	"\n" +
-	"linked_ids\x18\x01 \x03(\tR\tlinkedIds*o\n" +
+	"linked_ids\x18\x01 \x03(\tR\tlinkedIds\"T\n" +
+	"\x1eListDuplicateCandidatesRequest\x12\x1c\n" +
+	"\tnamespace\x18\x01 \x01(\tR\tnamespace\x12\x14\n" +
+	"\x05limit\x18\x02 \x01(\x05R\x05limit\"n\n" +
+	"\x0eDuplicateGroup\x12)\n" +
+	"\x06memory\x18\x01 \x01(\v2\x11.cortex.v1.MemoryR\x06memory\x121\n" +
+	"\n" +
+	"candidates\x18\x02 \x03(\v2\x11.cortex.v1.MemoryR\n" +
+	"candidates\"T\n" +
+	"\x1fListDuplicateCandidatesResponse\x121\n" +
+	"\x06groups\x18\x01 \x03(\v2\x19.cortex.v1.DuplicateGroupR\x06groups\"F\n" +
+	"\x17DismissDuplicateRequest\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
+	"\ttarget_id\x18\x02 \x01(\tR\btargetId\"D\n" +
+	"\x18DismissDuplicateResponse\x12(\n" +
+	"\x10not_duplicate_of\x18\x01 \x03(\tR\x0enotDuplicateOf*o\n" +
 	"\n" +
 	"DeadAction\x12\x1b\n" +
 	"\x17DEAD_ACTION_UNSPECIFIED\x10\x00\x12\x14\n" +
 	"\x10DEAD_ACTION_LIST\x10\x01\x12\x17\n" +
 	"\x13DEAD_ACTION_REQUEUE\x10\x02\x12\x15\n" +
-	"\x11DEAD_ACTION_PURGE\x10\x032\xa6\b\n" +
+	"\x11DEAD_ACTION_PURGE\x10\x032\xf9\t\n" +
 	"\rMemoryService\x129\n" +
 	"\x04Save\x12\x16.cortex.v1.SaveRequest\x1a\x17.cortex.v1.SaveResponse\"\x00\x12?\n" +
 	"\x06Search\x12\x18.cortex.v1.SearchRequest\x1a\x19.cortex.v1.SearchResponse\"\x00\x129\n" +
@@ -2336,7 +2625,9 @@ const file_cortex_v1_cortex_proto_rawDesc = "" +
 	"\rRecallSession\x12\x1f.cortex.v1.RecallSessionRequest\x1a .cortex.v1.RecallSessionResponse\"\x00\x12T\n" +
 	"\rListSummaries\x12\x1f.cortex.v1.ListSummariesRequest\x1a .cortex.v1.ListSummariesResponse\"\x00\x129\n" +
 	"\x04Link\x12\x16.cortex.v1.LinkRequest\x1a\x17.cortex.v1.LinkResponse\"\x00\x12?\n" +
-	"\x06Unlink\x12\x18.cortex.v1.UnlinkRequest\x1a\x19.cortex.v1.UnlinkResponse\"\x00B9Z7github.com/thomas-maurice/cortex/gen/cortex/v1;cortexv1b\x06proto3"
+	"\x06Unlink\x12\x18.cortex.v1.UnlinkRequest\x1a\x19.cortex.v1.UnlinkResponse\"\x00\x12r\n" +
+	"\x17ListDuplicateCandidates\x12).cortex.v1.ListDuplicateCandidatesRequest\x1a*.cortex.v1.ListDuplicateCandidatesResponse\"\x00\x12]\n" +
+	"\x10DismissDuplicate\x12\".cortex.v1.DismissDuplicateRequest\x1a#.cortex.v1.DismissDuplicateResponse\"\x00B9Z7github.com/thomas-maurice/cortex/gen/cortex/v1;cortexv1b\x06proto3"
 
 var (
 	file_cortex_v1_cortex_proto_rawDescOnce sync.Once
@@ -2351,96 +2642,108 @@ func file_cortex_v1_cortex_proto_rawDescGZIP() []byte {
 }
 
 var file_cortex_v1_cortex_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_cortex_v1_cortex_proto_msgTypes = make([]protoimpl.MessageInfo, 35)
+var file_cortex_v1_cortex_proto_msgTypes = make([]protoimpl.MessageInfo, 40)
 var file_cortex_v1_cortex_proto_goTypes = []any{
-	(DeadAction)(0),                  // 0: cortex.v1.DeadAction
-	(*Memory)(nil),                   // 1: cortex.v1.Memory
-	(*SaveRequest)(nil),              // 2: cortex.v1.SaveRequest
-	(*SaveResponse)(nil),             // 3: cortex.v1.SaveResponse
-	(*SearchRequest)(nil),            // 4: cortex.v1.SearchRequest
-	(*Hit)(nil),                      // 5: cortex.v1.Hit
-	(*SearchResponse)(nil),           // 6: cortex.v1.SearchResponse
-	(*ListRequest)(nil),              // 7: cortex.v1.ListRequest
-	(*ListResponse)(nil),             // 8: cortex.v1.ListResponse
-	(*DeleteRequest)(nil),            // 9: cortex.v1.DeleteRequest
-	(*DeleteResponse)(nil),           // 10: cortex.v1.DeleteResponse
-	(*StatusRequest)(nil),            // 11: cortex.v1.StatusRequest
-	(*StatusResponse)(nil),           // 12: cortex.v1.StatusResponse
-	(*DoctorRequest)(nil),            // 13: cortex.v1.DoctorRequest
-	(*Check)(nil),                    // 14: cortex.v1.Check
-	(*DoctorResponse)(nil),           // 15: cortex.v1.DoctorResponse
-	(*ReindexRequest)(nil),           // 16: cortex.v1.ReindexRequest
-	(*ReindexResponse)(nil),          // 17: cortex.v1.ReindexResponse
-	(*DeadLetter)(nil),               // 18: cortex.v1.DeadLetter
-	(*DeadRequest)(nil),              // 19: cortex.v1.DeadRequest
-	(*DeadResponse)(nil),             // 20: cortex.v1.DeadResponse
-	(*IndexQueueRequest)(nil),        // 21: cortex.v1.IndexQueueRequest
-	(*IndexQueueResponse)(nil),       // 22: cortex.v1.IndexQueueResponse
-	(*PullModelRequest)(nil),         // 23: cortex.v1.PullModelRequest
-	(*PullModelResponse)(nil),        // 24: cortex.v1.PullModelResponse
-	(*ConversationSummary)(nil),      // 25: cortex.v1.ConversationSummary
-	(*SummarizeSessionRequest)(nil),  // 26: cortex.v1.SummarizeSessionRequest
-	(*SummarizeSessionResponse)(nil), // 27: cortex.v1.SummarizeSessionResponse
-	(*RecallSessionRequest)(nil),     // 28: cortex.v1.RecallSessionRequest
-	(*RecallSessionResponse)(nil),    // 29: cortex.v1.RecallSessionResponse
-	(*ListSummariesRequest)(nil),     // 30: cortex.v1.ListSummariesRequest
-	(*ListSummariesResponse)(nil),    // 31: cortex.v1.ListSummariesResponse
-	(*LinkRequest)(nil),              // 32: cortex.v1.LinkRequest
-	(*LinkResponse)(nil),             // 33: cortex.v1.LinkResponse
-	(*UnlinkRequest)(nil),            // 34: cortex.v1.UnlinkRequest
-	(*UnlinkResponse)(nil),           // 35: cortex.v1.UnlinkResponse
-	(*timestamppb.Timestamp)(nil),    // 36: google.protobuf.Timestamp
+	(DeadAction)(0),                         // 0: cortex.v1.DeadAction
+	(*Memory)(nil),                          // 1: cortex.v1.Memory
+	(*SaveRequest)(nil),                     // 2: cortex.v1.SaveRequest
+	(*SaveResponse)(nil),                    // 3: cortex.v1.SaveResponse
+	(*SearchRequest)(nil),                   // 4: cortex.v1.SearchRequest
+	(*Hit)(nil),                             // 5: cortex.v1.Hit
+	(*SearchResponse)(nil),                  // 6: cortex.v1.SearchResponse
+	(*ListRequest)(nil),                     // 7: cortex.v1.ListRequest
+	(*ListResponse)(nil),                    // 8: cortex.v1.ListResponse
+	(*DeleteRequest)(nil),                   // 9: cortex.v1.DeleteRequest
+	(*DeleteResponse)(nil),                  // 10: cortex.v1.DeleteResponse
+	(*StatusRequest)(nil),                   // 11: cortex.v1.StatusRequest
+	(*StatusResponse)(nil),                  // 12: cortex.v1.StatusResponse
+	(*DoctorRequest)(nil),                   // 13: cortex.v1.DoctorRequest
+	(*Check)(nil),                           // 14: cortex.v1.Check
+	(*DoctorResponse)(nil),                  // 15: cortex.v1.DoctorResponse
+	(*ReindexRequest)(nil),                  // 16: cortex.v1.ReindexRequest
+	(*ReindexResponse)(nil),                 // 17: cortex.v1.ReindexResponse
+	(*DeadLetter)(nil),                      // 18: cortex.v1.DeadLetter
+	(*DeadRequest)(nil),                     // 19: cortex.v1.DeadRequest
+	(*DeadResponse)(nil),                    // 20: cortex.v1.DeadResponse
+	(*IndexQueueRequest)(nil),               // 21: cortex.v1.IndexQueueRequest
+	(*IndexQueueResponse)(nil),              // 22: cortex.v1.IndexQueueResponse
+	(*PullModelRequest)(nil),                // 23: cortex.v1.PullModelRequest
+	(*PullModelResponse)(nil),               // 24: cortex.v1.PullModelResponse
+	(*ConversationSummary)(nil),             // 25: cortex.v1.ConversationSummary
+	(*SummarizeSessionRequest)(nil),         // 26: cortex.v1.SummarizeSessionRequest
+	(*SummarizeSessionResponse)(nil),        // 27: cortex.v1.SummarizeSessionResponse
+	(*RecallSessionRequest)(nil),            // 28: cortex.v1.RecallSessionRequest
+	(*RecallSessionResponse)(nil),           // 29: cortex.v1.RecallSessionResponse
+	(*ListSummariesRequest)(nil),            // 30: cortex.v1.ListSummariesRequest
+	(*ListSummariesResponse)(nil),           // 31: cortex.v1.ListSummariesResponse
+	(*LinkRequest)(nil),                     // 32: cortex.v1.LinkRequest
+	(*LinkResponse)(nil),                    // 33: cortex.v1.LinkResponse
+	(*UnlinkRequest)(nil),                   // 34: cortex.v1.UnlinkRequest
+	(*UnlinkResponse)(nil),                  // 35: cortex.v1.UnlinkResponse
+	(*ListDuplicateCandidatesRequest)(nil),  // 36: cortex.v1.ListDuplicateCandidatesRequest
+	(*DuplicateGroup)(nil),                  // 37: cortex.v1.DuplicateGroup
+	(*ListDuplicateCandidatesResponse)(nil), // 38: cortex.v1.ListDuplicateCandidatesResponse
+	(*DismissDuplicateRequest)(nil),         // 39: cortex.v1.DismissDuplicateRequest
+	(*DismissDuplicateResponse)(nil),        // 40: cortex.v1.DismissDuplicateResponse
+	(*timestamppb.Timestamp)(nil),           // 41: google.protobuf.Timestamp
 }
 var file_cortex_v1_cortex_proto_depIdxs = []int32{
-	36, // 0: cortex.v1.Memory.created_at:type_name -> google.protobuf.Timestamp
+	41, // 0: cortex.v1.Memory.created_at:type_name -> google.protobuf.Timestamp
 	1,  // 1: cortex.v1.Hit.memory:type_name -> cortex.v1.Memory
 	5,  // 2: cortex.v1.SearchResponse.hits:type_name -> cortex.v1.Hit
 	1,  // 3: cortex.v1.ListResponse.memories:type_name -> cortex.v1.Memory
 	14, // 4: cortex.v1.DoctorResponse.checks:type_name -> cortex.v1.Check
 	1,  // 5: cortex.v1.DeadLetter.record:type_name -> cortex.v1.Memory
-	36, // 6: cortex.v1.DeadLetter.failed_at:type_name -> google.protobuf.Timestamp
+	41, // 6: cortex.v1.DeadLetter.failed_at:type_name -> google.protobuf.Timestamp
 	0,  // 7: cortex.v1.DeadRequest.action:type_name -> cortex.v1.DeadAction
 	18, // 8: cortex.v1.DeadResponse.dead_letters:type_name -> cortex.v1.DeadLetter
-	36, // 9: cortex.v1.ConversationSummary.created_at:type_name -> google.protobuf.Timestamp
-	36, // 10: cortex.v1.ConversationSummary.updated_at:type_name -> google.protobuf.Timestamp
+	41, // 9: cortex.v1.ConversationSummary.created_at:type_name -> google.protobuf.Timestamp
+	41, // 10: cortex.v1.ConversationSummary.updated_at:type_name -> google.protobuf.Timestamp
 	25, // 11: cortex.v1.RecallSessionResponse.summary:type_name -> cortex.v1.ConversationSummary
 	1,  // 12: cortex.v1.RecallSessionResponse.facts:type_name -> cortex.v1.Memory
 	25, // 13: cortex.v1.ListSummariesResponse.summaries:type_name -> cortex.v1.ConversationSummary
-	2,  // 14: cortex.v1.MemoryService.Save:input_type -> cortex.v1.SaveRequest
-	4,  // 15: cortex.v1.MemoryService.Search:input_type -> cortex.v1.SearchRequest
-	7,  // 16: cortex.v1.MemoryService.List:input_type -> cortex.v1.ListRequest
-	9,  // 17: cortex.v1.MemoryService.Delete:input_type -> cortex.v1.DeleteRequest
-	11, // 18: cortex.v1.MemoryService.Status:input_type -> cortex.v1.StatusRequest
-	13, // 19: cortex.v1.MemoryService.Doctor:input_type -> cortex.v1.DoctorRequest
-	16, // 20: cortex.v1.MemoryService.Reindex:input_type -> cortex.v1.ReindexRequest
-	19, // 21: cortex.v1.MemoryService.Dead:input_type -> cortex.v1.DeadRequest
-	21, // 22: cortex.v1.MemoryService.IndexQueue:input_type -> cortex.v1.IndexQueueRequest
-	23, // 23: cortex.v1.MemoryService.PullModel:input_type -> cortex.v1.PullModelRequest
-	26, // 24: cortex.v1.MemoryService.SummarizeSession:input_type -> cortex.v1.SummarizeSessionRequest
-	28, // 25: cortex.v1.MemoryService.RecallSession:input_type -> cortex.v1.RecallSessionRequest
-	30, // 26: cortex.v1.MemoryService.ListSummaries:input_type -> cortex.v1.ListSummariesRequest
-	32, // 27: cortex.v1.MemoryService.Link:input_type -> cortex.v1.LinkRequest
-	34, // 28: cortex.v1.MemoryService.Unlink:input_type -> cortex.v1.UnlinkRequest
-	3,  // 29: cortex.v1.MemoryService.Save:output_type -> cortex.v1.SaveResponse
-	6,  // 30: cortex.v1.MemoryService.Search:output_type -> cortex.v1.SearchResponse
-	8,  // 31: cortex.v1.MemoryService.List:output_type -> cortex.v1.ListResponse
-	10, // 32: cortex.v1.MemoryService.Delete:output_type -> cortex.v1.DeleteResponse
-	12, // 33: cortex.v1.MemoryService.Status:output_type -> cortex.v1.StatusResponse
-	15, // 34: cortex.v1.MemoryService.Doctor:output_type -> cortex.v1.DoctorResponse
-	17, // 35: cortex.v1.MemoryService.Reindex:output_type -> cortex.v1.ReindexResponse
-	20, // 36: cortex.v1.MemoryService.Dead:output_type -> cortex.v1.DeadResponse
-	22, // 37: cortex.v1.MemoryService.IndexQueue:output_type -> cortex.v1.IndexQueueResponse
-	24, // 38: cortex.v1.MemoryService.PullModel:output_type -> cortex.v1.PullModelResponse
-	27, // 39: cortex.v1.MemoryService.SummarizeSession:output_type -> cortex.v1.SummarizeSessionResponse
-	29, // 40: cortex.v1.MemoryService.RecallSession:output_type -> cortex.v1.RecallSessionResponse
-	31, // 41: cortex.v1.MemoryService.ListSummaries:output_type -> cortex.v1.ListSummariesResponse
-	33, // 42: cortex.v1.MemoryService.Link:output_type -> cortex.v1.LinkResponse
-	35, // 43: cortex.v1.MemoryService.Unlink:output_type -> cortex.v1.UnlinkResponse
-	29, // [29:44] is the sub-list for method output_type
-	14, // [14:29] is the sub-list for method input_type
-	14, // [14:14] is the sub-list for extension type_name
-	14, // [14:14] is the sub-list for extension extendee
-	0,  // [0:14] is the sub-list for field type_name
+	1,  // 14: cortex.v1.DuplicateGroup.memory:type_name -> cortex.v1.Memory
+	1,  // 15: cortex.v1.DuplicateGroup.candidates:type_name -> cortex.v1.Memory
+	37, // 16: cortex.v1.ListDuplicateCandidatesResponse.groups:type_name -> cortex.v1.DuplicateGroup
+	2,  // 17: cortex.v1.MemoryService.Save:input_type -> cortex.v1.SaveRequest
+	4,  // 18: cortex.v1.MemoryService.Search:input_type -> cortex.v1.SearchRequest
+	7,  // 19: cortex.v1.MemoryService.List:input_type -> cortex.v1.ListRequest
+	9,  // 20: cortex.v1.MemoryService.Delete:input_type -> cortex.v1.DeleteRequest
+	11, // 21: cortex.v1.MemoryService.Status:input_type -> cortex.v1.StatusRequest
+	13, // 22: cortex.v1.MemoryService.Doctor:input_type -> cortex.v1.DoctorRequest
+	16, // 23: cortex.v1.MemoryService.Reindex:input_type -> cortex.v1.ReindexRequest
+	19, // 24: cortex.v1.MemoryService.Dead:input_type -> cortex.v1.DeadRequest
+	21, // 25: cortex.v1.MemoryService.IndexQueue:input_type -> cortex.v1.IndexQueueRequest
+	23, // 26: cortex.v1.MemoryService.PullModel:input_type -> cortex.v1.PullModelRequest
+	26, // 27: cortex.v1.MemoryService.SummarizeSession:input_type -> cortex.v1.SummarizeSessionRequest
+	28, // 28: cortex.v1.MemoryService.RecallSession:input_type -> cortex.v1.RecallSessionRequest
+	30, // 29: cortex.v1.MemoryService.ListSummaries:input_type -> cortex.v1.ListSummariesRequest
+	32, // 30: cortex.v1.MemoryService.Link:input_type -> cortex.v1.LinkRequest
+	34, // 31: cortex.v1.MemoryService.Unlink:input_type -> cortex.v1.UnlinkRequest
+	36, // 32: cortex.v1.MemoryService.ListDuplicateCandidates:input_type -> cortex.v1.ListDuplicateCandidatesRequest
+	39, // 33: cortex.v1.MemoryService.DismissDuplicate:input_type -> cortex.v1.DismissDuplicateRequest
+	3,  // 34: cortex.v1.MemoryService.Save:output_type -> cortex.v1.SaveResponse
+	6,  // 35: cortex.v1.MemoryService.Search:output_type -> cortex.v1.SearchResponse
+	8,  // 36: cortex.v1.MemoryService.List:output_type -> cortex.v1.ListResponse
+	10, // 37: cortex.v1.MemoryService.Delete:output_type -> cortex.v1.DeleteResponse
+	12, // 38: cortex.v1.MemoryService.Status:output_type -> cortex.v1.StatusResponse
+	15, // 39: cortex.v1.MemoryService.Doctor:output_type -> cortex.v1.DoctorResponse
+	17, // 40: cortex.v1.MemoryService.Reindex:output_type -> cortex.v1.ReindexResponse
+	20, // 41: cortex.v1.MemoryService.Dead:output_type -> cortex.v1.DeadResponse
+	22, // 42: cortex.v1.MemoryService.IndexQueue:output_type -> cortex.v1.IndexQueueResponse
+	24, // 43: cortex.v1.MemoryService.PullModel:output_type -> cortex.v1.PullModelResponse
+	27, // 44: cortex.v1.MemoryService.SummarizeSession:output_type -> cortex.v1.SummarizeSessionResponse
+	29, // 45: cortex.v1.MemoryService.RecallSession:output_type -> cortex.v1.RecallSessionResponse
+	31, // 46: cortex.v1.MemoryService.ListSummaries:output_type -> cortex.v1.ListSummariesResponse
+	33, // 47: cortex.v1.MemoryService.Link:output_type -> cortex.v1.LinkResponse
+	35, // 48: cortex.v1.MemoryService.Unlink:output_type -> cortex.v1.UnlinkResponse
+	38, // 49: cortex.v1.MemoryService.ListDuplicateCandidates:output_type -> cortex.v1.ListDuplicateCandidatesResponse
+	40, // 50: cortex.v1.MemoryService.DismissDuplicate:output_type -> cortex.v1.DismissDuplicateResponse
+	34, // [34:51] is the sub-list for method output_type
+	17, // [17:34] is the sub-list for method input_type
+	17, // [17:17] is the sub-list for extension type_name
+	17, // [17:17] is the sub-list for extension extendee
+	0,  // [0:17] is the sub-list for field type_name
 }
 
 func init() { file_cortex_v1_cortex_proto_init() }
@@ -2454,7 +2757,7 @@ func file_cortex_v1_cortex_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_cortex_v1_cortex_proto_rawDesc), len(file_cortex_v1_cortex_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   35,
+			NumMessages:   40,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

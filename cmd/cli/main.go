@@ -222,7 +222,7 @@ func main() {
 		pf.StringVar(s.target, s.key, s.def, s.usage)
 	}
 
-	root.AddCommand(saveCmd(), listCmd(), searchCmd(), deleteCmd(), exportCmd(), reindexCmd(), deadCmd(), statusCmd(), doctorCmd(), summarizeCmd(), summariesCmd(), recallCmd(), hashPasswordCmd(), configCmd())
+	root.AddCommand(saveCmd(), listCmd(), searchCmd(), deleteCmd(), exportCmd(), reindexCmd(), deadCmd(), statusCmd(), doctorCmd(), summarizeCmd(), summariesCmd(), recallCmd(), candidatesCmd(), hashPasswordCmd(), configCmd())
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -661,6 +661,61 @@ func recallCmd() *cobra.Command {
 	cmd.Flags().IntVar(&factLimit, "fact-limit", 50, "max facts to return for the matched session")
 	cmd.Flags().Float32VarP(&maxDistance, "max-distance", "d", 0, "relevance cutoff on the summary match (0 = server default)")
 	return cmd
+}
+
+func candidatesCmd() *cobra.Command {
+	var namespace string
+	var limit int
+	cmd := &cobra.Command{
+		Use:   "candidates",
+		Short: "List memories flagged as likely duplicates, for review",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			resp, err := client().ListDuplicateCandidates(cmd.Context(), connect.NewRequest(&cortexv1.ListDuplicateCandidatesRequest{
+				Namespace: namespace,
+				Limit:     int32(limit),
+			}))
+			if err != nil {
+				return err
+			}
+			groups := resp.Msg.GetGroups()
+			if len(groups) == 0 {
+				fmt.Println("No duplicate candidates flagged.")
+				return nil
+			}
+			for _, g := range groups {
+				printMemory(g.GetMemory())
+				for _, c := range g.GetCandidates() {
+					fmt.Printf("   ~ likely duplicate of id=%s: %s\n", c.GetId(), c.GetText())
+				}
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVarP(&namespace, "namespace", "n", "", `namespace filter; "*" for all namespaces`)
+	cmd.Flags().IntVarP(&limit, "limit", "l", 50, "max flagged memories to list")
+	cmd.AddCommand(dismissCandidateCmd())
+	return cmd
+}
+
+func dismissCandidateCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "dismiss <id> <target-id>",
+		Short: "Mark two flagged memories as NOT duplicates (stops re-flagging)",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			resp, err := client().DismissDuplicate(cmd.Context(), connect.NewRequest(&cortexv1.DismissDuplicateRequest{
+				Id:       strings.TrimSpace(args[0]),
+				TargetId: strings.TrimSpace(args[1]),
+			}))
+			if err != nil {
+				return err
+			}
+			fmt.Printf("Dismissed. %s is now marked not-a-duplicate of %d memor%s.\n",
+				args[0], len(resp.Msg.GetNotDuplicateOf()), map[bool]string{true: "y", false: "ies"}[len(resp.Msg.GetNotDuplicateOf()) == 1])
+			return nil
+		},
+	}
 }
 
 // allLimit caps a full-store fetch (export). Matches the server-side cap.

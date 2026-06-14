@@ -42,7 +42,8 @@
     </div>
     <div v-else class="small text-muted mb-2">
       Click a memory to inspect it · <strong>double-click</strong> (or “Find similar”) to add its semantic
-      neighbours · click a <span class="text-success">green link</span> to remove it.
+      neighbours · click a <span class="text-success">green link</span> to remove it · click an
+      <span style="color: #fd7e14">orange dashed</span> edge to mark the pair not-a-duplicate.
     </div>
 
     <div v-if="notice" class="alert alert-info py-1 px-2 small mb-2">{{ notice }}</div>
@@ -77,9 +78,15 @@
           </div>
           <div class="small text-muted mb-2">
             {{ (selected.linkedIds || []).length }} explicit link(s)
+            <span v-if="(selected.dupCandidates || []).length" style="color: #fd7e14">
+              · {{ selected.dupCandidates.length }} duplicate candidate(s)
+            </span>
           </div>
-          <button class="btn btn-outline-primary btn-sm w-100" @click="expandSemantic('m:' + selected.id)">
+          <button class="btn btn-outline-primary btn-sm w-100 mb-2" @click="expandSemantic('m:' + selected.id)">
             <font-awesome-icon :icon="['fas', 'magnifying-glass']" class="me-1" />Find similar
+          </button>
+          <button class="btn btn-outline-danger btn-sm w-100" @click="deleteSelected">
+            <font-awesome-icon :icon="['fas', 'trash']" class="me-1" />Delete memory
           </button>
         </div>
       </div>
@@ -88,7 +95,8 @@
     <div class="small text-muted mt-2">
       node colour = namespace &nbsp;·&nbsp;
       <span class="text-success">green</span> = explicit link &nbsp;·&nbsp;
-      <span class="text-primary">dashed</span> = semantic neighbour (added on demand)
+      <span style="color: #fd7e14">orange dashed</span> = likely duplicate (flagged) &nbsp;·&nbsp;
+      <span class="text-primary">blue dashed</span> = semantic neighbour (added on demand)
     </div>
   </div>
 </template>
@@ -128,6 +136,7 @@ let edges = null
 let baseNodeIds = new Set()
 
 const LINK_COLOR = '#198754'
+const DUP_COLOR = '#fd7e14'
 
 function handleError(e) {
   if (e instanceof ConnectError && e.code === Code.Unauthenticated) {
@@ -156,6 +165,22 @@ function linkKey(a, b) {
 
 function linkEdge(a, b) {
   return { id: linkKey(a, b), from: a, to: b, color: { color: LINK_COLOR }, width: 3, title: 'linked (click to remove)' }
+}
+
+function dupKey(a, b) {
+  return 'dup:' + [a, b].sort().join('|')
+}
+
+function dupEdge(a, b) {
+  return {
+    id: dupKey(a, b),
+    from: a,
+    to: b,
+    dashes: true,
+    color: { color: DUP_COLOR },
+    width: 2,
+    title: 'likely duplicate (click to mark not a duplicate)',
+  }
 }
 
 async function reload() {
@@ -187,6 +212,20 @@ async function reload() {
         if (linkSeen.has(key)) continue
         linkSeen.add(key)
         edgeList.push(linkEdge('m:' + m.id, tid))
+      }
+    }
+
+    // Duplicate-candidate edges: heuristic, worker-flagged near-duplicates. A
+    // pair already joined by an explicit link is left as the green link only.
+    const dupSeen = new Set()
+    for (const m of mems) {
+      for (const cid of m.dupCandidates || []) {
+        const tid = 'm:' + cid
+        if (!present.has(tid)) continue
+        const key = dupKey('m:' + m.id, tid)
+        if (dupSeen.has(key) || linkSeen.has(linkKey('m:' + m.id, tid))) continue
+        dupSeen.add(key)
+        edgeList.push(dupEdge('m:' + m.id, tid))
       }
     }
 
@@ -235,6 +274,8 @@ function onClick(params) {
   if (!params.nodes.length) {
     if (params.edges.length && String(params.edges[0]).startsWith('link:')) {
       maybeUnlink(params.edges[0])
+    } else if (params.edges.length && String(params.edges[0]).startsWith('dup:')) {
+      maybeDismiss(params.edges[0])
     } else {
       selected.value = null
     }
@@ -302,6 +343,40 @@ async function maybeUnlink(eid) {
   if (!confirm('Remove this link?')) return
   try {
     await memoryClient.unlink({ id: String(e.from).slice(2), targetId: String(e.to).slice(2) })
+    edges.remove(eid)
+  } catch (err) {
+    handleError(err)
+  }
+}
+
+// Delete the selected memory (e.g. the redundant half of a duplicate pair). Also
+// prunes the node and any edges touching it from the graph so the view stays
+// consistent without a full reload.
+async function deleteSelected() {
+  const mem = selected.value
+  if (!mem) return
+  if (!confirm('Delete this memory? This cannot be undone.')) return
+  try {
+    await memoryClient.delete({ id: mem.id })
+    const nid = 'm:' + mem.id
+    const touching = edges.get({ filter: (e) => e.from === nid || e.to === nid }).map((e) => e.id)
+    edges.remove(touching)
+    nodes.remove(nid)
+    baseNodeIds.delete(nid)
+    selected.value = null
+  } catch (e) {
+    handleError(e)
+  }
+}
+
+// Clicking an orange duplicate-candidate edge dismisses it: the pair is recorded
+// as confirmed-not-a-duplicate so the worker never re-flags it.
+async function maybeDismiss(eid) {
+  const e = edges.get(eid)
+  if (!e) return
+  if (!confirm('Mark these two memories as NOT duplicates? They won’t be flagged again.')) return
+  try {
+    await memoryClient.dismissDuplicate({ id: String(e.from).slice(2), targetId: String(e.to).slice(2) })
     edges.remove(eid)
   } catch (err) {
     handleError(err)

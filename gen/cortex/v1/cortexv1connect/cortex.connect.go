@@ -67,6 +67,12 @@ const (
 	MemoryServiceLinkProcedure = "/cortex.v1.MemoryService/Link"
 	// MemoryServiceUnlinkProcedure is the fully-qualified name of the MemoryService's Unlink RPC.
 	MemoryServiceUnlinkProcedure = "/cortex.v1.MemoryService/Unlink"
+	// MemoryServiceListDuplicateCandidatesProcedure is the fully-qualified name of the MemoryService's
+	// ListDuplicateCandidates RPC.
+	MemoryServiceListDuplicateCandidatesProcedure = "/cortex.v1.MemoryService/ListDuplicateCandidates"
+	// MemoryServiceDismissDuplicateProcedure is the fully-qualified name of the MemoryService's
+	// DismissDuplicate RPC.
+	MemoryServiceDismissDuplicateProcedure = "/cortex.v1.MemoryService/DismissDuplicate"
 )
 
 // MemoryServiceClient is a client for the cortex.v1.MemoryService service.
@@ -103,6 +109,12 @@ type MemoryServiceClient interface {
 	Link(context.Context, *connect.Request[v1.LinkRequest]) (*connect.Response[v1.LinkResponse], error)
 	// Unlink removes the bidirectional link between two memories.
 	Unlink(context.Context, *connect.Request[v1.UnlinkRequest]) (*connect.Response[v1.UnlinkResponse], error)
+	// ListDuplicateCandidates returns memories the worker flagged as likely
+	// duplicates, each with the resolved candidate memories, for human/agent review.
+	ListDuplicateCandidates(context.Context, *connect.Request[v1.ListDuplicateCandidatesRequest]) (*connect.Response[v1.ListDuplicateCandidatesResponse], error)
+	// DismissDuplicate records that two memories are confirmed NOT duplicates, so
+	// the worker stops re-flagging the pair on future re-indexing.
+	DismissDuplicate(context.Context, *connect.Request[v1.DismissDuplicateRequest]) (*connect.Response[v1.DismissDuplicateResponse], error)
 }
 
 // NewMemoryServiceClient constructs a client for the cortex.v1.MemoryService service. By default,
@@ -206,26 +218,40 @@ func NewMemoryServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(memoryServiceMethods.ByName("Unlink")),
 			connect.WithClientOptions(opts...),
 		),
+		listDuplicateCandidates: connect.NewClient[v1.ListDuplicateCandidatesRequest, v1.ListDuplicateCandidatesResponse](
+			httpClient,
+			baseURL+MemoryServiceListDuplicateCandidatesProcedure,
+			connect.WithSchema(memoryServiceMethods.ByName("ListDuplicateCandidates")),
+			connect.WithClientOptions(opts...),
+		),
+		dismissDuplicate: connect.NewClient[v1.DismissDuplicateRequest, v1.DismissDuplicateResponse](
+			httpClient,
+			baseURL+MemoryServiceDismissDuplicateProcedure,
+			connect.WithSchema(memoryServiceMethods.ByName("DismissDuplicate")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
 // memoryServiceClient implements MemoryServiceClient.
 type memoryServiceClient struct {
-	save             *connect.Client[v1.SaveRequest, v1.SaveResponse]
-	search           *connect.Client[v1.SearchRequest, v1.SearchResponse]
-	list             *connect.Client[v1.ListRequest, v1.ListResponse]
-	delete           *connect.Client[v1.DeleteRequest, v1.DeleteResponse]
-	status           *connect.Client[v1.StatusRequest, v1.StatusResponse]
-	doctor           *connect.Client[v1.DoctorRequest, v1.DoctorResponse]
-	reindex          *connect.Client[v1.ReindexRequest, v1.ReindexResponse]
-	dead             *connect.Client[v1.DeadRequest, v1.DeadResponse]
-	indexQueue       *connect.Client[v1.IndexQueueRequest, v1.IndexQueueResponse]
-	pullModel        *connect.Client[v1.PullModelRequest, v1.PullModelResponse]
-	summarizeSession *connect.Client[v1.SummarizeSessionRequest, v1.SummarizeSessionResponse]
-	recallSession    *connect.Client[v1.RecallSessionRequest, v1.RecallSessionResponse]
-	listSummaries    *connect.Client[v1.ListSummariesRequest, v1.ListSummariesResponse]
-	link             *connect.Client[v1.LinkRequest, v1.LinkResponse]
-	unlink           *connect.Client[v1.UnlinkRequest, v1.UnlinkResponse]
+	save                    *connect.Client[v1.SaveRequest, v1.SaveResponse]
+	search                  *connect.Client[v1.SearchRequest, v1.SearchResponse]
+	list                    *connect.Client[v1.ListRequest, v1.ListResponse]
+	delete                  *connect.Client[v1.DeleteRequest, v1.DeleteResponse]
+	status                  *connect.Client[v1.StatusRequest, v1.StatusResponse]
+	doctor                  *connect.Client[v1.DoctorRequest, v1.DoctorResponse]
+	reindex                 *connect.Client[v1.ReindexRequest, v1.ReindexResponse]
+	dead                    *connect.Client[v1.DeadRequest, v1.DeadResponse]
+	indexQueue              *connect.Client[v1.IndexQueueRequest, v1.IndexQueueResponse]
+	pullModel               *connect.Client[v1.PullModelRequest, v1.PullModelResponse]
+	summarizeSession        *connect.Client[v1.SummarizeSessionRequest, v1.SummarizeSessionResponse]
+	recallSession           *connect.Client[v1.RecallSessionRequest, v1.RecallSessionResponse]
+	listSummaries           *connect.Client[v1.ListSummariesRequest, v1.ListSummariesResponse]
+	link                    *connect.Client[v1.LinkRequest, v1.LinkResponse]
+	unlink                  *connect.Client[v1.UnlinkRequest, v1.UnlinkResponse]
+	listDuplicateCandidates *connect.Client[v1.ListDuplicateCandidatesRequest, v1.ListDuplicateCandidatesResponse]
+	dismissDuplicate        *connect.Client[v1.DismissDuplicateRequest, v1.DismissDuplicateResponse]
 }
 
 // Save calls cortex.v1.MemoryService.Save.
@@ -303,6 +329,16 @@ func (c *memoryServiceClient) Unlink(ctx context.Context, req *connect.Request[v
 	return c.unlink.CallUnary(ctx, req)
 }
 
+// ListDuplicateCandidates calls cortex.v1.MemoryService.ListDuplicateCandidates.
+func (c *memoryServiceClient) ListDuplicateCandidates(ctx context.Context, req *connect.Request[v1.ListDuplicateCandidatesRequest]) (*connect.Response[v1.ListDuplicateCandidatesResponse], error) {
+	return c.listDuplicateCandidates.CallUnary(ctx, req)
+}
+
+// DismissDuplicate calls cortex.v1.MemoryService.DismissDuplicate.
+func (c *memoryServiceClient) DismissDuplicate(ctx context.Context, req *connect.Request[v1.DismissDuplicateRequest]) (*connect.Response[v1.DismissDuplicateResponse], error) {
+	return c.dismissDuplicate.CallUnary(ctx, req)
+}
+
 // MemoryServiceHandler is an implementation of the cortex.v1.MemoryService service.
 type MemoryServiceHandler interface {
 	// Save queues a memory for asynchronous, durable indexing (NATS JetStream).
@@ -337,6 +373,12 @@ type MemoryServiceHandler interface {
 	Link(context.Context, *connect.Request[v1.LinkRequest]) (*connect.Response[v1.LinkResponse], error)
 	// Unlink removes the bidirectional link between two memories.
 	Unlink(context.Context, *connect.Request[v1.UnlinkRequest]) (*connect.Response[v1.UnlinkResponse], error)
+	// ListDuplicateCandidates returns memories the worker flagged as likely
+	// duplicates, each with the resolved candidate memories, for human/agent review.
+	ListDuplicateCandidates(context.Context, *connect.Request[v1.ListDuplicateCandidatesRequest]) (*connect.Response[v1.ListDuplicateCandidatesResponse], error)
+	// DismissDuplicate records that two memories are confirmed NOT duplicates, so
+	// the worker stops re-flagging the pair on future re-indexing.
+	DismissDuplicate(context.Context, *connect.Request[v1.DismissDuplicateRequest]) (*connect.Response[v1.DismissDuplicateResponse], error)
 }
 
 // NewMemoryServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -436,6 +478,18 @@ func NewMemoryServiceHandler(svc MemoryServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(memoryServiceMethods.ByName("Unlink")),
 		connect.WithHandlerOptions(opts...),
 	)
+	memoryServiceListDuplicateCandidatesHandler := connect.NewUnaryHandler(
+		MemoryServiceListDuplicateCandidatesProcedure,
+		svc.ListDuplicateCandidates,
+		connect.WithSchema(memoryServiceMethods.ByName("ListDuplicateCandidates")),
+		connect.WithHandlerOptions(opts...),
+	)
+	memoryServiceDismissDuplicateHandler := connect.NewUnaryHandler(
+		MemoryServiceDismissDuplicateProcedure,
+		svc.DismissDuplicate,
+		connect.WithSchema(memoryServiceMethods.ByName("DismissDuplicate")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/cortex.v1.MemoryService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case MemoryServiceSaveProcedure:
@@ -468,6 +522,10 @@ func NewMemoryServiceHandler(svc MemoryServiceHandler, opts ...connect.HandlerOp
 			memoryServiceLinkHandler.ServeHTTP(w, r)
 		case MemoryServiceUnlinkProcedure:
 			memoryServiceUnlinkHandler.ServeHTTP(w, r)
+		case MemoryServiceListDuplicateCandidatesProcedure:
+			memoryServiceListDuplicateCandidatesHandler.ServeHTTP(w, r)
+		case MemoryServiceDismissDuplicateProcedure:
+			memoryServiceDismissDuplicateHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -535,4 +593,12 @@ func (UnimplementedMemoryServiceHandler) Link(context.Context, *connect.Request[
 
 func (UnimplementedMemoryServiceHandler) Unlink(context.Context, *connect.Request[v1.UnlinkRequest]) (*connect.Response[v1.UnlinkResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cortex.v1.MemoryService.Unlink is not implemented"))
+}
+
+func (UnimplementedMemoryServiceHandler) ListDuplicateCandidates(context.Context, *connect.Request[v1.ListDuplicateCandidatesRequest]) (*connect.Response[v1.ListDuplicateCandidatesResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cortex.v1.MemoryService.ListDuplicateCandidates is not implemented"))
+}
+
+func (UnimplementedMemoryServiceHandler) DismissDuplicate(context.Context, *connect.Request[v1.DismissDuplicateRequest]) (*connect.Response[v1.DismissDuplicateResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cortex.v1.MemoryService.DismissDuplicate is not implemented"))
 }

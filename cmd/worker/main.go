@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"slices"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
@@ -30,6 +31,19 @@ func env(key, def string) string {
 	return def
 }
 
+// envFloat reads a float32 env var, returning def when unset or unparseable.
+func envFloat(key string, def float32) float32 {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	f, err := strconv.ParseFloat(v, 32)
+	if err != nil {
+		return def
+	}
+	return float32(f)
+}
+
 func main() {
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
@@ -39,6 +53,12 @@ func main() {
 		ollamaModel  = env("OLLAMA_MODEL", "qwen3-embedding:0.6b")
 		weaviate     = env("WEAVIATE_HOST", "localhost:8080")
 		weaviateGRPC = env("WEAVIATE_GRPC_HOST", "localhost:50051")
+		// dedupDistance is the cosine-distance band within which a freshly indexed
+		// memory's existing neighbours are flagged as duplicate candidates. 0
+		// disables the check entirely (the default), so behaviour is unchanged
+		// until opted in. The right value is model-specific (qwen3 distances are
+		// compressed) — tune it against your own data.
+		dedupDistance = envFloat("DEDUP_DISTANCE", 0)
 	)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -81,10 +101,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	log.Info("worker up", "nats", natsURL, "weaviate", weaviate, "model", ollamaModel)
+	log.Info("worker up", "nats", natsURL, "weaviate", weaviate, "model", ollamaModel, "dedup_distance", dedupDistance)
 
 	cc, err := cons.Consume(func(msg jetstream.Msg) {
-		handle(ctx, log, js, embedder, st, msg)
+		handle(ctx, log, js, embedder, st, msg, dedupDistance)
 	})
 	if err != nil {
 		log.Error("consume", "err", err)
@@ -117,12 +137,12 @@ func ensureSchemaWithRetry(ctx context.Context, log *slog.Logger, st *store.Stor
 
 // handle dispatches by subject: fact-index events and conversation-summary
 // events share one durable consumer.
-func handle(ctx context.Context, log *slog.Logger, js jetstream.JetStream, embedder *embed.Client, st *store.Store, msg jetstream.Msg) {
+func handle(ctx context.Context, log *slog.Logger, js jetstream.JetStream, embedder *embed.Client, st *store.Store, msg jetstream.Msg, dedupDistance float32) {
 	if msg.Subject() == memory.SubjectSummary {
 		handleSummary(ctx, log, embedder, st, msg)
 		return
 	}
-	handleIndex(ctx, log, js, embedder, st, msg)
+	handleIndex(ctx, log, js, embedder, st, msg, dedupDistance)
 }
 
 // handleSummary embeds a conversation summary and upserts it (one per
@@ -267,7 +287,49 @@ func addUnique(xs []string, v string) []string {
 	return append(xs, v)
 }
 
-func handleIndex(ctx context.Context, log *slog.Logger, js jetstream.JetStream, embedder *embed.Client, st *store.Store, msg jetstream.Msg) {
+// candidateLimit caps how many duplicate candidates one memory records. A handful
+// is enough to flag a cluster for review; the rest of the cluster surfaces via
+// each member's own candidates.
+const candidateLimit = 5
+
+// findCandidates returns ids of already-indexed memories within dedupDistance of
+// rec's vector, in the same namespace — heuristic duplicate hints for later
+// review. Returns nil when the check is disabled (dedupDistance<=0). Best-effort:
+// a search failure is logged and treated as "no candidates", never fatal, since
+// the record must still be indexed regardless.
+func findCandidates(ctx context.Context, log *slog.Logger, st *store.Store, rec memory.Record, vec []float32, dedupDistance float32) []string {
+	if dedupDistance <= 0 {
+		return nil
+	}
+	hits, err := st.Search(ctx, vec, store.SearchOpts{
+		Namespace:   rec.Namespace,
+		Limit:       candidateLimit + 1 + len(rec.NotDuplicateOf), // headroom for self + dismissed pairs
+		MaxDistance: dedupDistance,
+	})
+	if err != nil {
+		log.Warn("dedup candidate search failed, skipping", "id", rec.ID, "err", err)
+		return nil
+	}
+	// Pairs a reviewer already confirmed are NOT duplicates must never be
+	// re-flagged. The list is bidirectional, so checking rec's own copy is enough.
+	dismissed := make(map[string]bool, len(rec.NotDuplicateOf))
+	for _, id := range rec.NotDuplicateOf {
+		dismissed[id] = true
+	}
+	var out []string
+	for _, h := range hits {
+		if h.ID == rec.ID || h.ID == "" || dismissed[h.ID] {
+			continue
+		}
+		out = append(out, h.ID)
+		if len(out) >= candidateLimit {
+			break
+		}
+	}
+	return out
+}
+
+func handleIndex(ctx context.Context, log *slog.Logger, js jetstream.JetStream, embedder *embed.Client, st *store.Store, msg jetstream.Msg, dedupDistance float32) {
 	var rec memory.Record
 	if err := json.Unmarshal(msg.Data(), &rec); err != nil {
 		// Unrecoverable: bad payload. Terminate so it is not redelivered.
@@ -289,6 +351,10 @@ func handleIndex(ctx context.Context, log *slog.Logger, js jetstream.JetStream, 
 		// (if anything) the producer put on the record.
 		rec.Model = embedder.Model()
 		rec.Dims = len(vec)
+		// Heuristic dedup: reuse the vector we just computed to find existing
+		// near neighbours in the same namespace and flag them as candidates.
+		// Recomputed on every (re)index, so it always reflects current contents.
+		rec.DupCandidates = findCandidates(ctx, log, st, rec, vec, dedupDistance)
 		storeStart := time.Now()
 		if err := st.Upsert(ctx, rec, vec); err != nil {
 			procErr = fmt.Errorf("upsert: %w", err)

@@ -67,6 +67,22 @@ type Record struct {
 	// written as a Weaviate property, so it is empty on reindex/redelivery —
 	// established links live in LinkedIDs by then.
 	LinkTo []string `json:"linkTo,omitempty"`
+
+	// DupCandidates are ids of existing memories the worker found to be near
+	// duplicates of this one at index time (vector distance within
+	// DEDUP_DISTANCE). It is a heuristic hint for review, NOT a confirmed
+	// relationship like LinkedIDs: the worker never deletes or merges on its
+	// own — a human or the agent adjudicates via the review tool / UI. Stored as
+	// a Weaviate property and recomputed whenever the record is re-indexed.
+	// One-directional (this record -> the older memories it resembles).
+	DupCandidates []string `json:"dupCandidates,omitempty"`
+
+	// NotDuplicateOf are ids of memories a reviewer has explicitly confirmed are
+	// NOT duplicates of this one. The worker excludes these when recomputing
+	// DupCandidates, so a dismissed pair is never re-flagged. Bidirectional (set
+	// on both records, like LinkedIDs) so neither side re-flags the other, and
+	// persisted as a Weaviate property so it survives reindex/redelivery.
+	NotDuplicateOf []string `json:"notDuplicateOf,omitempty"`
 }
 
 // Hit is a search result: a record plus its vector distance to the query.

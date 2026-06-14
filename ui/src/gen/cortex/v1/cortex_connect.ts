@@ -3,7 +3,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { DeadRequest, DeadResponse, DeleteRequest, DeleteResponse, DoctorRequest, DoctorResponse, IndexQueueRequest, IndexQueueResponse, LinkRequest, LinkResponse, ListRequest, ListResponse, ListSummariesRequest, ListSummariesResponse, PullModelRequest, PullModelResponse, RecallSessionRequest, RecallSessionResponse, ReindexRequest, ReindexResponse, SaveRequest, SaveResponse, SearchRequest, SearchResponse, StatusRequest, StatusResponse, SummarizeSessionRequest, SummarizeSessionResponse, UnlinkRequest, UnlinkResponse } from "./cortex_pb.js";
+import { DeadRequest, DeadResponse, DeleteRequest, DeleteResponse, DismissDuplicateRequest, DismissDuplicateResponse, DoctorRequest, DoctorResponse, IndexQueueRequest, IndexQueueResponse, LinkRequest, LinkResponse, ListDuplicateCandidatesRequest, ListDuplicateCandidatesResponse, ListRequest, ListResponse, ListSummariesRequest, ListSummariesResponse, PullModelRequest, PullModelResponse, RecallSessionRequest, RecallSessionResponse, ReindexRequest, ReindexResponse, SaveRequest, SaveResponse, SearchRequest, SearchResponse, StatusRequest, StatusResponse, SummarizeSessionRequest, SummarizeSessionResponse, UnlinkRequest, UnlinkResponse } from "./cortex_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -182,6 +182,30 @@ export const MemoryService = {
       name: "Unlink",
       I: UnlinkRequest,
       O: UnlinkResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * ListDuplicateCandidates returns memories the worker flagged as likely
+     * duplicates, each with the resolved candidate memories, for human/agent review.
+     *
+     * @generated from rpc cortex.v1.MemoryService.ListDuplicateCandidates
+     */
+    listDuplicateCandidates: {
+      name: "ListDuplicateCandidates",
+      I: ListDuplicateCandidatesRequest,
+      O: ListDuplicateCandidatesResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * DismissDuplicate records that two memories are confirmed NOT duplicates, so
+     * the worker stops re-flagging the pair on future re-indexing.
+     *
+     * @generated from rpc cortex.v1.MemoryService.DismissDuplicate
+     */
+    dismissDuplicate: {
+      name: "DismissDuplicate",
+      I: DismissDuplicateRequest,
+      O: DismissDuplicateResponse,
       kind: MethodKind.Unary,
     },
   }
