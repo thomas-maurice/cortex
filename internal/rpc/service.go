@@ -146,9 +146,9 @@ func (s *Service) Delete(ctx context.Context, req *connect.Request[cortexv1.Dele
 
 func (s *Service) Status(ctx context.Context, _ *connect.Request[cortexv1.StatusRequest]) (*connect.Response[cortexv1.StatusResponse], error) {
 	out := &cortexv1.StatusResponse{
-		Model:    s.embedder.Model(),
-		Version:  s.cfg.Version,
-		NatsOk:   s.nc.IsConnected(),
+		Model:   s.embedder.Model(),
+		Version: s.cfg.Version,
+		NatsOk:  s.nc.IsConnected(),
 	}
 	if err := s.store.Ready(ctx); err == nil {
 		out.WeaviateOk = true
@@ -156,11 +156,25 @@ func (s *Service) Status(ctx context.Context, _ *connect.Request[cortexv1.Status
 			out.MemoryCount = int64(c)
 		}
 	}
-	if vec, err := s.embedder.Embed(ctx, "ping"); err == nil {
+	if err := s.embedder.Reachable(ctx); err == nil {
 		out.OllamaOk = true
-		out.Dims = int32(len(vec))
+		if present, err := s.embedder.HasModel(ctx); err == nil && present {
+			out.ModelPresent = true
+			if vec, err := s.embedder.Embed(ctx, "ping"); err == nil {
+				out.Dims = int32(len(vec))
+			}
+		}
 	}
 	return connect.NewResponse(out), nil
+}
+
+// PullModel asks the local Ollama instance to download the configured embedding
+// model. It blocks until the pull completes (which can take minutes).
+func (s *Service) PullModel(ctx context.Context, _ *connect.Request[cortexv1.PullModelRequest]) (*connect.Response[cortexv1.PullModelResponse], error) {
+	if err := s.embedder.Pull(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("pull model %q: %w", s.embedder.Model(), err))
+	}
+	return connect.NewResponse(&cortexv1.PullModelResponse{Model: s.embedder.Model(), Status: "pulled"}), nil
 }
 
 func (s *Service) Doctor(ctx context.Context, _ *connect.Request[cortexv1.DoctorRequest]) (*connect.Response[cortexv1.DoctorResponse], error) {

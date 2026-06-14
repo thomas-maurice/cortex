@@ -29,6 +29,9 @@ service MemoryService {
   rpc Dead(DeadRequest) returns (DeadResponse) {}
   // IndexQueue reports the live state of the async indexing queue.
   rpc IndexQueue(IndexQueueRequest) returns (IndexQueueResponse) {}
+  // PullModel asks the local Ollama instance to download the configured
+  // embedding model. Blocks until the pull completes.
+  rpc PullModel(PullModelRequest) returns (PullModelResponse) {}
   // SummarizeSession upserts the ever-current summary for one conversation.
   rpc SummarizeSession(SummarizeSessionRequest) returns (SummarizeSessionResponse) {}
   // RecallSession vector-matches a conversation summary and returns it together
@@ -113,11 +116,12 @@ message StatusRequest {}
 message StatusResponse {
   bool nats_ok = 1;
   bool weaviate_ok = 2;
-  bool ollama_ok = 3;
+  bool ollama_ok = 3;      // true when Ollama is reachable
   string model = 4;        // configured embedding model
   int32 dims = 5;          // probed embedding dimension (0 if ollama down)
   int64 memory_count = 6;  // total stored memories
   string version = 7;
+  bool model_present = 8;  // true when the embedding model is pulled in Ollama
 }
 
 message DoctorRequest {}
@@ -177,6 +181,13 @@ message IndexQueueResponse {
   int64 in_flight = 2;      // messages delivered, awaiting ack (NumAckPending)
   int64 dead = 3;           // dead-lettered messages preserved for inspection
   bool consumer_present = 4; // false when the worker has not (yet) created its consumer
+}
+
+message PullModelRequest {}
+
+message PullModelResponse {
+  string model = 1;  // the model that was pulled
+  string status = 2; // "pulled"
 }
 
 // ConversationSummary is the ever-current digest of one conversation, unique per

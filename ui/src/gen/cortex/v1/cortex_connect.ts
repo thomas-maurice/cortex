@@ -3,7 +3,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { DeadRequest, DeadResponse, DeleteRequest, DeleteResponse, DoctorRequest, DoctorResponse, IndexQueueRequest, IndexQueueResponse, LinkRequest, LinkResponse, ListRequest, ListResponse, ListSummariesRequest, ListSummariesResponse, RecallSessionRequest, RecallSessionResponse, ReindexRequest, ReindexResponse, SaveRequest, SaveResponse, SearchRequest, SearchResponse, StatusRequest, StatusResponse, SummarizeSessionRequest, SummarizeSessionResponse, UnlinkRequest, UnlinkResponse } from "./cortex_pb.js";
+import { DeadRequest, DeadResponse, DeleteRequest, DeleteResponse, DoctorRequest, DoctorResponse, IndexQueueRequest, IndexQueueResponse, LinkRequest, LinkResponse, ListRequest, ListResponse, ListSummariesRequest, ListSummariesResponse, PullModelRequest, PullModelResponse, RecallSessionRequest, RecallSessionResponse, ReindexRequest, ReindexResponse, SaveRequest, SaveResponse, SearchRequest, SearchResponse, StatusRequest, StatusResponse, SummarizeSessionRequest, SummarizeSessionResponse, UnlinkRequest, UnlinkResponse } from "./cortex_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -114,6 +114,18 @@ export const MemoryService = {
       name: "IndexQueue",
       I: IndexQueueRequest,
       O: IndexQueueResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * PullModel asks the local Ollama instance to download the configured
+     * embedding model. Blocks until the pull completes.
+     *
+     * @generated from rpc cortex.v1.MemoryService.PullModel
+     */
+    pullModel: {
+      name: "PullModel",
+      I: PullModelRequest,
+      O: PullModelResponse,
       kind: MethodKind.Unary,
     },
     /**

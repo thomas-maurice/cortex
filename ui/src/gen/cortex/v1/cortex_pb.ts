@@ -635,6 +635,8 @@ export class StatusResponse extends Message<StatusResponse> {
   weaviateOk = false;
 
   /**
+   * true when Ollama is reachable
+   *
    * @generated from field: bool ollama_ok = 3;
    */
   ollamaOk = false;
@@ -665,6 +667,13 @@ export class StatusResponse extends Message<StatusResponse> {
    */
   version = "";
 
+  /**
+   * true when the embedding model is pulled in Ollama
+   *
+   * @generated from field: bool model_present = 8;
+   */
+  modelPresent = false;
+
   constructor(data?: PartialMessage<StatusResponse>) {
     super();
     proto3.util.initPartial(data, this);
@@ -680,6 +689,7 @@ export class StatusResponse extends Message<StatusResponse> {
     { no: 5, name: "dims", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
     { no: 6, name: "memory_count", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
     { no: 7, name: "version", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 8, name: "model_present", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): StatusResponse {
@@ -1172,6 +1182,84 @@ export class IndexQueueResponse extends Message<IndexQueueResponse> {
 
   static equals(a: IndexQueueResponse | PlainMessage<IndexQueueResponse> | undefined, b: IndexQueueResponse | PlainMessage<IndexQueueResponse> | undefined): boolean {
     return proto3.util.equals(IndexQueueResponse, a, b);
+  }
+}
+
+/**
+ * @generated from message cortex.v1.PullModelRequest
+ */
+export class PullModelRequest extends Message<PullModelRequest> {
+  constructor(data?: PartialMessage<PullModelRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "cortex.v1.PullModelRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): PullModelRequest {
+    return new PullModelRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): PullModelRequest {
+    return new PullModelRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): PullModelRequest {
+    return new PullModelRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: PullModelRequest | PlainMessage<PullModelRequest> | undefined, b: PullModelRequest | PlainMessage<PullModelRequest> | undefined): boolean {
+    return proto3.util.equals(PullModelRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message cortex.v1.PullModelResponse
+ */
+export class PullModelResponse extends Message<PullModelResponse> {
+  /**
+   * the model that was pulled
+   *
+   * @generated from field: string model = 1;
+   */
+  model = "";
+
+  /**
+   * "pulled"
+   *
+   * @generated from field: string status = 2;
+   */
+  status = "";
+
+  constructor(data?: PartialMessage<PullModelResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "cortex.v1.PullModelResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "model", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "status", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): PullModelResponse {
+    return new PullModelResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): PullModelResponse {
+    return new PullModelResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): PullModelResponse {
+    return new PullModelResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: PullModelResponse | PlainMessage<PullModelResponse> | undefined, b: PullModelResponse | PlainMessage<PullModelResponse> | undefined): boolean {
+    return proto3.util.equals(PullModelResponse, a, b);
   }
 }
 

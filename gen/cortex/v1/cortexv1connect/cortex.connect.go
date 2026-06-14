@@ -52,6 +52,8 @@ const (
 	// MemoryServiceIndexQueueProcedure is the fully-qualified name of the MemoryService's IndexQueue
 	// RPC.
 	MemoryServiceIndexQueueProcedure = "/cortex.v1.MemoryService/IndexQueue"
+	// MemoryServicePullModelProcedure is the fully-qualified name of the MemoryService's PullModel RPC.
+	MemoryServicePullModelProcedure = "/cortex.v1.MemoryService/PullModel"
 	// MemoryServiceSummarizeSessionProcedure is the fully-qualified name of the MemoryService's
 	// SummarizeSession RPC.
 	MemoryServiceSummarizeSessionProcedure = "/cortex.v1.MemoryService/SummarizeSession"
@@ -87,6 +89,9 @@ type MemoryServiceClient interface {
 	Dead(context.Context, *connect.Request[v1.DeadRequest]) (*connect.Response[v1.DeadResponse], error)
 	// IndexQueue reports the live state of the async indexing queue.
 	IndexQueue(context.Context, *connect.Request[v1.IndexQueueRequest]) (*connect.Response[v1.IndexQueueResponse], error)
+	// PullModel asks the local Ollama instance to download the configured
+	// embedding model. Blocks until the pull completes.
+	PullModel(context.Context, *connect.Request[v1.PullModelRequest]) (*connect.Response[v1.PullModelResponse], error)
 	// SummarizeSession upserts the ever-current summary for one conversation.
 	SummarizeSession(context.Context, *connect.Request[v1.SummarizeSessionRequest]) (*connect.Response[v1.SummarizeSessionResponse], error)
 	// RecallSession vector-matches a conversation summary and returns it together
@@ -165,6 +170,12 @@ func NewMemoryServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(memoryServiceMethods.ByName("IndexQueue")),
 			connect.WithClientOptions(opts...),
 		),
+		pullModel: connect.NewClient[v1.PullModelRequest, v1.PullModelResponse](
+			httpClient,
+			baseURL+MemoryServicePullModelProcedure,
+			connect.WithSchema(memoryServiceMethods.ByName("PullModel")),
+			connect.WithClientOptions(opts...),
+		),
 		summarizeSession: connect.NewClient[v1.SummarizeSessionRequest, v1.SummarizeSessionResponse](
 			httpClient,
 			baseURL+MemoryServiceSummarizeSessionProcedure,
@@ -209,6 +220,7 @@ type memoryServiceClient struct {
 	reindex          *connect.Client[v1.ReindexRequest, v1.ReindexResponse]
 	dead             *connect.Client[v1.DeadRequest, v1.DeadResponse]
 	indexQueue       *connect.Client[v1.IndexQueueRequest, v1.IndexQueueResponse]
+	pullModel        *connect.Client[v1.PullModelRequest, v1.PullModelResponse]
 	summarizeSession *connect.Client[v1.SummarizeSessionRequest, v1.SummarizeSessionResponse]
 	recallSession    *connect.Client[v1.RecallSessionRequest, v1.RecallSessionResponse]
 	listSummaries    *connect.Client[v1.ListSummariesRequest, v1.ListSummariesResponse]
@@ -261,6 +273,11 @@ func (c *memoryServiceClient) IndexQueue(ctx context.Context, req *connect.Reque
 	return c.indexQueue.CallUnary(ctx, req)
 }
 
+// PullModel calls cortex.v1.MemoryService.PullModel.
+func (c *memoryServiceClient) PullModel(ctx context.Context, req *connect.Request[v1.PullModelRequest]) (*connect.Response[v1.PullModelResponse], error) {
+	return c.pullModel.CallUnary(ctx, req)
+}
+
 // SummarizeSession calls cortex.v1.MemoryService.SummarizeSession.
 func (c *memoryServiceClient) SummarizeSession(ctx context.Context, req *connect.Request[v1.SummarizeSessionRequest]) (*connect.Response[v1.SummarizeSessionResponse], error) {
 	return c.summarizeSession.CallUnary(ctx, req)
@@ -306,6 +323,9 @@ type MemoryServiceHandler interface {
 	Dead(context.Context, *connect.Request[v1.DeadRequest]) (*connect.Response[v1.DeadResponse], error)
 	// IndexQueue reports the live state of the async indexing queue.
 	IndexQueue(context.Context, *connect.Request[v1.IndexQueueRequest]) (*connect.Response[v1.IndexQueueResponse], error)
+	// PullModel asks the local Ollama instance to download the configured
+	// embedding model. Blocks until the pull completes.
+	PullModel(context.Context, *connect.Request[v1.PullModelRequest]) (*connect.Response[v1.PullModelResponse], error)
 	// SummarizeSession upserts the ever-current summary for one conversation.
 	SummarizeSession(context.Context, *connect.Request[v1.SummarizeSessionRequest]) (*connect.Response[v1.SummarizeSessionResponse], error)
 	// RecallSession vector-matches a conversation summary and returns it together
@@ -380,6 +400,12 @@ func NewMemoryServiceHandler(svc MemoryServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(memoryServiceMethods.ByName("IndexQueue")),
 		connect.WithHandlerOptions(opts...),
 	)
+	memoryServicePullModelHandler := connect.NewUnaryHandler(
+		MemoryServicePullModelProcedure,
+		svc.PullModel,
+		connect.WithSchema(memoryServiceMethods.ByName("PullModel")),
+		connect.WithHandlerOptions(opts...),
+	)
 	memoryServiceSummarizeSessionHandler := connect.NewUnaryHandler(
 		MemoryServiceSummarizeSessionProcedure,
 		svc.SummarizeSession,
@@ -430,6 +456,8 @@ func NewMemoryServiceHandler(svc MemoryServiceHandler, opts ...connect.HandlerOp
 			memoryServiceDeadHandler.ServeHTTP(w, r)
 		case MemoryServiceIndexQueueProcedure:
 			memoryServiceIndexQueueHandler.ServeHTTP(w, r)
+		case MemoryServicePullModelProcedure:
+			memoryServicePullModelHandler.ServeHTTP(w, r)
 		case MemoryServiceSummarizeSessionProcedure:
 			memoryServiceSummarizeSessionHandler.ServeHTTP(w, r)
 		case MemoryServiceRecallSessionProcedure:
@@ -483,6 +511,10 @@ func (UnimplementedMemoryServiceHandler) Dead(context.Context, *connect.Request[
 
 func (UnimplementedMemoryServiceHandler) IndexQueue(context.Context, *connect.Request[v1.IndexQueueRequest]) (*connect.Response[v1.IndexQueueResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cortex.v1.MemoryService.IndexQueue is not implemented"))
+}
+
+func (UnimplementedMemoryServiceHandler) PullModel(context.Context, *connect.Request[v1.PullModelRequest]) (*connect.Response[v1.PullModelResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cortex.v1.MemoryService.PullModel is not implemented"))
 }
 
 func (UnimplementedMemoryServiceHandler) SummarizeSession(context.Context, *connect.Request[v1.SummarizeSessionRequest]) (*connect.Response[v1.SummarizeSessionResponse], error) {
