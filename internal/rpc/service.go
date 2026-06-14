@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -302,6 +303,36 @@ func (s *Service) Dead(ctx context.Context, req *connect.Request[cortexv1.DeadRe
 	}
 }
 
+func (s *Service) IndexQueue(ctx context.Context, _ *connect.Request[cortexv1.IndexQueueRequest]) (*connect.Response[cortexv1.IndexQueueResponse], error) {
+	out := &cortexv1.IndexQueueResponse{}
+
+	cons, err := s.js.Consumer(ctx, memory.StreamName, memory.ConsumerName)
+	if err != nil {
+		// No consumer yet means the worker has never started; report an empty
+		// queue rather than failing the probe.
+		if errors.Is(err, jetstream.ErrConsumerNotFound) {
+			return connect.NewResponse(out), nil
+		}
+		return nil, err
+	}
+	out.ConsumerPresent = true
+
+	info, err := cons.Info(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out.Pending = int64(info.NumPending)
+	out.InFlight = int64(info.NumAckPending)
+
+	dls, err := bus.FetchDead(ctx, s.js)
+	if err != nil {
+		return nil, err
+	}
+	out.Dead = int64(len(dls))
+
+	return connect.NewResponse(out), nil
+}
+
 func (s *Service) SummarizeSession(ctx context.Context, req *connect.Request[cortexv1.SummarizeSessionRequest]) (*connect.Response[cortexv1.SummarizeSessionResponse], error) {
 	convID := strings.TrimSpace(req.Msg.GetConversationId())
 	if convID == "" {
@@ -467,10 +498,8 @@ func (s *Service) linkEndpoints(ctx context.Context, idA, idB string) (memory.Re
 
 // addUnique appends v to xs if absent, preserving order.
 func addUnique(xs []string, v string) []string {
-	for _, x := range xs {
-		if x == v {
-			return xs
-		}
+	if slices.Contains(xs, v) {
+		return xs
 	}
 	return append(xs, v)
 }

@@ -35,6 +35,12 @@ const router = createRouter({
       meta: { requiresAuth: true },
     },
     {
+      path: '/queue',
+      name: 'queue',
+      component: () => import('@/views/QueueView.vue'),
+      meta: { requiresAuth: true },
+    },
+    {
       path: '/status',
       name: 'status',
       component: () => import('@/views/StatusView.vue'),

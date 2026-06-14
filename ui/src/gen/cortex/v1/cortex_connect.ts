@@ -3,7 +3,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { DeadRequest, DeadResponse, DeleteRequest, DeleteResponse, DoctorRequest, DoctorResponse, LinkRequest, LinkResponse, ListRequest, ListResponse, ListSummariesRequest, ListSummariesResponse, RecallSessionRequest, RecallSessionResponse, ReindexRequest, ReindexResponse, SaveRequest, SaveResponse, SearchRequest, SearchResponse, StatusRequest, StatusResponse, SummarizeSessionRequest, SummarizeSessionResponse, UnlinkRequest, UnlinkResponse } from "./cortex_pb.js";
+import { DeadRequest, DeadResponse, DeleteRequest, DeleteResponse, DoctorRequest, DoctorResponse, IndexQueueRequest, IndexQueueResponse, LinkRequest, LinkResponse, ListRequest, ListResponse, ListSummariesRequest, ListSummariesResponse, RecallSessionRequest, RecallSessionResponse, ReindexRequest, ReindexResponse, SaveRequest, SaveResponse, SearchRequest, SearchResponse, StatusRequest, StatusResponse, SummarizeSessionRequest, SummarizeSessionResponse, UnlinkRequest, UnlinkResponse } from "./cortex_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -103,6 +103,17 @@ export const MemoryService = {
       name: "Dead",
       I: DeadRequest,
       O: DeadResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * IndexQueue reports the live state of the async indexing queue.
+     *
+     * @generated from rpc cortex.v1.MemoryService.IndexQueue
+     */
+    indexQueue: {
+      name: "IndexQueue",
+      I: IndexQueueRequest,
+      O: IndexQueueResponse,
       kind: MethodKind.Unary,
     },
     /**

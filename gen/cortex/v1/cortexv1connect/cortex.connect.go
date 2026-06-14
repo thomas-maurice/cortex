@@ -49,6 +49,9 @@ const (
 	MemoryServiceReindexProcedure = "/cortex.v1.MemoryService/Reindex"
 	// MemoryServiceDeadProcedure is the fully-qualified name of the MemoryService's Dead RPC.
 	MemoryServiceDeadProcedure = "/cortex.v1.MemoryService/Dead"
+	// MemoryServiceIndexQueueProcedure is the fully-qualified name of the MemoryService's IndexQueue
+	// RPC.
+	MemoryServiceIndexQueueProcedure = "/cortex.v1.MemoryService/IndexQueue"
 	// MemoryServiceSummarizeSessionProcedure is the fully-qualified name of the MemoryService's
 	// SummarizeSession RPC.
 	MemoryServiceSummarizeSessionProcedure = "/cortex.v1.MemoryService/SummarizeSession"
@@ -82,6 +85,8 @@ type MemoryServiceClient interface {
 	Reindex(context.Context, *connect.Request[v1.ReindexRequest]) (*connect.Response[v1.ReindexResponse], error)
 	// Dead manages dead-lettered memories (list / requeue / purge).
 	Dead(context.Context, *connect.Request[v1.DeadRequest]) (*connect.Response[v1.DeadResponse], error)
+	// IndexQueue reports the live state of the async indexing queue.
+	IndexQueue(context.Context, *connect.Request[v1.IndexQueueRequest]) (*connect.Response[v1.IndexQueueResponse], error)
 	// SummarizeSession upserts the ever-current summary for one conversation.
 	SummarizeSession(context.Context, *connect.Request[v1.SummarizeSessionRequest]) (*connect.Response[v1.SummarizeSessionResponse], error)
 	// RecallSession vector-matches a conversation summary and returns it together
@@ -154,6 +159,12 @@ func NewMemoryServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(memoryServiceMethods.ByName("Dead")),
 			connect.WithClientOptions(opts...),
 		),
+		indexQueue: connect.NewClient[v1.IndexQueueRequest, v1.IndexQueueResponse](
+			httpClient,
+			baseURL+MemoryServiceIndexQueueProcedure,
+			connect.WithSchema(memoryServiceMethods.ByName("IndexQueue")),
+			connect.WithClientOptions(opts...),
+		),
 		summarizeSession: connect.NewClient[v1.SummarizeSessionRequest, v1.SummarizeSessionResponse](
 			httpClient,
 			baseURL+MemoryServiceSummarizeSessionProcedure,
@@ -197,6 +208,7 @@ type memoryServiceClient struct {
 	doctor           *connect.Client[v1.DoctorRequest, v1.DoctorResponse]
 	reindex          *connect.Client[v1.ReindexRequest, v1.ReindexResponse]
 	dead             *connect.Client[v1.DeadRequest, v1.DeadResponse]
+	indexQueue       *connect.Client[v1.IndexQueueRequest, v1.IndexQueueResponse]
 	summarizeSession *connect.Client[v1.SummarizeSessionRequest, v1.SummarizeSessionResponse]
 	recallSession    *connect.Client[v1.RecallSessionRequest, v1.RecallSessionResponse]
 	listSummaries    *connect.Client[v1.ListSummariesRequest, v1.ListSummariesResponse]
@@ -244,6 +256,11 @@ func (c *memoryServiceClient) Dead(ctx context.Context, req *connect.Request[v1.
 	return c.dead.CallUnary(ctx, req)
 }
 
+// IndexQueue calls cortex.v1.MemoryService.IndexQueue.
+func (c *memoryServiceClient) IndexQueue(ctx context.Context, req *connect.Request[v1.IndexQueueRequest]) (*connect.Response[v1.IndexQueueResponse], error) {
+	return c.indexQueue.CallUnary(ctx, req)
+}
+
 // SummarizeSession calls cortex.v1.MemoryService.SummarizeSession.
 func (c *memoryServiceClient) SummarizeSession(ctx context.Context, req *connect.Request[v1.SummarizeSessionRequest]) (*connect.Response[v1.SummarizeSessionResponse], error) {
 	return c.summarizeSession.CallUnary(ctx, req)
@@ -287,6 +304,8 @@ type MemoryServiceHandler interface {
 	Reindex(context.Context, *connect.Request[v1.ReindexRequest]) (*connect.Response[v1.ReindexResponse], error)
 	// Dead manages dead-lettered memories (list / requeue / purge).
 	Dead(context.Context, *connect.Request[v1.DeadRequest]) (*connect.Response[v1.DeadResponse], error)
+	// IndexQueue reports the live state of the async indexing queue.
+	IndexQueue(context.Context, *connect.Request[v1.IndexQueueRequest]) (*connect.Response[v1.IndexQueueResponse], error)
 	// SummarizeSession upserts the ever-current summary for one conversation.
 	SummarizeSession(context.Context, *connect.Request[v1.SummarizeSessionRequest]) (*connect.Response[v1.SummarizeSessionResponse], error)
 	// RecallSession vector-matches a conversation summary and returns it together
@@ -355,6 +374,12 @@ func NewMemoryServiceHandler(svc MemoryServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(memoryServiceMethods.ByName("Dead")),
 		connect.WithHandlerOptions(opts...),
 	)
+	memoryServiceIndexQueueHandler := connect.NewUnaryHandler(
+		MemoryServiceIndexQueueProcedure,
+		svc.IndexQueue,
+		connect.WithSchema(memoryServiceMethods.ByName("IndexQueue")),
+		connect.WithHandlerOptions(opts...),
+	)
 	memoryServiceSummarizeSessionHandler := connect.NewUnaryHandler(
 		MemoryServiceSummarizeSessionProcedure,
 		svc.SummarizeSession,
@@ -403,6 +428,8 @@ func NewMemoryServiceHandler(svc MemoryServiceHandler, opts ...connect.HandlerOp
 			memoryServiceReindexHandler.ServeHTTP(w, r)
 		case MemoryServiceDeadProcedure:
 			memoryServiceDeadHandler.ServeHTTP(w, r)
+		case MemoryServiceIndexQueueProcedure:
+			memoryServiceIndexQueueHandler.ServeHTTP(w, r)
 		case MemoryServiceSummarizeSessionProcedure:
 			memoryServiceSummarizeSessionHandler.ServeHTTP(w, r)
 		case MemoryServiceRecallSessionProcedure:
@@ -452,6 +479,10 @@ func (UnimplementedMemoryServiceHandler) Reindex(context.Context, *connect.Reque
 
 func (UnimplementedMemoryServiceHandler) Dead(context.Context, *connect.Request[v1.DeadRequest]) (*connect.Response[v1.DeadResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cortex.v1.MemoryService.Dead is not implemented"))
+}
+
+func (UnimplementedMemoryServiceHandler) IndexQueue(context.Context, *connect.Request[v1.IndexQueueRequest]) (*connect.Response[v1.IndexQueueResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cortex.v1.MemoryService.IndexQueue is not implemented"))
 }
 
 func (UnimplementedMemoryServiceHandler) SummarizeSession(context.Context, *connect.Request[v1.SummarizeSessionRequest]) (*connect.Response[v1.SummarizeSessionResponse], error) {

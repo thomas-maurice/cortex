@@ -99,7 +99,7 @@ func main() {
 func ensureSchemaWithRetry(ctx context.Context, log *slog.Logger, st *store.Store) error {
 	const attempts = 15
 	var err error
-	for i := 0; i < attempts; i++ {
+	for i := range attempts {
 		if err = st.EnsureSchema(ctx); err == nil {
 			return nil
 		}
@@ -136,7 +136,10 @@ func handleSummary(ctx context.Context, log *slog.Logger, embedder *embed.Client
 	}
 
 	var procErr error
+	var embedDur, storeDur time.Duration
+	embedStart := time.Now()
 	vec, err := embedder.Embed(ctx, sum.Text)
+	embedDur = time.Since(embedStart)
 	if err != nil {
 		procErr = fmt.Errorf("embed: %w", err)
 	} else {
@@ -145,13 +148,18 @@ func handleSummary(ctx context.Context, log *slog.Logger, embedder *embed.Client
 		if sum.UpdatedAt.IsZero() {
 			sum.UpdatedAt = time.Now().UTC()
 		}
+		storeStart := time.Now()
 		if err := st.UpsertSummary(ctx, sum, vec); err != nil {
 			procErr = fmt.Errorf("upsert: %w", err)
 		}
+		storeDur = time.Since(storeStart)
 	}
 
 	if procErr == nil {
-		log.Info("summarized", "conversation", sum.ConversationID, "dims", len(vec))
+		log.Info("summarized", "conversation", sum.ConversationID, "dims", len(vec),
+			"embed_ms", embedDur.Milliseconds(), "store_ms", storeDur.Milliseconds(),
+			"total_ms", (embedDur + storeDur).Milliseconds(),
+			"queue_latency_ms", time.Since(sum.UpdatedAt).Milliseconds())
 		_ = msg.Ack()
 		return
 	}
@@ -179,7 +187,10 @@ func handleIndex(ctx context.Context, log *slog.Logger, js jetstream.JetStream, 
 	}
 
 	var procErr error
+	var embedDur, storeDur time.Duration
+	embedStart := time.Now()
 	vec, err := embedder.Embed(ctx, rec.Text)
+	embedDur = time.Since(embedStart)
 	if err != nil {
 		procErr = fmt.Errorf("embed: %w", err)
 	} else {
@@ -188,13 +199,21 @@ func handleIndex(ctx context.Context, log *slog.Logger, js jetstream.JetStream, 
 		// (if anything) the producer put on the record.
 		rec.Model = embedder.Model()
 		rec.Dims = len(vec)
+		storeStart := time.Now()
 		if err := st.Upsert(ctx, rec, vec); err != nil {
 			procErr = fmt.Errorf("upsert: %w", err)
 		}
+		storeDur = time.Since(storeStart)
 	}
 
 	if procErr == nil {
-		log.Info("indexed", "id", rec.ID, "namespace", rec.Namespace, "dims", len(vec))
+		// queue_latency_ms is the end-to-end wait from publish (rec.CreatedAt) to
+		// indexed — it includes JetStream queue time and any Ollama cold-load, so
+		// it is the number to watch for "why did indexing take so long".
+		log.Info("indexed", "id", rec.ID, "namespace", rec.Namespace, "dims", len(vec),
+			"embed_ms", embedDur.Milliseconds(), "store_ms", storeDur.Milliseconds(),
+			"total_ms", (embedDur + storeDur).Milliseconds(),
+			"queue_latency_ms", time.Since(rec.CreatedAt).Milliseconds())
 		_ = msg.Ack()
 		return
 	}

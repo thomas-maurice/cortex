@@ -1082,6 +1082,100 @@ export class DeadResponse extends Message<DeadResponse> {
 }
 
 /**
+ * @generated from message cortex.v1.IndexQueueRequest
+ */
+export class IndexQueueRequest extends Message<IndexQueueRequest> {
+  constructor(data?: PartialMessage<IndexQueueRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "cortex.v1.IndexQueueRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): IndexQueueRequest {
+    return new IndexQueueRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): IndexQueueRequest {
+    return new IndexQueueRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): IndexQueueRequest {
+    return new IndexQueueRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: IndexQueueRequest | PlainMessage<IndexQueueRequest> | undefined, b: IndexQueueRequest | PlainMessage<IndexQueueRequest> | undefined): boolean {
+    return proto3.util.equals(IndexQueueRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message cortex.v1.IndexQueueResponse
+ */
+export class IndexQueueResponse extends Message<IndexQueueResponse> {
+  /**
+   * messages waiting to be delivered to the worker (NumPending)
+   *
+   * @generated from field: int64 pending = 1;
+   */
+  pending = protoInt64.zero;
+
+  /**
+   * messages delivered, awaiting ack (NumAckPending)
+   *
+   * @generated from field: int64 in_flight = 2;
+   */
+  inFlight = protoInt64.zero;
+
+  /**
+   * dead-lettered messages preserved for inspection
+   *
+   * @generated from field: int64 dead = 3;
+   */
+  dead = protoInt64.zero;
+
+  /**
+   * false when the worker has not (yet) created its consumer
+   *
+   * @generated from field: bool consumer_present = 4;
+   */
+  consumerPresent = false;
+
+  constructor(data?: PartialMessage<IndexQueueResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "cortex.v1.IndexQueueResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "pending", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 2, name: "in_flight", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 3, name: "dead", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 4, name: "consumer_present", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): IndexQueueResponse {
+    return new IndexQueueResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): IndexQueueResponse {
+    return new IndexQueueResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): IndexQueueResponse {
+    return new IndexQueueResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: IndexQueueResponse | PlainMessage<IndexQueueResponse> | undefined, b: IndexQueueResponse | PlainMessage<IndexQueueResponse> | undefined): boolean {
+    return proto3.util.equals(IndexQueueResponse, a, b);
+  }
+}
+
+/**
  * ConversationSummary is the ever-current digest of one conversation, unique per
  * conversation_id. Only `text` is embedded; the rest is metadata.
  *

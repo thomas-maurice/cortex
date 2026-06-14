@@ -91,6 +91,12 @@ services:
       MEMORY_SOURCE: cortex
       CORTEX_AUTH_TOKEN: changeme-generate-a-long-random-token
       # Web UI login (served by the same server, fronted by Traefik over h2c).
+      # CORTEX_UI_PASSWORD may be plaintext OR an argon2id/bcrypt hash
+      # (`cortex hash-password`). IMPORTANT: a hash contains `$`, which Compose
+      # interpolates as ${variables} and would mangle — so when you paste a hash
+      # here, DOUBLE every `$` to `$$` (compose un-escapes it back to a single
+      # `$` for the container). Generate a ready-to-paste value with:
+      #   cortex hash-password | sed 's/\$/$$/g'
       CORTEX_UI_USER: admin
       CORTEX_UI_PASSWORD: changeme-set-a-ui-password
     labels:

@@ -27,6 +27,8 @@ service MemoryService {
   rpc Reindex(ReindexRequest) returns (ReindexResponse) {}
   // Dead manages dead-lettered memories (list / requeue / purge).
   rpc Dead(DeadRequest) returns (DeadResponse) {}
+  // IndexQueue reports the live state of the async indexing queue.
+  rpc IndexQueue(IndexQueueRequest) returns (IndexQueueResponse) {}
   // SummarizeSession upserts the ever-current summary for one conversation.
   rpc SummarizeSession(SummarizeSessionRequest) returns (SummarizeSessionResponse) {}
   // RecallSession vector-matches a conversation summary and returns it together
@@ -166,6 +168,15 @@ message DeadRequest {
 message DeadResponse {
   repeated DeadLetter dead_letters = 1; // populated on LIST
   int32 affected = 2;                   // requeued or purged count
+}
+
+message IndexQueueRequest {}
+
+message IndexQueueResponse {
+  int64 pending = 1;        // messages waiting to be delivered to the worker (NumPending)
+  int64 in_flight = 2;      // messages delivered, awaiting ack (NumAckPending)
+  int64 dead = 3;           // dead-lettered messages preserved for inspection
+  bool consumer_present = 4; // false when the worker has not (yet) created its consumer
 }
 
 // ConversationSummary is the ever-current digest of one conversation, unique per

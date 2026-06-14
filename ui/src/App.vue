@@ -18,6 +18,9 @@
           <router-link class="nav-link" :to="{ name: 'sessions' }">Sessions</router-link>
         </li>
         <li class="nav-item">
+          <router-link class="nav-link" :to="{ name: 'queue' }">Indexing</router-link>
+        </li>
+        <li class="nav-item">
           <router-link class="nav-link" :to="{ name: 'status' }">Status</router-link>
         </li>
       </ul>
