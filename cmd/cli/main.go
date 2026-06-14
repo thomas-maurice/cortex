@@ -6,6 +6,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -13,7 +14,9 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/alexedwards/argon2id"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 
 	cortexv1 "github.com/thomas-maurice/cortex/gen/cortex/v1"
 	"github.com/thomas-maurice/cortex/gen/cortex/v1/cortexv1connect"
@@ -44,6 +47,51 @@ func client() cortexv1connect.MemoryServiceClient {
 	return rpc.NewClient(serverURL, authToken)
 }
 
+// hashPasswordCmd generates an argon2id PHC hash for use as CORTEX_UI_PASSWORD,
+// so the plaintext password need not be stored in the environment/compose file.
+func hashPasswordCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "hash-password",
+		Short: "Generate an argon2id hash for CORTEX_UI_PASSWORD",
+		Long: "Read a password (no-echo prompt, or piped on stdin) and print an argon2id\n" +
+			"PHC hash. Set the result as CORTEX_UI_PASSWORD so the server stores only the\n" +
+			"hash, never the plaintext.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			pw, err := readSecret()
+			if err != nil {
+				return err
+			}
+			if pw == "" {
+				return fmt.Errorf("empty password")
+			}
+			hash, err := argon2id.CreateHash(pw, argon2id.DefaultParams)
+			if err != nil {
+				return err
+			}
+			fmt.Println(hash)
+			return nil
+		},
+	}
+}
+
+// readSecret reads a password without echoing when stdin is a terminal, or reads
+// the first line when piped (e.g. `echo -n pw | cortex hash-password`).
+func readSecret() (string, error) {
+	fd := int(os.Stdin.Fd())
+	if term.IsTerminal(fd) {
+		fmt.Fprint(os.Stderr, "Password: ")
+		b, err := term.ReadPassword(fd)
+		fmt.Fprintln(os.Stderr)
+		return strings.TrimSpace(string(b)), err
+	}
+	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	if err != nil && line == "" {
+		return "", err
+	}
+	return strings.TrimSpace(line), nil
+}
+
 func main() {
 	root := &cobra.Command{
 		Use:           "cortex",
@@ -59,7 +107,7 @@ func main() {
 	pf.StringVar(&source, "source", env("MEMORY_SOURCE", "cli"), "source tag recorded on saved memories")
 	pf.StringVar(&conversationID, "conversation", os.Getenv("CLAUDE_CODE_SESSION_ID"), "conversation/session ID stamped on saved memories")
 
-	root.AddCommand(saveCmd(), listCmd(), searchCmd(), deleteCmd(), exportCmd(), reindexCmd(), deadCmd(), statusCmd(), doctorCmd(), summarizeCmd(), summariesCmd(), recallCmd())
+	root.AddCommand(saveCmd(), listCmd(), searchCmd(), deleteCmd(), exportCmd(), reindexCmd(), deadCmd(), statusCmd(), doctorCmd(), summarizeCmd(), summariesCmd(), recallCmd(), hashPasswordCmd())
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)

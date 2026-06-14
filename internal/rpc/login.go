@@ -5,7 +5,32 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strings"
+
+	"github.com/alexedwards/argon2id"
+	"golang.org/x/crypto/bcrypt"
 )
+
+// verifyPassword checks a submitted password against the configured value. The
+// configured value may be a password HASH — detected by its PHC/crypt prefix —
+// so the plaintext secret need not live in the environment/compose file:
+//
+//	$argon2id$...   argon2id (e.g. `vaultwarden hash`, or any PHC argon2 string)
+//	$2a$/$2b$/$2y$  bcrypt
+//
+// Anything else is treated as a plaintext password and compared in constant time
+// (backward compatible).
+func verifyPassword(submitted, configured string) bool {
+	switch {
+	case strings.HasPrefix(configured, "$argon2"):
+		ok, err := argon2id.ComparePasswordAndHash(submitted, configured)
+		return err == nil && ok
+	case strings.HasPrefix(configured, "$2a$"), strings.HasPrefix(configured, "$2b$"), strings.HasPrefix(configured, "$2y$"):
+		return bcrypt.CompareHashAndPassword([]byte(configured), []byte(submitted)) == nil
+	default:
+		return subtle.ConstantTimeCompare([]byte(submitted), []byte(configured)) == 1
+	}
+}
 
 type loginRequest struct {
 	Username string `json:"username"`
@@ -40,7 +65,7 @@ func LoginHandler(mgr *JWTManager, user, pass, role string, log *slog.Logger) ht
 			return
 		}
 		userOK := subtle.ConstantTimeCompare([]byte(req.Username), []byte(user)) == 1
-		passOK := subtle.ConstantTimeCompare([]byte(req.Password), []byte(pass)) == 1
+		passOK := verifyPassword(req.Password, pass)
 		if !userOK || !passOK {
 			log.Warn("ui login failed", "username", req.Username, "remote", r.RemoteAddr)
 			http.Error(w, "invalid credentials", http.StatusUnauthorized)

@@ -152,8 +152,19 @@ JWT; the API then accepts **either** that JWT (browser) **or** the static
 | env var | purpose |
 | --- | --- |
 | `CORTEX_UI_USER` | UI login username (default `admin`) |
-| `CORTEX_UI_PASSWORD` | UI login password; **unset disables the UI login** |
+| `CORTEX_UI_PASSWORD` | UI login password — **plaintext, or a hash** (see below); **unset disables the UI login** |
 | `CORTEX_JWT_SECRET` | explicit HS256 secret for UI JWTs. If unset, a **stable** secret is derived as `sha256("cortex/jwt-secret/v1:" + CORTEX_AUTH_TOKEN)` (so sessions survive restarts without using the API token directly as the signing key). If neither is set, a random per-process secret is used and sessions die on restart. |
+
+`CORTEX_UI_PASSWORD` may be a **plaintext** password, an **argon2id** PHC hash
+(`$argon2id$…`), or a **bcrypt** hash (`$2a$…`) — the format is auto-detected, so
+you can keep the plaintext out of your env/compose file. Generate an argon2id
+hash with the CLI:
+
+```bash
+cortex hash-password            # prompts (no echo), prints the hash
+echo -n 'my-password' | cortex hash-password   # or pipe it
+# → $argon2id$v=19$m=65536,t=1,p=10$…   ← use this as CORTEX_UI_PASSWORD
+```
 
 This is single-user by design; the JWT already carries a `role` claim, so adding
 real users later is a backend-only change. Frontend lives in `ui/`; `make ui`

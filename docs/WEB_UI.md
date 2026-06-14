@@ -49,10 +49,13 @@ Vue 3 + vue-router + pinia (+ persistedstate) + Bootstrap 5 + FontAwesome +
 Single-user by design today, with the seam for multi-user already in place.
 
 1. **Login** — `POST /auth/login {username, password}` (`internal/rpc/login.go`)
-   constant-time-compares against `CORTEX_UI_USER` / `CORTEX_UI_PASSWORD`. On
-   success it mints an **HS256 JWT** (`internal/rpc/jwt.go`, 12h TTL) carrying
-   `username` + `role` claims. If no password is configured, UI login is disabled
-   (the API is still usable by MCP/CLI via the static token).
+   checks against `CORTEX_UI_USER` / `CORTEX_UI_PASSWORD`. The password may be
+   plaintext (constant-time compared), an **argon2id** PHC hash (`$argon2id$…`),
+   or a **bcrypt** hash (`$2a$…`) — auto-detected by prefix; generate one with
+   `cortex hash-password`. On success it mints an **HS256 JWT**
+   (`internal/rpc/jwt.go`, 12h TTL) carrying `username` + `role` claims. If no
+   password is configured, UI login is disabled (the API is still usable by
+   MCP/CLI via the static token).
 2. **API auth** — the Connect interceptor (`internal/rpc/auth.go`) accepts
    **either** the static `CORTEX_AUTH_TOKEN` (MCP/CLI) **or** a valid UI JWT
    (browser) via a `multiAuth`. With no token set, the server is open (dev).
