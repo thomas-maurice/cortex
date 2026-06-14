@@ -157,7 +157,10 @@ func main() {
 			"whenever the user states a fact, preference, decision, plan, or piece of context worth " +
 			"recalling in a future session. Do not wait to be asked. Write a self-contained note of " +
 			"one to a few sentences that captures enough surrounding context to be understood months " +
-			"later on its own (who/what/why, not just a keyword). Summarising a discussion or a " +
+			"later on its own (who/what/why, not just a keyword). Memories can be as long as they need " +
+			"to be — a rich, detailed note is better than a lossy one. Strongly prefer writing the text " +
+			"as Markdown: use headings, bullet lists, code fences, and links where they make the note " +
+			"clearer, since the UI renders it as formatted Markdown. Summarising a discussion or a " +
 			"conclusion into one rich memory is encouraged. Scope it with a namespace (e.g. the " +
 			"project or topic) and tags. Indexing is asynchronous and durable; saving is cheap, so " +
 			"err on the side of saving more.",
@@ -199,8 +202,10 @@ func main() {
 			"by meaning (e.g. \"the session where we patched the router\"). Call this PROACTIVELY and " +
 			"FREQUENTLY — after each meaningful step or topic shift, and again before the session ends — " +
 			"NOT just once. There is exactly ONE summary per conversation; each call REPLACES it, so always " +
-			"pass the full, current summary (a short paragraph covering what the session is about, what was " +
-			"done, and key outcomes), not a delta. Keeping it fresh is what makes later recall accurate; a " +
+			"pass the full, current summary (covering what the session is about, what was " +
+			"done, and key outcomes), not a delta. Strongly prefer writing the summary as Markdown — use " +
+			"headings, bullet lists, and code fences to structure it, since the UI renders it as formatted " +
+			"Markdown. Keeping it fresh is what makes later recall accurate; a " +
 			"stale summary means the session is remembered wrong. You do not provide an ID — the server ties " +
 			"the summary to this session automatically.",
 	}, d.summarize)
@@ -224,7 +229,7 @@ func main() {
 // ---- memory_save ----
 
 type SaveIn struct {
-	Text      string   `json:"text" jsonschema:"the memory content to store; a self-contained note of one to a few sentences that captures the fact AND enough context to be understood on its own later"`
+	Text      string   `json:"text" jsonschema:"the memory content to store; a self-contained note that captures the fact AND enough context to be understood on its own later. Can be as long as needed; strongly prefer Markdown formatting (headings, bullets, code fences) as the UI renders it as Markdown"`
 	Namespace string   `json:"namespace,omitempty" jsonschema:"optional namespace to scope the memory (e.g. a project name); defaults to the server's configured namespace"`
 	Tags      []string `json:"tags,omitempty" jsonschema:"optional free-form tags for later filtering"`
 }
@@ -401,7 +406,7 @@ func (d *deps) unlink(ctx context.Context, _ *mcp.CallToolRequest, in UnlinkIn) 
 // ---- session_summarize ----
 
 type SummarizeIn struct {
-	Text      string `json:"text" jsonschema:"the full, current summary of THIS conversation — a short paragraph (what it's about, what was done, key outcomes); replaces any prior summary for the session"`
+	Text      string `json:"text" jsonschema:"the full, current summary of THIS conversation (what it's about, what was done, key outcomes); replaces any prior summary for the session. Strongly prefer Markdown formatting (headings, bullets, code fences) as the UI renders it as Markdown"`
 	Namespace string `json:"namespace,omitempty" jsonschema:"optional namespace to scope the summary; defaults to the server's configured namespace"`
 }
 

@@ -50,7 +50,7 @@
     <div v-for="m in memories" :key="m.id" class="card mb-2">
       <div class="card-body py-2">
         <div class="d-flex justify-content-between align-items-start">
-          <p class="mb-1 me-3" style="white-space: pre-wrap">{{ m.text }}</p>
+          <div class="mb-1 me-3 markdown-body" v-html="renderMarkdown(m.text)"></div>
           <button class="btn btn-outline-danger btn-sm flex-shrink-0" title="Delete" @click="remove(m.id)">
             <font-awesome-icon :icon="['fas', 'trash']" />
           </button>
@@ -76,6 +76,7 @@ import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { Code, ConnectError } from '@connectrpc/connect'
 import { memoryClient } from '@/utils/connect'
+import { renderMarkdown } from '@/utils/markdown'
 import { useAuthStore } from '@/stores/auth'
 
 const router = useRouter()

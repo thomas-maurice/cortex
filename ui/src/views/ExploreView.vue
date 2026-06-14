@@ -57,7 +57,7 @@
             </span>
             <button class="btn-close btn-sm" @click="deselect"></button>
           </div>
-          <p class="small mb-2" style="white-space: pre-wrap">{{ selected.text }}</p>
+          <div class="small mb-2 markdown-body" v-html="renderMarkdown(selected.text)"></div>
           <div class="small text-muted">
             <span v-for="t in selected.tags" :key="t" class="badge bg-info text-dark me-1">#{{ t }}</span>
           </div>
@@ -78,6 +78,7 @@ import { useRouter } from 'vue-router'
 import { Network, DataSet } from 'vis-network/standalone'
 import { Code, ConnectError } from '@connectrpc/connect'
 import { memoryClient } from '@/utils/connect'
+import { renderMarkdown } from '@/utils/markdown'
 import { useAuthStore } from '@/stores/auth'
 import { truncate } from '@/utils/text'
 

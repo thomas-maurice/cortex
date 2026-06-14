@@ -25,7 +25,7 @@
 
     <div v-for="s in summaries" :key="s.conversationId" class="card mb-2">
       <div class="card-body py-2">
-        <p class="mb-1" style="white-space: pre-wrap">{{ s.text }}</p>
+        <div class="mb-1 markdown-body" v-html="renderMarkdown(s.text)"></div>
         <div class="small text-muted d-flex flex-wrap gap-2">
           <span class="badge bg-secondary"><font-awesome-icon :icon="['fas', 'layer-group']" class="me-1" />{{ s.namespace }}</span>
           <span class="font-monospace">{{ truncate(s.conversationId, 28) }}</span>
@@ -41,6 +41,7 @@ import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { Code, ConnectError } from '@connectrpc/connect'
 import { memoryClient } from '@/utils/connect'
+import { renderMarkdown } from '@/utils/markdown'
 import { useAuthStore } from '@/stores/auth'
 import { truncate, formatTimestamp } from '@/utils/text'
 
