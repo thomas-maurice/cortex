@@ -59,6 +59,14 @@ type Record struct {
 	// (bidirectional, set via the Link RPC). Metadata only, never embedded. It
 	// threads through the worker upsert so reindex/redelivery preserve links.
 	LinkedIDs []string `json:"linkedIds,omitempty"`
+
+	// LinkTo carries a one-shot instruction (NOT persisted state): ids of
+	// existing memories this record should be bidirectionally linked to once
+	// indexed. It rides the NATS index payload from the Save RPC to the worker,
+	// which applies the links after Upsert and then discards it. It is never
+	// written as a Weaviate property, so it is empty on reindex/redelivery —
+	// established links live in LinkedIDs by then.
+	LinkTo []string `json:"linkTo,omitempty"`
 }
 
 // Hit is a search result: a record plus its vector distance to the query.

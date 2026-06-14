@@ -66,6 +66,12 @@ message SaveRequest {
   repeated string tags = 3;
   string source = 4; // optional; server default when empty
   string conversation_id = 5; // optional; client session ID for provenance
+  // link_to carries IDs of EXISTING memories (e.g. from a prior search) that
+  // this new memory should be bidirectionally linked to. The links are applied
+  // by the worker right after this memory is indexed — solving the chicken/egg
+  // where the new memory has no Weaviate object to link until it is indexed.
+  // Missing targets are skipped (logged), never fatal.
+  repeated string link_to = 6;
 }
 
 message SaveResponse {

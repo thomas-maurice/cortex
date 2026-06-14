@@ -10,6 +10,8 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"slices"
+	"sync"
 	"syscall"
 	"time"
 
@@ -177,6 +179,94 @@ func handleSummary(ctx context.Context, log *slog.Logger, embedder *embed.Client
 	_ = msg.NakWithDelay(2 * time.Second)
 }
 
+// linkMu serializes the read-modify-write that link application performs on each
+// target's linkedIds. SetLinks replaces the whole list, so concurrent consumers
+// linking to the same target would otherwise lose updates (the Link RPC guards
+// the same hazard with its own mutex). This protects a single worker process;
+// running multiple worker replicas reintroduces the cross-process race, which is
+// non-fatal (it can leave a link asymmetric) but worth knowing.
+var linkMu sync.Mutex
+
+// linkTarget is one resolved entry of rec.LinkTo: the target id, its current
+// link set, and whether it actually exists in the store.
+type linkTarget struct {
+	id     string
+	links  []string // the target's current linkedIds
+	exists bool
+}
+
+// planLinks computes the bidirectional link mutations for a freshly-indexed
+// record. A target is skipped when it is empty, equals the record itself, was
+// not found, or repeats an earlier target. It returns the record's full desired
+// forward link set and, per changed target, that target's new link set (the
+// reverse direction). Pure: all store IO is done by the caller, so the
+// skip/dedup/bidirectional contract is unit-testable without a live Weaviate.
+func planLinks(recID string, recLinks []string, targets []linkTarget) (forward []string, reverse map[string][]string) {
+	forward = append([]string(nil), recLinks...)
+	reverse = make(map[string][]string)
+	seen := make(map[string]bool, len(targets))
+	for _, t := range targets {
+		if t.id == "" || t.id == recID || !t.exists || seen[t.id] {
+			continue
+		}
+		seen[t.id] = true
+		forward = addUnique(forward, t.id)
+		reverse[t.id] = addUnique(t.links, recID)
+	}
+	return forward, reverse
+}
+
+// applyLinks bidirectionally links a freshly-indexed record to each target in
+// rec.LinkTo. Best-effort: a missing/stale target is skipped and logged, never
+// fatal — the record is already indexed by the time this runs.
+func applyLinks(ctx context.Context, log *slog.Logger, st *store.Store, rec memory.Record) {
+	if len(rec.LinkTo) == 0 {
+		return
+	}
+	linkMu.Lock()
+	defer linkMu.Unlock()
+
+	targets := make([]linkTarget, 0, len(rec.LinkTo))
+	for _, id := range rec.LinkTo {
+		if id == "" || id == rec.ID {
+			continue
+		}
+		t, found, err := st.Get(ctx, id)
+		if err != nil {
+			log.Warn("link target lookup failed, skipping", "id", rec.ID, "target", id, "err", err)
+			continue
+		}
+		if !found {
+			log.Warn("link target does not exist, skipping", "id", rec.ID, "target", id)
+			continue
+		}
+		targets = append(targets, linkTarget{id: id, links: t.LinkedIDs, exists: true})
+	}
+
+	forward, reverse := planLinks(rec.ID, rec.LinkedIDs, targets)
+	for id, links := range reverse {
+		if err := st.SetLinks(ctx, id, links); err != nil {
+			log.Warn("link target update failed, skipping", "id", rec.ID, "target", id, "err", err)
+			continue
+		}
+		log.Info("linked", "id", rec.ID, "target", id)
+	}
+	// Write the record's own forward links only if any target was actually added.
+	if len(forward) > len(rec.LinkedIDs) {
+		if err := st.SetLinks(ctx, rec.ID, forward); err != nil {
+			log.Warn("forward link update failed", "id", rec.ID, "err", err)
+		}
+	}
+}
+
+// addUnique appends v to xs if absent, preserving order.
+func addUnique(xs []string, v string) []string {
+	if slices.Contains(xs, v) {
+		return xs
+	}
+	return append(xs, v)
+}
+
 func handleIndex(ctx context.Context, log *slog.Logger, js jetstream.JetStream, embedder *embed.Client, st *store.Store, msg jetstream.Msg) {
 	var rec memory.Record
 	if err := json.Unmarshal(msg.Data(), &rec); err != nil {
@@ -202,6 +292,11 @@ func handleIndex(ctx context.Context, log *slog.Logger, js jetstream.JetStream, 
 		storeStart := time.Now()
 		if err := st.Upsert(ctx, rec, vec); err != nil {
 			procErr = fmt.Errorf("upsert: %w", err)
+		} else {
+			// The record now exists in the store, so its requested links can be
+			// applied. Best-effort and non-fatal: link problems must not fail the
+			// (already successful) index.
+			applyLinks(ctx, log, st, rec)
 		}
 		storeDur = time.Since(storeStart)
 	}

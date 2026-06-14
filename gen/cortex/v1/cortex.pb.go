@@ -199,8 +199,14 @@ type SaveRequest struct {
 	Tags           []string               `protobuf:"bytes,3,rep,name=tags,proto3" json:"tags,omitempty"`
 	Source         string                 `protobuf:"bytes,4,opt,name=source,proto3" json:"source,omitempty"`                                       // optional; server default when empty
 	ConversationId string                 `protobuf:"bytes,5,opt,name=conversation_id,json=conversationId,proto3" json:"conversation_id,omitempty"` // optional; client session ID for provenance
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// link_to carries IDs of EXISTING memories (e.g. from a prior search) that
+	// this new memory should be bidirectionally linked to. The links are applied
+	// by the worker right after this memory is indexed — solving the chicken/egg
+	// where the new memory has no Weaviate object to link until it is indexed.
+	// Missing targets are skipped (logged), never fatal.
+	LinkTo        []string `protobuf:"bytes,6,rep,name=link_to,json=linkTo,proto3" json:"link_to,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *SaveRequest) Reset() {
@@ -266,6 +272,13 @@ func (x *SaveRequest) GetConversationId() string {
 		return x.ConversationId
 	}
 	return ""
+}
+
+func (x *SaveRequest) GetLinkTo() []string {
+	if x != nil {
+		return x.LinkTo
+	}
+	return nil
 }
 
 type SaveResponse struct {
@@ -2164,13 +2177,14 @@ const file_cortex_v1_cortex_proto_rawDesc = "" +
 	"\x0fconversation_id\x18\t \x01(\tR\x0econversationId\x12\x1d\n" +
 	"\n" +
 	"linked_ids\x18\n" +
-	" \x03(\tR\tlinkedIds\"\x94\x01\n" +
+	" \x03(\tR\tlinkedIds\"\xad\x01\n" +
 	"\vSaveRequest\x12\x12\n" +
 	"\x04text\x18\x01 \x01(\tR\x04text\x12\x1c\n" +
 	"\tnamespace\x18\x02 \x01(\tR\tnamespace\x12\x12\n" +
 	"\x04tags\x18\x03 \x03(\tR\x04tags\x12\x16\n" +
 	"\x06source\x18\x04 \x01(\tR\x06source\x12'\n" +
-	"\x0fconversation_id\x18\x05 \x01(\tR\x0econversationId\"6\n" +
+	"\x0fconversation_id\x18\x05 \x01(\tR\x0econversationId\x12\x17\n" +
+	"\alink_to\x18\x06 \x03(\tR\x06linkTo\"6\n" +
 	"\fSaveResponse\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x16\n" +
 	"\x06status\x18\x02 \x01(\tR\x06status\"\xe8\x01\n" +

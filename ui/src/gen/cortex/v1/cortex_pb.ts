@@ -175,6 +175,17 @@ export class SaveRequest extends Message<SaveRequest> {
    */
   conversationId = "";
 
+  /**
+   * link_to carries IDs of EXISTING memories (e.g. from a prior search) that
+   * this new memory should be bidirectionally linked to. The links are applied
+   * by the worker right after this memory is indexed — solving the chicken/egg
+   * where the new memory has no Weaviate object to link until it is indexed.
+   * Missing targets are skipped (logged), never fatal.
+   *
+   * @generated from field: repeated string link_to = 6;
+   */
+  linkTo: string[] = [];
+
   constructor(data?: PartialMessage<SaveRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -188,6 +199,7 @@ export class SaveRequest extends Message<SaveRequest> {
     { no: 3, name: "tags", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
     { no: 4, name: "source", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 5, name: "conversation_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 6, name: "link_to", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): SaveRequest {

@@ -117,7 +117,7 @@ func main() {
 
 func saveCmd() *cobra.Command {
 	var namespace string
-	var tags []string
+	var tags, linkTo []string
 	cmd := &cobra.Command{
 		Use:   "save <text>",
 		Short: "Save a memory (queued on the server for async indexing)",
@@ -135,6 +135,7 @@ func saveCmd() *cobra.Command {
 				Text:           text,
 				Namespace:      ns,
 				Tags:           tags,
+				LinkTo:         linkTo,
 				Source:         source,
 				ConversationId: conversationID,
 			}))
@@ -147,6 +148,7 @@ func saveCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVarP(&namespace, "namespace", "n", "", "namespace to scope the memory (default: configured default)")
 	cmd.Flags().StringSliceVarP(&tags, "tag", "t", nil, "tag to attach (repeatable)")
+	cmd.Flags().StringSliceVarP(&linkTo, "link-to", "L", nil, "ID of an existing memory to link this one to (repeatable; applied after indexing)")
 	return cmd
 }
 

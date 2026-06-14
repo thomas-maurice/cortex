@@ -80,6 +80,7 @@ func (s *Service) Save(ctx context.Context, req *connect.Request[cortexv1.SaveRe
 		Source:         src,
 		CreatedAt:      time.Now().UTC(),
 		ConversationID: req.Msg.GetConversationId(),
+		LinkTo:         req.Msg.GetLinkTo(),
 	}
 	if err := bus.PublishIndex(ctx, s.js, rec); err != nil {
 		return nil, err

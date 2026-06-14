@@ -183,12 +183,15 @@ func main() {
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "cortex_memory_link",
 		Description: "Create an explicit, durable link between two existing memories so they are connected " +
-			"in the user's knowledge graph and can be traversed together. Use this PROACTIVELY when you " +
-			"notice two memories are meaningfully related — e.g. a decision and the bug that motivated it, " +
-			"a preference and the project it applies to, or two facts about the same system — to build up " +
-			"structure the user can navigate visually. The link is bidirectional. Pass two memory IDs as " +
-			"returned by cortex_memory_search or cortex_recall_session (the memories must already be indexed, " +
-			"so link IDs you got from a search, not one you just saved this turn).",
+			"in the user's knowledge graph and can be traversed together. When you notice two memories are " +
+			"strongly, meaningfully related — e.g. a decision and the bug that motivated it, a preference and " +
+			"the project it applies to, or two facts about the same system — link them AUTOMATICALLY without " +
+			"asking first; only pause to ask on borderline or weakly-related pairs. Do not link merely " +
+			"topically-adjacent memories — that produces a useless hairball graph; the bar is a real " +
+			"relationship, not surface similarity. The link is bidirectional. Pass two memory IDs as returned " +
+			"by cortex_memory_search or cortex_recall_session (the memories must already be indexed, so link " +
+			"IDs you got from a search, not one you just saved this turn — to link a memory at save time, " +
+			"pass the related IDs via the linkTo field of cortex_memory_save instead).",
 	}, d.link)
 
 	mcp.AddTool(server, &mcp.Tool{
@@ -232,6 +235,7 @@ type SaveIn struct {
 	Text      string   `json:"text" jsonschema:"the memory content to store; a self-contained note that captures the fact AND enough context to be understood on its own later. Can be as long as needed; strongly prefer Markdown formatting (headings, bullets, code fences) as the UI renders it as Markdown"`
 	Namespace string   `json:"namespace,omitempty" jsonschema:"optional namespace to scope the memory (e.g. a project name); defaults to the server's configured namespace"`
 	Tags      []string `json:"tags,omitempty" jsonschema:"optional free-form tags for later filtering"`
+	LinkTo    []string `json:"linkTo,omitempty" jsonschema:"optional IDs of EXISTING related memories (from a prior memory_search) to bidirectionally link this new memory to; the link is applied once this memory is indexed, so pass IDs returned by a search, not one you are saving right now"`
 }
 
 type SaveOut struct {
@@ -253,6 +257,7 @@ func (d *deps) save(ctx context.Context, _ *mcp.CallToolRequest, in SaveIn) (*mc
 		Text:           text,
 		Namespace:      ns,
 		Tags:           in.Tags,
+		LinkTo:         in.LinkTo,
 		Source:         d.source,
 		ConversationId: d.conversationID,
 	}))
