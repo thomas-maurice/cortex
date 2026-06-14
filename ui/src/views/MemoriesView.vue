@@ -63,6 +63,9 @@
             <font-awesome-icon :icon="['fas', 'tag']" class="me-1" />{{ t }}
           </span>
           <span v-if="m.source">src: {{ m.source }}</span>
+          <span v-if="m.conversationId" class="font-monospace">
+            <font-awesome-icon :icon="['fas', 'comments']" class="me-1" />{{ m.conversationId }}
+          </span>
           <span v-if="m.createdAt">{{ formatDate(m.createdAt) }}</span>
           <span v-if="m._distance !== undefined">dist: {{ m._distance.toFixed(3) }}</span>
         </div>

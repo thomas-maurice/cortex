@@ -71,6 +71,10 @@
           <div class="small text-muted mb-2">
             <span v-for="t in selected.tags" :key="t" class="badge bg-info text-dark me-1">#{{ t }}</span>
           </div>
+          <div v-if="selected.conversationId" class="small text-muted mb-2">
+            <font-awesome-icon :icon="['fas', 'comments']" class="me-1" />
+            <span class="font-monospace">{{ selected.conversationId }}</span>
+          </div>
           <div class="small text-muted mb-2">
             {{ (selected.linkedIds || []).length }} explicit link(s)
           </div>

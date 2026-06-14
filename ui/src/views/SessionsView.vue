@@ -28,7 +28,7 @@
         <div class="mb-1 markdown-body" v-html="renderMarkdown(s.text)"></div>
         <div class="small text-muted d-flex flex-wrap gap-2">
           <span class="badge bg-secondary"><font-awesome-icon :icon="['fas', 'layer-group']" class="me-1" />{{ s.namespace }}</span>
-          <span class="font-monospace">{{ truncate(s.conversationId, 28) }}</span>
+          <span class="font-monospace">{{ s.conversationId }}</span>
           <span v-if="s.updatedAt">updated {{ formatTimestamp(s.updatedAt) }}</span>
         </div>
       </div>
@@ -43,7 +43,7 @@ import { Code, ConnectError } from '@connectrpc/connect'
 import { memoryClient } from '@/utils/connect'
 import { renderMarkdown } from '@/utils/markdown'
 import { useAuthStore } from '@/stores/auth'
-import { truncate, formatTimestamp } from '@/utils/text'
+import { formatTimestamp } from '@/utils/text'
 
 const router = useRouter()
 const auth = useAuthStore()
