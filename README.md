@@ -317,6 +317,48 @@ The host-side [`cortex` CLI](#command-line-cli) adds `list`, `export`,
 `reindex`, `status`, and `doctor` on top of these for terminal use and
 maintenance.
 
+## Configuration file (`cortex.yaml`)
+
+Both the CLI and the MCP server read an optional config file so you don't have to
+repeat `--server` / `CORTEX_AUTH_TOKEN` / etc. on every invocation. It lives at
+`~/.config/cortex/cortex.yaml` by default (honouring `XDG_CONFIG_HOME`); override
+the path with `--config <path>` (CLI) or `CORTEX_CONFIG=<path>` (CLI **and** MCP).
+
+Every setting resolves in this order — **first non-empty wins**:
+
+```
+command-line flag  >  environment variable  >  cortex.yaml  >  built-in default
+```
+
+Scaffold a starter file with `cortex config init`, then edit it:
+
+```yaml
+# Cortex configuration, shared by the CLI and the MCP server.
+
+# --- client settings ---
+server: http://localhost:8080   # Cortex RPC server URL          (env: CORTEX_SERVER_URL)
+token: ""                       # bearer token                   (env: CORTEX_AUTH_TOKEN)
+namespace-default: global       # namespace used when none given (env: DEFAULT_NAMESPACE)
+source: cli                     # source tag on saved memories   (env: MEMORY_SOURCE)
+
+# --- MCP server defaults (applied when a tool call omits the field; 0 = defer to server) ---
+mcp:
+  search-limit: 10              # default max results for cortex_memory_search
+  fact-limit: 50                # default max facts for cortex_recall_session
+  max-distance: 0.45            # relevance cutoff, cosine distance; 0 = no cutoff (env: MAX_DISTANCE)
+```
+
+A missing file is fine (the config is entirely optional); a malformed file, or a
+path you explicitly pass that can't be read, fails loudly. Run `cortex config
+show` to see the merged result and confirm which file was picked up.
+
+The `mcp:` block sets the defaults the MCP tools use when Claude's call omits the
+field. `max-distance` is the relevance cutoff (cosine distance; results farther
+than this are dropped, `0` disables it) — its ideal value is **model-specific**
+(see the CLI note below), so it lives in config where you can tune it per setup
+rather than baked into the binary. The built-in fallback when there is no config
+file is `0` (no cutoff), so MCP behaviour is unchanged until you opt in.
+
 ## Command-line (CLI)
 
 `make build` also produces `./bin/cortex`, a host-side CLI that is itself a thin
@@ -338,6 +380,8 @@ authenticate with `--token` / `CORTEX_AUTH_TOKEN`.
 | `cortex summarize "<text>" --conversation <id>` | Save/update a conversation summary (unique per `--conversation`). |
 | `cortex summaries [-n '*'] [-l N]` | List conversation summaries, most-recently-updated first. |
 | `cortex recall "<query>"` | Recall the best-matching past session: summary + its facts. |
+| `cortex config init` | Scaffold `~/.config/cortex/cortex.yaml` (won't overwrite without `--force`). |
+| `cortex config show` | Print the effective config (flags + env + file merged) and which file was used. |
 
 > `-d/--max-distance` is the relevance cutoff (cosine distance; `0` disables).
 > Its ideal value is **model-specific** — qwen3's distances are compressed, so a

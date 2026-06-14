@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -20,28 +19,13 @@ import (
 
 	cortexv1 "github.com/thomas-maurice/cortex/gen/cortex/v1"
 	"github.com/thomas-maurice/cortex/gen/cortex/v1/cortexv1connect"
+	"github.com/thomas-maurice/cortex/internal/config"
 	"github.com/thomas-maurice/cortex/internal/rpc"
 )
 
 // version is the build version, injected at release time via
 // -ldflags "-X main.version=...". Defaults to "dev" for un-stamped builds.
 var version = "dev"
-
-func env(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return def
-}
-
-func envFloat(key string, def float32) float32 {
-	if v := os.Getenv(key); v != "" {
-		if f, err := strconv.ParseFloat(v, 32); err == nil {
-			return float32(f)
-		}
-	}
-	return def
-}
 
 // resolveDefaultNamespace picks the namespace used when a tool call omits one.
 // An explicit DEFAULT_NAMESPACE env always wins (per-project override). Otherwise
@@ -123,17 +107,36 @@ type deps struct {
 	source             string
 	conversationID     string
 	defaultMaxDistance float32
+	defaultSearchLimit int
+	defaultFactLimit   int
 }
 
 func main() {
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
+	// The MCP server has no flags (Claude launches it over stdio), so the config
+	// file sits directly under the env vars. viper resolves each key in the order
+	// env > cortex.yaml > built-in default.
+	cfg, err := config.New(os.Getenv("CORTEX_CONFIG"))
+	if err != nil {
+		log.Error("config", "err", err)
+		os.Exit(1)
+	}
+	cfg.SetDefault("server", "http://localhost:8080")
+	cfg.SetDefault("source", "claude-code")
+	cfg.SetDefault("mcp.search-limit", 0) // 0 = defer to the server's own default
+	cfg.SetDefault("mcp.fact-limit", 0)
+	_ = cfg.BindEnv("server", "CORTEX_SERVER_URL")
+	_ = cfg.BindEnv("token", "CORTEX_AUTH_TOKEN")
+	_ = cfg.BindEnv("source", "MEMORY_SOURCE")
+	_ = cfg.BindEnv("mcp.max-distance", "MAX_DISTANCE")
+
 	var (
-		serverURL   = env("CORTEX_SERVER_URL", "http://localhost:8080")
-		authToken   = os.Getenv("CORTEX_AUTH_TOKEN")
+		serverURL   = cfg.GetString("server")
+		authToken   = cfg.GetString("token")
 		defaultNS   = resolveDefaultNamespace()
-		source      = env("MEMORY_SOURCE", "claude-code")
-		maxDistance = envFloat("MAX_DISTANCE", 0) // 0 = no relevance cutoff
+		source      = cfg.GetString("source")
+		maxDistance = float32(cfg.GetFloat64("mcp.max-distance"))
 	)
 
 	conversationID := resolveConversationID(log)
@@ -144,6 +147,8 @@ func main() {
 		source:             source,
 		conversationID:     conversationID,
 		defaultMaxDistance: maxDistance,
+		defaultSearchLimit: cfg.GetInt("mcp.search-limit"),
+		defaultFactLimit:   cfg.GetInt("mcp.fact-limit"),
 	}
 
 	server := mcp.NewServer(&mcp.Implementation{
@@ -307,10 +312,15 @@ func (d *deps) search(ctx context.Context, _ *mcp.CallToolRequest, in SearchIn) 
 		maxDist = d.defaultMaxDistance
 	}
 
+	limit := in.Limit
+	if limit <= 0 {
+		limit = d.defaultSearchLimit
+	}
+
 	resp, err := d.client.Search(ctx, connect.NewRequest(&cortexv1.SearchRequest{
 		Query:       query,
 		Namespace:   in.Namespace, // server resolves "" -> default, "*" -> all
-		Limit:       int32(in.Limit),
+		Limit:       int32(limit),
 		Tags:        in.Tags,
 		AnyTags:     in.AnyTags,
 		ExcludeTags: in.ExcludeTags,
@@ -462,10 +472,15 @@ func (d *deps) recall(ctx context.Context, _ *mcp.CallToolRequest, in RecallIn) 
 	if query == "" {
 		return nil, RecallOut{}, fmt.Errorf("query must not be empty")
 	}
+	factLimit := in.FactLimit
+	if factLimit <= 0 {
+		factLimit = d.defaultFactLimit
+	}
+
 	resp, err := d.client.RecallSession(ctx, connect.NewRequest(&cortexv1.RecallSessionRequest{
 		Query:       query,
 		Namespace:   in.Namespace,
-		FactLimit:   int32(in.FactLimit),
+		FactLimit:   int32(factLimit),
 		MaxDistance: in.MaxDistance,
 	}))
 	if err != nil {

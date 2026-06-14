@@ -20,14 +20,39 @@ import (
 
 	cortexv1 "github.com/thomas-maurice/cortex/gen/cortex/v1"
 	"github.com/thomas-maurice/cortex/gen/cortex/v1/cortexv1connect"
+	"github.com/thomas-maurice/cortex/internal/config"
 	"github.com/thomas-maurice/cortex/internal/rpc"
 )
 
-func env(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
+// settings maps each persistent flag to its environment variable and built-in
+// default. The same set drives flag registration, viper env binding, and the
+// generated sample config, so there is one source of truth for the precedence
+// chain: explicit flag > env var > config file > built-in default.
+var settings = []struct {
+	key, env, def, usage string
+	target               *string
+}{
+	{"server", "CORTEX_SERVER_URL", "http://localhost:8080", "Cortex RPC server URL", &serverURL},
+	{"token", "CORTEX_AUTH_TOKEN", "", "bearer token for the Cortex server", &authToken},
+	{"namespace-default", "DEFAULT_NAMESPACE", "global", "namespace used when none is given", &defaultNS},
+	{"source", "MEMORY_SOURCE", "cli", "source tag recorded on saved memories", &source},
+	{"conversation", "CLAUDE_CODE_SESSION_ID", "", "conversation/session ID stamped on saved memories", &conversationID},
+}
+
+// initConfig layers the config file under the flags/env via viper and writes the
+// resolved values back into the global flag variables the commands read.
+func initConfig(cmd *cobra.Command) error {
+	v, err := config.New(configFile)
+	if err != nil {
+		return err
 	}
-	return def
+	pf := cmd.Root().PersistentFlags()
+	for _, s := range settings {
+		_ = v.BindPFlag(s.key, pf.Lookup(s.key))
+		_ = v.BindEnv(s.key, s.env)
+		*s.target = v.GetString(s.key)
+	}
+	return nil
 }
 
 // version is the build version, injected at release time via
@@ -35,6 +60,7 @@ func env(key, def string) string {
 var version = "dev"
 
 var (
+	configFile     string
 	serverURL      string
 	authToken      string
 	defaultNS      string
@@ -92,6 +118,91 @@ func readSecret() (string, error) {
 	return strings.TrimSpace(line), nil
 }
 
+// sampleConfig is the starter file written by `cortex config init`. Keys mirror
+// the persistent flags (shared with the MCP server); the mcp.* block holds the
+// MCP tool defaults applied when a call omits the field.
+const sampleConfig = `# Cortex configuration, shared by the CLI and the MCP server.
+# Resolution order: command-line flag > environment variable > this file > built-in default.
+
+# --- client settings ---
+server: http://localhost:8080   # Cortex RPC server URL (env: CORTEX_SERVER_URL)
+token: ""                       # bearer token (env: CORTEX_AUTH_TOKEN)
+namespace-default: global       # namespace used when none is given (env: DEFAULT_NAMESPACE)
+source: cli                     # source tag recorded on saved memories (env: MEMORY_SOURCE)
+
+# --- MCP server defaults (applied when a tool call omits the field; 0 = defer to server) ---
+mcp:
+  search-limit: 10              # default max results for cortex_memory_search
+  fact-limit: 50                # default max facts for cortex_recall_session
+  max-distance: 0.45            # relevance cutoff, cosine distance; 0 = no cutoff (env: MAX_DISTANCE)
+`
+
+func configCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "config",
+		Short: "Inspect or scaffold the cortex.yaml config file",
+		Args:  cobra.NoArgs,
+	}
+
+	show := &cobra.Command{
+		Use:   "show",
+		Short: "Print the effective configuration (flags + env + file merged)",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			path := configFile
+			if path == "" {
+				path = config.FilePath()
+			}
+			fmt.Printf("config file:       %s\n", path)
+			fmt.Printf("server:            %s\n", serverURL)
+			fmt.Printf("token:             %s\n", maskToken(authToken))
+			fmt.Printf("namespace-default: %s\n", defaultNS)
+			fmt.Printf("source:            %s\n", source)
+			return nil
+		},
+	}
+
+	var force bool
+	initc := &cobra.Command{
+		Use:   "init",
+		Short: "Write a starter config file (does not overwrite without --force)",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			path := configFile
+			if path == "" {
+				path = config.FilePath()
+			}
+			if _, err := os.Stat(path); err == nil && !force {
+				return fmt.Errorf("%s already exists; pass --force to overwrite", path)
+			}
+			if err := os.MkdirAll(config.Dir(), 0o755); err != nil {
+				return err
+			}
+			if err := os.WriteFile(path, []byte(sampleConfig), 0o600); err != nil {
+				return err
+			}
+			fmt.Printf("wrote %s\n", path)
+			return nil
+		},
+	}
+	initc.Flags().BoolVar(&force, "force", false, "overwrite an existing config file")
+
+	cmd.AddCommand(show, initc)
+	return cmd
+}
+
+// maskToken hides all but the last 4 characters of a bearer token so `config
+// show` is safe to paste into a bug report.
+func maskToken(t string) string {
+	if t == "" {
+		return "(unset)"
+	}
+	if len(t) <= 4 {
+		return "****"
+	}
+	return "****" + t[len(t)-4:]
+}
+
 func main() {
 	root := &cobra.Command{
 		Use:           "cortex",
@@ -99,15 +210,19 @@ func main() {
 		Version:       version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
+			return initConfig(cmd)
+		},
 	}
 	pf := root.PersistentFlags()
-	pf.StringVar(&serverURL, "server", env("CORTEX_SERVER_URL", "http://localhost:8080"), "Cortex RPC server URL")
-	pf.StringVar(&authToken, "token", os.Getenv("CORTEX_AUTH_TOKEN"), "bearer token for the Cortex server")
-	pf.StringVar(&defaultNS, "namespace-default", env("DEFAULT_NAMESPACE", "global"), "namespace used when none is given")
-	pf.StringVar(&source, "source", env("MEMORY_SOURCE", "cli"), "source tag recorded on saved memories")
-	pf.StringVar(&conversationID, "conversation", os.Getenv("CLAUDE_CODE_SESSION_ID"), "conversation/session ID stamped on saved memories")
+	pf.StringVar(&configFile, "config", os.Getenv("CORTEX_CONFIG"), "path to config file (default "+config.FilePath()+")")
+	// Flag defaults are the built-in fallbacks only; env vars and the config file
+	// are layered in by initConfig via viper, so they must not be baked in here.
+	for _, s := range settings {
+		pf.StringVar(s.target, s.key, s.def, s.usage)
+	}
 
-	root.AddCommand(saveCmd(), listCmd(), searchCmd(), deleteCmd(), exportCmd(), reindexCmd(), deadCmd(), statusCmd(), doctorCmd(), summarizeCmd(), summariesCmd(), recallCmd(), hashPasswordCmd())
+	root.AddCommand(saveCmd(), listCmd(), searchCmd(), deleteCmd(), exportCmd(), reindexCmd(), deadCmd(), statusCmd(), doctorCmd(), summarizeCmd(), summariesCmd(), recallCmd(), hashPasswordCmd(), configCmd())
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
