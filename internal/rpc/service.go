@@ -103,6 +103,7 @@ func (s *Service) Search(ctx context.Context, req *connect.Request[cortexv1.Sear
 		MaxDistance: req.Msg.GetMaxDistance(),
 		Autocut:     int(req.Msg.GetAutocut()),
 		IncludeTags: req.Msg.GetTags(),
+		AnyTags:     req.Msg.GetAnyTags(),
 		ExcludeTags: req.Msg.GetExcludeTags(),
 	})
 	if err != nil {

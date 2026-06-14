@@ -153,7 +153,7 @@ func saveCmd() *cobra.Command {
 func listCmd() *cobra.Command {
 	var namespace string
 	var limit int
-	var tags, excludeTags []string
+	var tags, anyTags, excludeTags []string
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List stored memories, newest first",
@@ -163,6 +163,7 @@ func listCmd() *cobra.Command {
 				Namespace:   namespace,
 				Limit:       int32(limit),
 				Tags:        tags,
+				AnyTags:     anyTags,
 				ExcludeTags: excludeTags,
 			}))
 			if err != nil {
@@ -182,6 +183,7 @@ func listCmd() *cobra.Command {
 	cmd.Flags().StringVarP(&namespace, "namespace", "n", "", `namespace filter; "*" for all namespaces`)
 	cmd.Flags().IntVarP(&limit, "limit", "l", 20, "max memories to list")
 	cmd.Flags().StringSliceVarP(&tags, "tag", "t", nil, "require this tag (repeatable; memory must have all)")
+	cmd.Flags().StringSliceVarP(&anyTags, "any-tag", "T", nil, "require at least one of these tags (repeatable)")
 	cmd.Flags().StringSliceVarP(&excludeTags, "exclude-tag", "x", nil, "drop memories with this tag (repeatable)")
 	return cmd
 }
@@ -191,7 +193,7 @@ func searchCmd() *cobra.Command {
 	var limit int
 	var maxDistance float32
 	var autocut int
-	var tags, excludeTags []string
+	var tags, anyTags, excludeTags []string
 	cmd := &cobra.Command{
 		Use:   "search <query>",
 		Short: "Semantic search over stored memories",
@@ -208,6 +210,7 @@ func searchCmd() *cobra.Command {
 				MaxDistance: maxDistance,
 				Autocut:     int32(autocut),
 				Tags:        tags,
+				AnyTags:     anyTags,
 				ExcludeTags: excludeTags,
 			}))
 			if err != nil {
@@ -230,6 +233,7 @@ func searchCmd() *cobra.Command {
 	cmd.Flags().Float32VarP(&maxDistance, "max-distance", "d", 0.6, "relevance cutoff; drop matches farther than this (model/query-dependent; 0 disables)")
 	cmd.Flags().IntVar(&autocut, "autocut", 0, "adaptive cutoff: keep results before the Nth distance jump (0 disables)")
 	cmd.Flags().StringSliceVarP(&tags, "tag", "t", nil, "require this tag (repeatable; memory must have all)")
+	cmd.Flags().StringSliceVarP(&anyTags, "any-tag", "T", nil, "require at least one of these tags (repeatable)")
 	cmd.Flags().StringSliceVarP(&excludeTags, "exclude-tag", "x", nil, "drop memories with this tag (repeatable)")
 	return cmd
 }

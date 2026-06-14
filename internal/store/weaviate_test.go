@@ -61,6 +61,43 @@ func TestResultToRecord(t *testing.T) {
 	assert.Equal(t, 2026, rec.CreatedAt.Year())
 }
 
+// buildWhere encodes the tag-filter semantics that callers depend on:
+// includeTags is "must have ALL" (ContainsAll) while anyTags is "must have at
+// least ONE" (ContainsAny). The two are distinct operators on the same `tags`
+// property, and when both are present they must be ANDed — a regression that
+// swapped the operators or dropped the AND would silently widen or narrow every
+// tag-filtered query.
+func TestBuildWhereTagOperators(t *testing.T) {
+	t.Run("includeTags only -> ContainsAll", func(t *testing.T) {
+		f := buildWhere("", "", []string{"go", "rust"}, nil).Build()
+		assert.Equal(t, "ContainsAll", f.Operator)
+		assert.Equal(t, []string{"tags"}, f.Path)
+		assert.Equal(t, []string{"go", "rust"}, f.ValueTextArray)
+	})
+
+	t.Run("anyTags only -> ContainsAny", func(t *testing.T) {
+		f := buildWhere("", "", nil, []string{"go", "rust"}).Build()
+		assert.Equal(t, "ContainsAny", f.Operator)
+		assert.Equal(t, []string{"tags"}, f.Path)
+		assert.Equal(t, []string{"go", "rust"}, f.ValueTextArray)
+	})
+
+	t.Run("both -> AND of ContainsAll and ContainsAny", func(t *testing.T) {
+		f := buildWhere("", "", []string{"go"}, []string{"rust", "zig"}).Build()
+		assert.Equal(t, "And", f.Operator)
+		ops := make(map[string][]string)
+		for _, o := range f.Operands {
+			ops[o.Operator] = o.ValueTextArray
+		}
+		assert.Equal(t, []string{"go"}, ops["ContainsAll"], "includeTags must stay ContainsAll")
+		assert.Equal(t, []string{"rust", "zig"}, ops["ContainsAny"], "anyTags must be ContainsAny")
+	})
+
+	t.Run("no constraints -> nil", func(t *testing.T) {
+		assert.Nil(t, buildWhere("", "", nil, nil))
+	})
+}
+
 // A result with missing/empty properties must decode to a zero-valued record
 // without panicking, so a partial object never crashes a query.
 func TestResultToRecordEmpty(t *testing.T) {

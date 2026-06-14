@@ -81,6 +81,7 @@ message SearchRequest {
   repeated string exclude_tags = 5; // drop memories carrying ANY of these
   float max_distance = 6;           // relevance cutoff; <=0 = server default
   int32 autocut = 7;                // Weaviate autocut jumps; <=0 disables
+  repeated string any_tags = 8;     // memory must carry AT LEAST ONE of these
 }
 
 message Hit {
@@ -95,8 +96,9 @@ message SearchResponse {
 message ListRequest {
   string namespace = 1; // "" = server default, "*" = all namespaces
   int32 limit = 2;      // default 20
-  repeated string tags = 3;
-  repeated string exclude_tags = 4;
+  repeated string tags = 3;         // memory must carry ALL of these
+  repeated string exclude_tags = 4; // drop memories carrying ANY of these
+  repeated string any_tags = 5;     // memory must carry AT LEAST ONE of these
 }
 
 message ListResponse {

@@ -329,6 +329,7 @@ type SearchRequest struct {
 	ExcludeTags   []string               `protobuf:"bytes,5,rep,name=exclude_tags,json=excludeTags,proto3" json:"exclude_tags,omitempty"`   // drop memories carrying ANY of these
 	MaxDistance   float32                `protobuf:"fixed32,6,opt,name=max_distance,json=maxDistance,proto3" json:"max_distance,omitempty"` // relevance cutoff; <=0 = server default
 	Autocut       int32                  `protobuf:"varint,7,opt,name=autocut,proto3" json:"autocut,omitempty"`                             // Weaviate autocut jumps; <=0 disables
+	AnyTags       []string               `protobuf:"bytes,8,rep,name=any_tags,json=anyTags,proto3" json:"any_tags,omitempty"`               // memory must carry AT LEAST ONE of these
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -410,6 +411,13 @@ func (x *SearchRequest) GetAutocut() int32 {
 		return x.Autocut
 	}
 	return 0
+}
+
+func (x *SearchRequest) GetAnyTags() []string {
+	if x != nil {
+		return x.AnyTags
+	}
+	return nil
 }
 
 type Hit struct {
@@ -510,10 +518,11 @@ func (x *SearchResponse) GetHits() []*Hit {
 
 type ListRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Namespace     string                 `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"` // "" = server default, "*" = all namespaces
-	Limit         int32                  `protobuf:"varint,2,opt,name=limit,proto3" json:"limit,omitempty"`        // default 20
-	Tags          []string               `protobuf:"bytes,3,rep,name=tags,proto3" json:"tags,omitempty"`
-	ExcludeTags   []string               `protobuf:"bytes,4,rep,name=exclude_tags,json=excludeTags,proto3" json:"exclude_tags,omitempty"`
+	Namespace     string                 `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"`                        // "" = server default, "*" = all namespaces
+	Limit         int32                  `protobuf:"varint,2,opt,name=limit,proto3" json:"limit,omitempty"`                               // default 20
+	Tags          []string               `protobuf:"bytes,3,rep,name=tags,proto3" json:"tags,omitempty"`                                  // memory must carry ALL of these
+	ExcludeTags   []string               `protobuf:"bytes,4,rep,name=exclude_tags,json=excludeTags,proto3" json:"exclude_tags,omitempty"` // drop memories carrying ANY of these
+	AnyTags       []string               `protobuf:"bytes,5,rep,name=any_tags,json=anyTags,proto3" json:"any_tags,omitempty"`             // memory must carry AT LEAST ONE of these
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -572,6 +581,13 @@ func (x *ListRequest) GetTags() []string {
 func (x *ListRequest) GetExcludeTags() []string {
 	if x != nil {
 		return x.ExcludeTags
+	}
+	return nil
+}
+
+func (x *ListRequest) GetAnyTags() []string {
+	if x != nil {
+		return x.AnyTags
 	}
 	return nil
 }
@@ -2157,7 +2173,7 @@ const file_cortex_v1_cortex_proto_rawDesc = "" +
 	"\x0fconversation_id\x18\x05 \x01(\tR\x0econversationId\"6\n" +
 	"\fSaveResponse\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x16\n" +
-	"\x06status\x18\x02 \x01(\tR\x06status\"\xcd\x01\n" +
+	"\x06status\x18\x02 \x01(\tR\x06status\"\xe8\x01\n" +
 	"\rSearchRequest\x12\x14\n" +
 	"\x05query\x18\x01 \x01(\tR\x05query\x12\x1c\n" +
 	"\tnamespace\x18\x02 \x01(\tR\tnamespace\x12\x14\n" +
@@ -2165,17 +2181,19 @@ const file_cortex_v1_cortex_proto_rawDesc = "" +
 	"\x04tags\x18\x04 \x03(\tR\x04tags\x12!\n" +
 	"\fexclude_tags\x18\x05 \x03(\tR\vexcludeTags\x12!\n" +
 	"\fmax_distance\x18\x06 \x01(\x02R\vmaxDistance\x12\x18\n" +
-	"\aautocut\x18\a \x01(\x05R\aautocut\"L\n" +
+	"\aautocut\x18\a \x01(\x05R\aautocut\x12\x19\n" +
+	"\bany_tags\x18\b \x03(\tR\aanyTags\"L\n" +
 	"\x03Hit\x12)\n" +
 	"\x06memory\x18\x01 \x01(\v2\x11.cortex.v1.MemoryR\x06memory\x12\x1a\n" +
 	"\bdistance\x18\x02 \x01(\x02R\bdistance\"4\n" +
 	"\x0eSearchResponse\x12\"\n" +
-	"\x04hits\x18\x01 \x03(\v2\x0e.cortex.v1.HitR\x04hits\"x\n" +
+	"\x04hits\x18\x01 \x03(\v2\x0e.cortex.v1.HitR\x04hits\"\x93\x01\n" +
 	"\vListRequest\x12\x1c\n" +
 	"\tnamespace\x18\x01 \x01(\tR\tnamespace\x12\x14\n" +
 	"\x05limit\x18\x02 \x01(\x05R\x05limit\x12\x12\n" +
 	"\x04tags\x18\x03 \x03(\tR\x04tags\x12!\n" +
-	"\fexclude_tags\x18\x04 \x03(\tR\vexcludeTags\"=\n" +
+	"\fexclude_tags\x18\x04 \x03(\tR\vexcludeTags\x12\x19\n" +
+	"\bany_tags\x18\x05 \x03(\tR\aanyTags\"=\n" +
 	"\fListResponse\x12-\n" +
 	"\bmemories\x18\x01 \x03(\v2\x11.cortex.v1.MemoryR\bmemories\"\x1f\n" +
 	"\rDeleteRequest\x12\x0e\n" +

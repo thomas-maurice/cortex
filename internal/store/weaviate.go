@@ -32,6 +32,7 @@ type SearchOpts struct {
 	MaxDistance    float32  // server-side cutoff; <=0 disables (drop hits farther than this)
 	Autocut        int      // Weaviate autocut jumps; <=0 disables
 	IncludeTags    []string // memory must carry ALL of these tags (server-side)
+	AnyTags        []string // memory must carry AT LEAST ONE of these tags (server-side)
 	ExcludeTags    []string // drop memories carrying ANY of these tags (post-filter)
 }
 
@@ -41,6 +42,7 @@ type ListOpts struct {
 	ConversationID string // exact conversationId; "" = any conversation
 	Limit          int
 	IncludeTags    []string
+	AnyTags        []string
 	ExcludeTags    []string
 }
 
@@ -336,7 +338,7 @@ func (s *Store) Count(ctx context.Context, namespace string) (int, error) {
 		WithCollection(memory.ClassName).
 		WithLimit(allCount).
 		WithMetadata(&graphql.Metadata{ID: true})
-	if where := buildWhere(namespace, "", nil); where != nil {
+	if where := buildWhere(namespace, "", nil, nil); where != nil {
 		q = q.WithWhere(where)
 	}
 	res, err := q.Do(ctx)
@@ -349,9 +351,12 @@ func (s *Store) Count(ctx context.Context, namespace string) (int, error) {
 // memoryProps is the property set fetched for both search and list.
 var memoryProps = []string{"text", "namespace", "tags", "source", "createdAt", "model", "dims", "conversationId", "linkedIds"}
 
-// buildWhere combines exact namespace + conversationId filters with a "has all
-// these tags" filter. Returns nil when nothing constrains the query.
-func buildWhere(namespace, conversationID string, includeTags []string) *filters.WhereBuilder {
+// buildWhere combines exact namespace + conversationId filters with tag
+// filters: includeTags ("has ALL of these", ContainsAll) and anyTags ("has at
+// least ONE of these", ContainsAny). When both are given they are ANDed, so a
+// memory must carry every includeTag AND at least one anyTag. Returns nil when
+// nothing constrains the query.
+func buildWhere(namespace, conversationID string, includeTags, anyTags []string) *filters.WhereBuilder {
 	var ops []*filters.WhereBuilder
 	if namespace != "" {
 		ops = append(ops, filters.Where().
@@ -370,6 +375,12 @@ func buildWhere(namespace, conversationID string, includeTags []string) *filters
 			WithPath([]string{"tags"}).
 			WithOperator(filters.ContainsAll).
 			WithValueText(includeTags...))
+	}
+	if len(anyTags) > 0 {
+		ops = append(ops, filters.Where().
+			WithPath([]string{"tags"}).
+			WithOperator(filters.ContainsAny).
+			WithValueText(anyTags...))
 	}
 	switch len(ops) {
 	case 0:
@@ -431,7 +442,7 @@ func (s *Store) Search(ctx context.Context, vector []float32, opts SearchOpts) (
 	if opts.Autocut > 0 {
 		query = query.WithAutocut(opts.Autocut)
 	}
-	if where := buildWhere(opts.Namespace, opts.ConversationID, opts.IncludeTags); where != nil {
+	if where := buildWhere(opts.Namespace, opts.ConversationID, opts.IncludeTags, opts.AnyTags); where != nil {
 		query = query.WithWhere(where)
 	}
 
@@ -463,7 +474,7 @@ func (s *Store) List(ctx context.Context, opts ListOpts) ([]memory.Record, error
 		WithSort(graphql.Sort{Path: []string{"createdAt"}, Order: graphql.Desc}).
 		WithLimit(limit)
 
-	if where := buildWhere(opts.Namespace, opts.ConversationID, opts.IncludeTags); where != nil {
+	if where := buildWhere(opts.Namespace, opts.ConversationID, opts.IncludeTags, opts.AnyTags); where != nil {
 		query = query.WithWhere(where)
 	}
 
@@ -503,7 +514,7 @@ func (s *Store) SearchSummaries(ctx context.Context, vector []float32, opts Summ
 		WithNearVector(nearVector).
 		WithLimit(limit)
 
-	if where := buildWhere(opts.Namespace, "", nil); where != nil {
+	if where := buildWhere(opts.Namespace, "", nil, nil); where != nil {
 		query = query.WithWhere(where)
 	}
 
@@ -534,7 +545,7 @@ func (s *Store) ListSummaries(ctx context.Context, opts SummaryListOpts) ([]memo
 		WithSort(graphql.Sort{Path: []string{"updatedAt"}, Order: graphql.Desc}).
 		WithLimit(limit)
 
-	if where := buildWhere(opts.Namespace, "", nil); where != nil {
+	if where := buildWhere(opts.Namespace, "", nil, nil); where != nil {
 		query = query.WithWhere(where)
 	}
 

@@ -272,6 +272,7 @@ type SearchIn struct {
 	Namespace   string   `json:"namespace,omitempty" jsonschema:"optional namespace filter; omit to search the default namespace, pass \"*\" to search across all namespaces"`
 	Limit       int      `json:"limit,omitempty" jsonschema:"max results to return (default 5)"`
 	Tags        []string `json:"tags,omitempty" jsonschema:"only return memories carrying ALL of these tags"`
+	AnyTags     []string `json:"anyTags,omitempty" jsonschema:"only return memories carrying AT LEAST ONE of these tags"`
 	ExcludeTags []string `json:"excludeTags,omitempty" jsonschema:"drop memories carrying ANY of these tags"`
 	MaxDistance float32  `json:"maxDistance,omitempty" jsonschema:"relevance cutoff (cosine distance, ~0=identical, larger=less related); results farther than this are dropped; omit to use the server default"`
 }
@@ -306,6 +307,7 @@ func (d *deps) search(ctx context.Context, _ *mcp.CallToolRequest, in SearchIn) 
 		Namespace:   in.Namespace, // server resolves "" -> default, "*" -> all
 		Limit:       int32(in.Limit),
 		Tags:        in.Tags,
+		AnyTags:     in.AnyTags,
 		ExcludeTags: in.ExcludeTags,
 		MaxDistance: maxDist,
 	}))

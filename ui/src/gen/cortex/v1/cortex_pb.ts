@@ -303,6 +303,13 @@ export class SearchRequest extends Message<SearchRequest> {
    */
   autocut = 0;
 
+  /**
+   * memory must carry AT LEAST ONE of these
+   *
+   * @generated from field: repeated string any_tags = 8;
+   */
+  anyTags: string[] = [];
+
   constructor(data?: PartialMessage<SearchRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -318,6 +325,7 @@ export class SearchRequest extends Message<SearchRequest> {
     { no: 5, name: "exclude_tags", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
     { no: 6, name: "max_distance", kind: "scalar", T: 2 /* ScalarType.FLOAT */ },
     { no: 7, name: "autocut", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 8, name: "any_tags", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): SearchRequest {
@@ -436,14 +444,25 @@ export class ListRequest extends Message<ListRequest> {
   limit = 0;
 
   /**
+   * memory must carry ALL of these
+   *
    * @generated from field: repeated string tags = 3;
    */
   tags: string[] = [];
 
   /**
+   * drop memories carrying ANY of these
+   *
    * @generated from field: repeated string exclude_tags = 4;
    */
   excludeTags: string[] = [];
+
+  /**
+   * memory must carry AT LEAST ONE of these
+   *
+   * @generated from field: repeated string any_tags = 5;
+   */
+  anyTags: string[] = [];
 
   constructor(data?: PartialMessage<ListRequest>) {
     super();
@@ -457,6 +476,7 @@ export class ListRequest extends Message<ListRequest> {
     { no: 2, name: "limit", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
     { no: 3, name: "tags", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
     { no: 4, name: "exclude_tags", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
+    { no: 5, name: "any_tags", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListRequest {
