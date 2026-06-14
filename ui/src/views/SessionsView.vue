@@ -25,8 +25,23 @@
 
     <div v-for="s in summaries" :key="s.conversationId" class="card mb-2">
       <div class="card-body py-2">
-        <div class="mb-1 markdown-body" v-html="renderMarkdown(s.text)"></div>
-        <div class="small text-muted d-flex flex-wrap gap-2">
+        <div v-if="editId === s.conversationId">
+          <textarea v-model="editText" class="form-control form-control-sm mb-2" rows="6" placeholder="Summary text (Markdown)…"></textarea>
+          <div class="d-flex gap-2 align-items-center">
+            <button class="btn btn-primary btn-sm" :disabled="!editText.trim() || editing" @click="saveEdit(s)">Save</button>
+            <button class="btn btn-outline-secondary btn-sm" :disabled="editing" @click="editId = null">Cancel</button>
+            <span v-if="editing" class="small text-muted">Queued for re-indexing…</span>
+          </div>
+        </div>
+        <template v-else>
+          <div class="d-flex justify-content-between align-items-start">
+            <div class="mb-1 me-3 markdown-body" v-html="renderMarkdown(s.text)"></div>
+            <button class="btn btn-outline-secondary btn-sm flex-shrink-0" title="Edit" @click="startEdit(s)">
+              <font-awesome-icon :icon="['fas', 'pen']" />
+            </button>
+          </div>
+        </template>
+        <div class="small text-muted d-flex flex-wrap gap-2 mt-1">
           <span class="badge bg-secondary"><font-awesome-icon :icon="['fas', 'layer-group']" class="me-1" />{{ s.namespace }}</span>
           <span class="font-monospace">{{ s.conversationId }}</span>
           <span v-if="s.updatedAt">updated {{ formatTimestamp(s.updatedAt) }}</span>
@@ -52,6 +67,40 @@ const namespace = ref('*')
 const summaries = ref([])
 const loading = ref(false)
 const error = ref('')
+
+const editId = ref(null)
+const editText = ref('')
+const editing = ref(false)
+
+function startEdit(s) {
+  editId.value = s.conversationId
+  editText.value = s.text
+}
+
+async function saveEdit(s) {
+  editing.value = true
+  error.value = ''
+  try {
+    // SummarizeSession upserts by conversationId, so saving with the same ID
+    // replaces the summary in place — i.e. an edit.
+    await memoryClient.summarizeSession({
+      conversationId: s.conversationId,
+      text: editText.value,
+      namespace: s.namespace,
+    })
+    editId.value = null
+    setTimeout(reload, 1200)
+  } catch (e) {
+    if (e instanceof ConnectError && e.code === Code.Unauthenticated) {
+      auth.logout()
+      router.push({ name: 'login' })
+      return
+    }
+    error.value = e.message || 'Request failed'
+  } finally {
+    editing.value = false
+  }
+}
 
 async function reload() {
   loading.value = true

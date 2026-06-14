@@ -49,13 +49,32 @@
 
     <div v-for="m in memories" :key="m.id" class="card mb-2">
       <div class="card-body py-2">
-        <div class="d-flex justify-content-between align-items-start">
-          <div class="mb-1 me-3 markdown-body" v-html="renderMarkdown(m.text)"></div>
-          <button class="btn btn-outline-danger btn-sm flex-shrink-0" title="Delete" @click="remove(m.id)">
-            <font-awesome-icon :icon="['fas', 'trash']" />
-          </button>
+        <div v-if="editId === m.id">
+          <textarea v-model="editDraft.text" class="form-control form-control-sm mb-2" rows="5" placeholder="Memory text (Markdown)…"></textarea>
+          <div class="row g-2 mb-2">
+            <div class="col"><input v-model="editDraft.namespace" class="form-control form-control-sm" placeholder="namespace" /></div>
+            <div class="col"><input v-model="editDraft.tags" class="form-control form-control-sm" placeholder="tags, comma separated" /></div>
+          </div>
+          <div class="d-flex gap-2 align-items-center">
+            <button class="btn btn-primary btn-sm" :disabled="!editDraft.text.trim() || editing" @click="saveEdit(m)">Save</button>
+            <button class="btn btn-outline-secondary btn-sm" :disabled="editing" @click="cancelEdit">Cancel</button>
+            <span v-if="editing" class="small text-muted">Queued for re-indexing…</span>
+          </div>
         </div>
-        <div class="small text-muted d-flex flex-wrap gap-2 align-items-center">
+        <template v-else>
+          <div class="d-flex justify-content-between align-items-start">
+            <div class="mb-1 me-3 markdown-body" v-html="renderMarkdown(m.text)"></div>
+            <div class="d-flex gap-1 flex-shrink-0">
+              <button class="btn btn-outline-secondary btn-sm" title="Edit" @click="startEdit(m)">
+                <font-awesome-icon :icon="['fas', 'pen']" />
+              </button>
+              <button class="btn btn-outline-danger btn-sm" title="Delete" @click="remove(m.id)">
+                <font-awesome-icon :icon="['fas', 'trash']" />
+              </button>
+            </div>
+          </div>
+        </template>
+        <div class="small text-muted d-flex flex-wrap gap-2 align-items-center mt-1">
           <span class="badge bg-secondary">
             <font-awesome-icon :icon="['fas', 'layer-group']" class="me-1" />{{ m.namespace }}
           </span>
@@ -95,6 +114,10 @@ const showNew = ref(false)
 const saving = ref(false)
 const saved = ref(false)
 const draft = ref({ text: '', namespace: '', tags: '' })
+
+const editId = ref(null)
+const editing = ref(false)
+const editDraft = ref({ text: '', namespace: '', tags: '' })
 
 function formatDate(ts) {
   try {
@@ -144,6 +167,37 @@ async function save() {
     handleError(e)
   } finally {
     saving.value = false
+  }
+}
+
+function startEdit(m) {
+  editId.value = m.id
+  editDraft.value = { text: m.text, namespace: m.namespace || '', tags: (m.tags || []).join(', ') }
+}
+
+function cancelEdit() {
+  editId.value = null
+}
+
+async function saveEdit(m) {
+  editing.value = true
+  error.value = ''
+  try {
+    const tags = editDraft.value.tags.split(',').map((t) => t.trim()).filter(Boolean)
+    await memoryClient.updateMemory({
+      id: m.id,
+      text: editDraft.value.text,
+      tags,
+      replaceTags: true,
+      namespace: editDraft.value.namespace,
+    })
+    editId.value = null
+    // Re-indexing is async; give the worker a moment, then refresh.
+    setTimeout(reload, 1200)
+  } catch (e) {
+    handleError(e)
+  } finally {
+    editing.value = false
   }
 }
 

@@ -3,7 +3,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { DeadRequest, DeadResponse, DeleteRequest, DeleteResponse, DismissDuplicateRequest, DismissDuplicateResponse, DoctorRequest, DoctorResponse, IndexQueueRequest, IndexQueueResponse, LinkRequest, LinkResponse, ListDuplicateCandidatesRequest, ListDuplicateCandidatesResponse, ListRequest, ListResponse, ListSummariesRequest, ListSummariesResponse, PullModelRequest, PullModelResponse, RecallSessionRequest, RecallSessionResponse, ReindexRequest, ReindexResponse, SaveRequest, SaveResponse, SearchRequest, SearchResponse, StatusRequest, StatusResponse, SummarizeSessionRequest, SummarizeSessionResponse, UnlinkRequest, UnlinkResponse } from "./cortex_pb.js";
+import { DeadRequest, DeadResponse, DeleteRequest, DeleteResponse, DismissDuplicateRequest, DismissDuplicateResponse, DoctorRequest, DoctorResponse, IndexQueueRequest, IndexQueueResponse, LinkRequest, LinkResponse, ListDuplicateCandidatesRequest, ListDuplicateCandidatesResponse, ListRequest, ListResponse, ListSummariesRequest, ListSummariesResponse, PullModelRequest, PullModelResponse, RecallSessionRequest, RecallSessionResponse, ReindexRequest, ReindexResponse, SaveRequest, SaveResponse, SearchRequest, SearchResponse, StatusRequest, StatusResponse, SummarizeSessionRequest, SummarizeSessionResponse, UnlinkRequest, UnlinkResponse, UpdateMemoryRequest, UpdateMemoryResponse } from "./cortex_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -26,6 +26,20 @@ export const MemoryService = {
       name: "Save",
       I: SaveRequest,
       O: SaveResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * UpdateMemory edits an existing memory and re-embeds it through the worker.
+     * It preserves the memory's id, creation time, source, conversation, links and
+     * dedup decisions; only text (always) and, opt-in, tags/namespace change. Like
+     * Save it is asynchronous: the new vector lands once the worker re-indexes.
+     *
+     * @generated from rpc cortex.v1.MemoryService.UpdateMemory
+     */
+    updateMemory: {
+      name: "UpdateMemory",
+      I: UpdateMemoryRequest,
+      O: UpdateMemoryResponse,
       kind: MethodKind.Unary,
     },
     /**

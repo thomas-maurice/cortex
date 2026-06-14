@@ -109,6 +109,10 @@ type deps struct {
 	defaultMaxDistance float32
 	defaultSearchLimit int
 	defaultFactLimit   int
+	// autoSaveTags are stamped on every memory this client saves (the static
+	// save.tags list plus, opt-in, a host:<hostname> tag). Save-only, never used
+	// to filter searches.
+	autoSaveTags []string
 }
 
 func main() {
@@ -126,6 +130,7 @@ func main() {
 	cfg.SetDefault("source", "claude-code")
 	cfg.SetDefault("mcp.search-limit", 0) // 0 = defer to the server's own default
 	cfg.SetDefault("mcp.fact-limit", 0)
+	cfg.SetDefault("save.hostname-tag", false) // opt-in: stamp host:<hostname> on saves
 	_ = cfg.BindEnv("server", "CORTEX_SERVER_URL")
 	_ = cfg.BindEnv("token", "CORTEX_AUTH_TOKEN")
 	_ = cfg.BindEnv("source", "MEMORY_SOURCE")
@@ -141,6 +146,8 @@ func main() {
 
 	conversationID := resolveConversationID(log)
 
+	autoSaveTags := config.AutoTags(cfg.GetStringSlice("save.tags"), cfg.GetBool("save.hostname-tag"))
+
 	d := &deps{
 		client:             rpc.NewClient(serverURL, authToken),
 		defaultNamespace:   defaultNS,
@@ -149,6 +156,7 @@ func main() {
 		defaultMaxDistance: maxDistance,
 		defaultSearchLimit: cfg.GetInt("mcp.search-limit"),
 		defaultFactLimit:   cfg.GetInt("mcp.fact-limit"),
+		autoSaveTags:       autoSaveTags,
 	}
 
 	server := mcp.NewServer(&mcp.Implementation{
@@ -184,6 +192,18 @@ func main() {
 		Name:        "cortex_memory_delete",
 		Description: "Delete a memory by its ID (as returned by cortex_memory_search).",
 	}, d.del)
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name: "cortex_memory_edit",
+		Description: "Correct or update an EXISTING memory by its ID (as returned by cortex_memory_search). " +
+			"Pass the FULL new text — it replaces the old text and is re-embedded, so the corrected wording is " +
+			"what future searches match. Use this when a stored memory is wrong, outdated, or should be reworded " +
+			"or enriched, rather than deleting and re-saving (editing keeps the memory's ID, links, and history). " +
+			"Strongly prefer Markdown for the text, as the UI renders it. Tags are left untouched unless you set " +
+			"replaceTags=true, in which case the tags field becomes the memory's new tag set (an empty list clears " +
+			"them). Namespace is left untouched unless you pass a non-empty namespace. Editing is asynchronous: the " +
+			"updated memory is re-indexed shortly after the call returns.",
+	}, d.edit)
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "cortex_memory_link",
@@ -250,7 +270,7 @@ func main() {
 			"does NOT delete or link anything — it only suppresses the false-positive duplicate flag.",
 	}, d.dismissDuplicate)
 
-	log.Info("cortex mcp server starting on stdio", "namespace", defaultNS, "server", serverURL)
+	log.Info("cortex mcp server starting on stdio", "namespace", defaultNS, "server", serverURL, "autoSaveTags", autoSaveTags)
 	if err := server.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
 		log.Error("server run", "err", err)
 		os.Exit(1)
@@ -284,7 +304,7 @@ func (d *deps) save(ctx context.Context, _ *mcp.CallToolRequest, in SaveIn) (*mc
 	resp, err := d.client.Save(ctx, connect.NewRequest(&cortexv1.SaveRequest{
 		Text:           text,
 		Namespace:      ns,
-		Tags:           in.Tags,
+		Tags:           config.MergeTags(in.Tags, d.autoSaveTags),
 		LinkTo:         in.LinkTo,
 		Source:         d.source,
 		ConversationId: d.conversationID,
@@ -395,6 +415,44 @@ func (d *deps) del(ctx context.Context, _ *mcp.CallToolRequest, in DeleteIn) (*m
 		return nil, DeleteOut{}, err
 	}
 	return text2result("deleted " + id), DeleteOut{Status: resp.Msg.GetStatus()}, nil
+}
+
+// ---- memory_edit ----
+
+type EditIn struct {
+	ID          string   `json:"id" jsonschema:"the ID of the existing memory to edit (from cortex_memory_search)"`
+	Text        string   `json:"text" jsonschema:"the new FULL memory text; replaces the existing text and is re-embedded. Prefer Markdown as the UI renders it"`
+	Tags        []string `json:"tags,omitempty" jsonschema:"the memory's new tag set; applied only when replaceTags is true (an empty list then clears all tags)"`
+	ReplaceTags bool     `json:"replaceTags,omitempty" jsonschema:"when true, replace the memory's tags with the tags field; when false/omitted, keep the existing tags"`
+	Namespace   string   `json:"namespace,omitempty" jsonschema:"optional new namespace to move the memory to; omit to keep the current one"`
+}
+
+type EditOut struct {
+	ID     string `json:"id"`
+	Status string `json:"status" jsonschema:"queued once accepted for async re-indexing"`
+}
+
+func (d *deps) edit(ctx context.Context, _ *mcp.CallToolRequest, in EditIn) (*mcp.CallToolResult, EditOut, error) {
+	id := strings.TrimSpace(in.ID)
+	if id == "" {
+		return nil, EditOut{}, fmt.Errorf("id must not be empty")
+	}
+	text := strings.TrimSpace(in.Text)
+	if text == "" {
+		return nil, EditOut{}, fmt.Errorf("text must not be empty")
+	}
+	resp, err := d.client.UpdateMemory(ctx, connect.NewRequest(&cortexv1.UpdateMemoryRequest{
+		Id:          id,
+		Text:        text,
+		Tags:        in.Tags,
+		ReplaceTags: in.ReplaceTags,
+		Namespace:   in.Namespace,
+	}))
+	if err != nil {
+		return nil, EditOut{}, err
+	}
+	out := EditOut{ID: resp.Msg.GetId(), Status: resp.Msg.GetStatus()}
+	return text2result("Memory queued for re-indexing (id=" + out.ID + ")"), out, nil
 }
 
 // ---- memory_link / memory_unlink ----

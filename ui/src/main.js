@@ -32,6 +32,7 @@ import {
   faArrowRotateLeft,
   faTriangleExclamation,
   faDownload,
+  faPen,
 } from '@fortawesome/free-solid-svg-icons'
 
 library.add(
@@ -55,7 +56,8 @@ library.add(
   faListCheck,
   faArrowRotateLeft,
   faTriangleExclamation,
-  faDownload
+  faDownload,
+  faPen
 )
 
 const pinia = createPinia()

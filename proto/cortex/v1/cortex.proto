@@ -13,6 +13,11 @@ option go_package = "github.com/thomas-maurice/cortex/gen/cortex/v1;cortexv1";
 service MemoryService {
   // Save queues a memory for asynchronous, durable indexing (NATS JetStream).
   rpc Save(SaveRequest) returns (SaveResponse) {}
+  // UpdateMemory edits an existing memory and re-embeds it through the worker.
+  // It preserves the memory's id, creation time, source, conversation, links and
+  // dedup decisions; only text (always) and, opt-in, tags/namespace change. Like
+  // Save it is asynchronous: the new vector lands once the worker re-indexes.
+  rpc UpdateMemory(UpdateMemoryRequest) returns (UpdateMemoryResponse) {}
   // Search runs a semantic (vector) search over stored memories.
   rpc Search(SearchRequest) returns (SearchResponse) {}
   // List returns stored memories newest-first, without a vector query.
@@ -90,6 +95,24 @@ message SaveRequest {
 }
 
 message SaveResponse {
+  string id = 1;
+  string status = 2; // "queued"
+}
+
+message UpdateMemoryRequest {
+  string id = 1;   // required: the memory to edit (e.g. from a search hit)
+  string text = 2; // required: the new full memory text; replaces and re-embeds
+  // tags is the desired tag set, applied ONLY when replace_tags is true. proto3
+  // can't tell an empty list from an unset one, so replace_tags is the explicit
+  // switch: it lets an editor clear all tags while letting a text-only edit (e.g.
+  // from an agent) leave the existing tags untouched.
+  repeated string tags = 3;
+  bool replace_tags = 4;
+  // namespace moves the memory when non-empty; empty keeps the current namespace.
+  string namespace = 5;
+}
+
+message UpdateMemoryResponse {
   string id = 1;
   string status = 2; // "queued"
 }

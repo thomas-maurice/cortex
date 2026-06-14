@@ -356,6 +356,139 @@ func (x *SaveResponse) GetStatus() string {
 	return ""
 }
 
+type UpdateMemoryRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Id    string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`     // required: the memory to edit (e.g. from a search hit)
+	Text  string                 `protobuf:"bytes,2,opt,name=text,proto3" json:"text,omitempty"` // required: the new full memory text; replaces and re-embeds
+	// tags is the desired tag set, applied ONLY when replace_tags is true. proto3
+	// can't tell an empty list from an unset one, so replace_tags is the explicit
+	// switch: it lets an editor clear all tags while letting a text-only edit (e.g.
+	// from an agent) leave the existing tags untouched.
+	Tags        []string `protobuf:"bytes,3,rep,name=tags,proto3" json:"tags,omitempty"`
+	ReplaceTags bool     `protobuf:"varint,4,opt,name=replace_tags,json=replaceTags,proto3" json:"replace_tags,omitempty"`
+	// namespace moves the memory when non-empty; empty keeps the current namespace.
+	Namespace     string `protobuf:"bytes,5,opt,name=namespace,proto3" json:"namespace,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UpdateMemoryRequest) Reset() {
+	*x = UpdateMemoryRequest{}
+	mi := &file_cortex_v1_cortex_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UpdateMemoryRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UpdateMemoryRequest) ProtoMessage() {}
+
+func (x *UpdateMemoryRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_cortex_v1_cortex_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UpdateMemoryRequest.ProtoReflect.Descriptor instead.
+func (*UpdateMemoryRequest) Descriptor() ([]byte, []int) {
+	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *UpdateMemoryRequest) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *UpdateMemoryRequest) GetText() string {
+	if x != nil {
+		return x.Text
+	}
+	return ""
+}
+
+func (x *UpdateMemoryRequest) GetTags() []string {
+	if x != nil {
+		return x.Tags
+	}
+	return nil
+}
+
+func (x *UpdateMemoryRequest) GetReplaceTags() bool {
+	if x != nil {
+		return x.ReplaceTags
+	}
+	return false
+}
+
+func (x *UpdateMemoryRequest) GetNamespace() string {
+	if x != nil {
+		return x.Namespace
+	}
+	return ""
+}
+
+type UpdateMemoryResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Status        string                 `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"` // "queued"
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UpdateMemoryResponse) Reset() {
+	*x = UpdateMemoryResponse{}
+	mi := &file_cortex_v1_cortex_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UpdateMemoryResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UpdateMemoryResponse) ProtoMessage() {}
+
+func (x *UpdateMemoryResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_cortex_v1_cortex_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UpdateMemoryResponse.ProtoReflect.Descriptor instead.
+func (*UpdateMemoryResponse) Descriptor() ([]byte, []int) {
+	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *UpdateMemoryResponse) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *UpdateMemoryResponse) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
 type SearchRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Query         string                 `protobuf:"bytes,1,opt,name=query,proto3" json:"query,omitempty"`
@@ -372,7 +505,7 @@ type SearchRequest struct {
 
 func (x *SearchRequest) Reset() {
 	*x = SearchRequest{}
-	mi := &file_cortex_v1_cortex_proto_msgTypes[3]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -384,7 +517,7 @@ func (x *SearchRequest) String() string {
 func (*SearchRequest) ProtoMessage() {}
 
 func (x *SearchRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_cortex_v1_cortex_proto_msgTypes[3]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -397,7 +530,7 @@ func (x *SearchRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SearchRequest.ProtoReflect.Descriptor instead.
 func (*SearchRequest) Descriptor() ([]byte, []int) {
-	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{3}
+	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *SearchRequest) GetQuery() string {
@@ -466,7 +599,7 @@ type Hit struct {
 
 func (x *Hit) Reset() {
 	*x = Hit{}
-	mi := &file_cortex_v1_cortex_proto_msgTypes[4]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -478,7 +611,7 @@ func (x *Hit) String() string {
 func (*Hit) ProtoMessage() {}
 
 func (x *Hit) ProtoReflect() protoreflect.Message {
-	mi := &file_cortex_v1_cortex_proto_msgTypes[4]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -491,7 +624,7 @@ func (x *Hit) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Hit.ProtoReflect.Descriptor instead.
 func (*Hit) Descriptor() ([]byte, []int) {
-	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{4}
+	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *Hit) GetMemory() *Memory {
@@ -517,7 +650,7 @@ type SearchResponse struct {
 
 func (x *SearchResponse) Reset() {
 	*x = SearchResponse{}
-	mi := &file_cortex_v1_cortex_proto_msgTypes[5]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -529,7 +662,7 @@ func (x *SearchResponse) String() string {
 func (*SearchResponse) ProtoMessage() {}
 
 func (x *SearchResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_cortex_v1_cortex_proto_msgTypes[5]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -542,7 +675,7 @@ func (x *SearchResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SearchResponse.ProtoReflect.Descriptor instead.
 func (*SearchResponse) Descriptor() ([]byte, []int) {
-	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{5}
+	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *SearchResponse) GetHits() []*Hit {
@@ -565,7 +698,7 @@ type ListRequest struct {
 
 func (x *ListRequest) Reset() {
 	*x = ListRequest{}
-	mi := &file_cortex_v1_cortex_proto_msgTypes[6]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -577,7 +710,7 @@ func (x *ListRequest) String() string {
 func (*ListRequest) ProtoMessage() {}
 
 func (x *ListRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_cortex_v1_cortex_proto_msgTypes[6]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -590,7 +723,7 @@ func (x *ListRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListRequest.ProtoReflect.Descriptor instead.
 func (*ListRequest) Descriptor() ([]byte, []int) {
-	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{6}
+	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *ListRequest) GetNamespace() string {
@@ -637,7 +770,7 @@ type ListResponse struct {
 
 func (x *ListResponse) Reset() {
 	*x = ListResponse{}
-	mi := &file_cortex_v1_cortex_proto_msgTypes[7]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -649,7 +782,7 @@ func (x *ListResponse) String() string {
 func (*ListResponse) ProtoMessage() {}
 
 func (x *ListResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_cortex_v1_cortex_proto_msgTypes[7]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -662,7 +795,7 @@ func (x *ListResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListResponse.ProtoReflect.Descriptor instead.
 func (*ListResponse) Descriptor() ([]byte, []int) {
-	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{7}
+	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *ListResponse) GetMemories() []*Memory {
@@ -681,7 +814,7 @@ type DeleteRequest struct {
 
 func (x *DeleteRequest) Reset() {
 	*x = DeleteRequest{}
-	mi := &file_cortex_v1_cortex_proto_msgTypes[8]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -693,7 +826,7 @@ func (x *DeleteRequest) String() string {
 func (*DeleteRequest) ProtoMessage() {}
 
 func (x *DeleteRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_cortex_v1_cortex_proto_msgTypes[8]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -706,7 +839,7 @@ func (x *DeleteRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteRequest.ProtoReflect.Descriptor instead.
 func (*DeleteRequest) Descriptor() ([]byte, []int) {
-	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{8}
+	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *DeleteRequest) GetId() string {
@@ -725,7 +858,7 @@ type DeleteResponse struct {
 
 func (x *DeleteResponse) Reset() {
 	*x = DeleteResponse{}
-	mi := &file_cortex_v1_cortex_proto_msgTypes[9]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -737,7 +870,7 @@ func (x *DeleteResponse) String() string {
 func (*DeleteResponse) ProtoMessage() {}
 
 func (x *DeleteResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_cortex_v1_cortex_proto_msgTypes[9]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -750,7 +883,7 @@ func (x *DeleteResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteResponse.ProtoReflect.Descriptor instead.
 func (*DeleteResponse) Descriptor() ([]byte, []int) {
-	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{9}
+	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *DeleteResponse) GetStatus() string {
@@ -768,7 +901,7 @@ type StatusRequest struct {
 
 func (x *StatusRequest) Reset() {
 	*x = StatusRequest{}
-	mi := &file_cortex_v1_cortex_proto_msgTypes[10]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -780,7 +913,7 @@ func (x *StatusRequest) String() string {
 func (*StatusRequest) ProtoMessage() {}
 
 func (x *StatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_cortex_v1_cortex_proto_msgTypes[10]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -793,7 +926,7 @@ func (x *StatusRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StatusRequest.ProtoReflect.Descriptor instead.
 func (*StatusRequest) Descriptor() ([]byte, []int) {
-	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{10}
+	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{12}
 }
 
 type StatusResponse struct {
@@ -812,7 +945,7 @@ type StatusResponse struct {
 
 func (x *StatusResponse) Reset() {
 	*x = StatusResponse{}
-	mi := &file_cortex_v1_cortex_proto_msgTypes[11]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -824,7 +957,7 @@ func (x *StatusResponse) String() string {
 func (*StatusResponse) ProtoMessage() {}
 
 func (x *StatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_cortex_v1_cortex_proto_msgTypes[11]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -837,7 +970,7 @@ func (x *StatusResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StatusResponse.ProtoReflect.Descriptor instead.
 func (*StatusResponse) Descriptor() ([]byte, []int) {
-	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{11}
+	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *StatusResponse) GetNatsOk() bool {
@@ -904,7 +1037,7 @@ type DoctorRequest struct {
 
 func (x *DoctorRequest) Reset() {
 	*x = DoctorRequest{}
-	mi := &file_cortex_v1_cortex_proto_msgTypes[12]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -916,7 +1049,7 @@ func (x *DoctorRequest) String() string {
 func (*DoctorRequest) ProtoMessage() {}
 
 func (x *DoctorRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_cortex_v1_cortex_proto_msgTypes[12]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -929,7 +1062,7 @@ func (x *DoctorRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DoctorRequest.ProtoReflect.Descriptor instead.
 func (*DoctorRequest) Descriptor() ([]byte, []int) {
-	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{12}
+	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{14}
 }
 
 type Check struct {
@@ -943,7 +1076,7 @@ type Check struct {
 
 func (x *Check) Reset() {
 	*x = Check{}
-	mi := &file_cortex_v1_cortex_proto_msgTypes[13]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -955,7 +1088,7 @@ func (x *Check) String() string {
 func (*Check) ProtoMessage() {}
 
 func (x *Check) ProtoReflect() protoreflect.Message {
-	mi := &file_cortex_v1_cortex_proto_msgTypes[13]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -968,7 +1101,7 @@ func (x *Check) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Check.ProtoReflect.Descriptor instead.
 func (*Check) Descriptor() ([]byte, []int) {
-	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{13}
+	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *Check) GetName() string {
@@ -1002,7 +1135,7 @@ type DoctorResponse struct {
 
 func (x *DoctorResponse) Reset() {
 	*x = DoctorResponse{}
-	mi := &file_cortex_v1_cortex_proto_msgTypes[14]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1014,7 +1147,7 @@ func (x *DoctorResponse) String() string {
 func (*DoctorResponse) ProtoMessage() {}
 
 func (x *DoctorResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_cortex_v1_cortex_proto_msgTypes[14]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1027,7 +1160,7 @@ func (x *DoctorResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DoctorResponse.ProtoReflect.Descriptor instead.
 func (*DoctorResponse) Descriptor() ([]byte, []int) {
-	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{14}
+	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *DoctorResponse) GetChecks() []*Check {
@@ -1054,7 +1187,7 @@ type ReindexRequest struct {
 
 func (x *ReindexRequest) Reset() {
 	*x = ReindexRequest{}
-	mi := &file_cortex_v1_cortex_proto_msgTypes[15]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1066,7 +1199,7 @@ func (x *ReindexRequest) String() string {
 func (*ReindexRequest) ProtoMessage() {}
 
 func (x *ReindexRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_cortex_v1_cortex_proto_msgTypes[15]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1079,7 +1212,7 @@ func (x *ReindexRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReindexRequest.ProtoReflect.Descriptor instead.
 func (*ReindexRequest) Descriptor() ([]byte, []int) {
-	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{15}
+	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *ReindexRequest) GetNamespace() string {
@@ -1110,7 +1243,7 @@ type ReindexResponse struct {
 
 func (x *ReindexResponse) Reset() {
 	*x = ReindexResponse{}
-	mi := &file_cortex_v1_cortex_proto_msgTypes[16]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1122,7 +1255,7 @@ func (x *ReindexResponse) String() string {
 func (*ReindexResponse) ProtoMessage() {}
 
 func (x *ReindexResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_cortex_v1_cortex_proto_msgTypes[16]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1135,7 +1268,7 @@ func (x *ReindexResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReindexResponse.ProtoReflect.Descriptor instead.
 func (*ReindexResponse) Descriptor() ([]byte, []int) {
-	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{16}
+	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *ReindexResponse) GetRepublished() int32 {
@@ -1192,7 +1325,7 @@ type DeadLetter struct {
 
 func (x *DeadLetter) Reset() {
 	*x = DeadLetter{}
-	mi := &file_cortex_v1_cortex_proto_msgTypes[17]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1204,7 +1337,7 @@ func (x *DeadLetter) String() string {
 func (*DeadLetter) ProtoMessage() {}
 
 func (x *DeadLetter) ProtoReflect() protoreflect.Message {
-	mi := &file_cortex_v1_cortex_proto_msgTypes[17]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1217,7 +1350,7 @@ func (x *DeadLetter) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeadLetter.ProtoReflect.Descriptor instead.
 func (*DeadLetter) Descriptor() ([]byte, []int) {
-	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{17}
+	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *DeadLetter) GetRecord() *Memory {
@@ -1257,7 +1390,7 @@ type DeadRequest struct {
 
 func (x *DeadRequest) Reset() {
 	*x = DeadRequest{}
-	mi := &file_cortex_v1_cortex_proto_msgTypes[18]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1269,7 +1402,7 @@ func (x *DeadRequest) String() string {
 func (*DeadRequest) ProtoMessage() {}
 
 func (x *DeadRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_cortex_v1_cortex_proto_msgTypes[18]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1282,7 +1415,7 @@ func (x *DeadRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeadRequest.ProtoReflect.Descriptor instead.
 func (*DeadRequest) Descriptor() ([]byte, []int) {
-	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{18}
+	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *DeadRequest) GetAction() DeadAction {
@@ -1302,7 +1435,7 @@ type DeadResponse struct {
 
 func (x *DeadResponse) Reset() {
 	*x = DeadResponse{}
-	mi := &file_cortex_v1_cortex_proto_msgTypes[19]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1314,7 +1447,7 @@ func (x *DeadResponse) String() string {
 func (*DeadResponse) ProtoMessage() {}
 
 func (x *DeadResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_cortex_v1_cortex_proto_msgTypes[19]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1327,7 +1460,7 @@ func (x *DeadResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeadResponse.ProtoReflect.Descriptor instead.
 func (*DeadResponse) Descriptor() ([]byte, []int) {
-	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{19}
+	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *DeadResponse) GetDeadLetters() []*DeadLetter {
@@ -1352,7 +1485,7 @@ type IndexQueueRequest struct {
 
 func (x *IndexQueueRequest) Reset() {
 	*x = IndexQueueRequest{}
-	mi := &file_cortex_v1_cortex_proto_msgTypes[20]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1364,7 +1497,7 @@ func (x *IndexQueueRequest) String() string {
 func (*IndexQueueRequest) ProtoMessage() {}
 
 func (x *IndexQueueRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_cortex_v1_cortex_proto_msgTypes[20]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1377,7 +1510,7 @@ func (x *IndexQueueRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IndexQueueRequest.ProtoReflect.Descriptor instead.
 func (*IndexQueueRequest) Descriptor() ([]byte, []int) {
-	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{20}
+	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{22}
 }
 
 type IndexQueueResponse struct {
@@ -1392,7 +1525,7 @@ type IndexQueueResponse struct {
 
 func (x *IndexQueueResponse) Reset() {
 	*x = IndexQueueResponse{}
-	mi := &file_cortex_v1_cortex_proto_msgTypes[21]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1404,7 +1537,7 @@ func (x *IndexQueueResponse) String() string {
 func (*IndexQueueResponse) ProtoMessage() {}
 
 func (x *IndexQueueResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_cortex_v1_cortex_proto_msgTypes[21]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1417,7 +1550,7 @@ func (x *IndexQueueResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IndexQueueResponse.ProtoReflect.Descriptor instead.
 func (*IndexQueueResponse) Descriptor() ([]byte, []int) {
-	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{21}
+	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *IndexQueueResponse) GetPending() int64 {
@@ -1456,7 +1589,7 @@ type PullModelRequest struct {
 
 func (x *PullModelRequest) Reset() {
 	*x = PullModelRequest{}
-	mi := &file_cortex_v1_cortex_proto_msgTypes[22]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1468,7 +1601,7 @@ func (x *PullModelRequest) String() string {
 func (*PullModelRequest) ProtoMessage() {}
 
 func (x *PullModelRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_cortex_v1_cortex_proto_msgTypes[22]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1481,7 +1614,7 @@ func (x *PullModelRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PullModelRequest.ProtoReflect.Descriptor instead.
 func (*PullModelRequest) Descriptor() ([]byte, []int) {
-	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{22}
+	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{24}
 }
 
 type PullModelResponse struct {
@@ -1494,7 +1627,7 @@ type PullModelResponse struct {
 
 func (x *PullModelResponse) Reset() {
 	*x = PullModelResponse{}
-	mi := &file_cortex_v1_cortex_proto_msgTypes[23]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1506,7 +1639,7 @@ func (x *PullModelResponse) String() string {
 func (*PullModelResponse) ProtoMessage() {}
 
 func (x *PullModelResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_cortex_v1_cortex_proto_msgTypes[23]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1519,7 +1652,7 @@ func (x *PullModelResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PullModelResponse.ProtoReflect.Descriptor instead.
 func (*PullModelResponse) Descriptor() ([]byte, []int) {
-	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{23}
+	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *PullModelResponse) GetModel() string {
@@ -1555,7 +1688,7 @@ type ConversationSummary struct {
 
 func (x *ConversationSummary) Reset() {
 	*x = ConversationSummary{}
-	mi := &file_cortex_v1_cortex_proto_msgTypes[24]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1567,7 +1700,7 @@ func (x *ConversationSummary) String() string {
 func (*ConversationSummary) ProtoMessage() {}
 
 func (x *ConversationSummary) ProtoReflect() protoreflect.Message {
-	mi := &file_cortex_v1_cortex_proto_msgTypes[24]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1580,7 +1713,7 @@ func (x *ConversationSummary) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConversationSummary.ProtoReflect.Descriptor instead.
 func (*ConversationSummary) Descriptor() ([]byte, []int) {
-	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{24}
+	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *ConversationSummary) GetConversationId() string {
@@ -1658,7 +1791,7 @@ type SummarizeSessionRequest struct {
 
 func (x *SummarizeSessionRequest) Reset() {
 	*x = SummarizeSessionRequest{}
-	mi := &file_cortex_v1_cortex_proto_msgTypes[25]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1670,7 +1803,7 @@ func (x *SummarizeSessionRequest) String() string {
 func (*SummarizeSessionRequest) ProtoMessage() {}
 
 func (x *SummarizeSessionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_cortex_v1_cortex_proto_msgTypes[25]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1683,7 +1816,7 @@ func (x *SummarizeSessionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SummarizeSessionRequest.ProtoReflect.Descriptor instead.
 func (*SummarizeSessionRequest) Descriptor() ([]byte, []int) {
-	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{25}
+	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *SummarizeSessionRequest) GetConversationId() string {
@@ -1724,7 +1857,7 @@ type SummarizeSessionResponse struct {
 
 func (x *SummarizeSessionResponse) Reset() {
 	*x = SummarizeSessionResponse{}
-	mi := &file_cortex_v1_cortex_proto_msgTypes[26]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1736,7 +1869,7 @@ func (x *SummarizeSessionResponse) String() string {
 func (*SummarizeSessionResponse) ProtoMessage() {}
 
 func (x *SummarizeSessionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_cortex_v1_cortex_proto_msgTypes[26]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1749,7 +1882,7 @@ func (x *SummarizeSessionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SummarizeSessionResponse.ProtoReflect.Descriptor instead.
 func (*SummarizeSessionResponse) Descriptor() ([]byte, []int) {
-	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{26}
+	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *SummarizeSessionResponse) GetConversationId() string {
@@ -1778,7 +1911,7 @@ type RecallSessionRequest struct {
 
 func (x *RecallSessionRequest) Reset() {
 	*x = RecallSessionRequest{}
-	mi := &file_cortex_v1_cortex_proto_msgTypes[27]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1790,7 +1923,7 @@ func (x *RecallSessionRequest) String() string {
 func (*RecallSessionRequest) ProtoMessage() {}
 
 func (x *RecallSessionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_cortex_v1_cortex_proto_msgTypes[27]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1803,7 +1936,7 @@ func (x *RecallSessionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RecallSessionRequest.ProtoReflect.Descriptor instead.
 func (*RecallSessionRequest) Descriptor() ([]byte, []int) {
-	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{27}
+	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *RecallSessionRequest) GetQuery() string {
@@ -1845,7 +1978,7 @@ type RecallSessionResponse struct {
 
 func (x *RecallSessionResponse) Reset() {
 	*x = RecallSessionResponse{}
-	mi := &file_cortex_v1_cortex_proto_msgTypes[28]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1857,7 +1990,7 @@ func (x *RecallSessionResponse) String() string {
 func (*RecallSessionResponse) ProtoMessage() {}
 
 func (x *RecallSessionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_cortex_v1_cortex_proto_msgTypes[28]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1870,7 +2003,7 @@ func (x *RecallSessionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RecallSessionResponse.ProtoReflect.Descriptor instead.
 func (*RecallSessionResponse) Descriptor() ([]byte, []int) {
-	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{28}
+	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *RecallSessionResponse) GetMatched() bool {
@@ -1904,7 +2037,7 @@ type ListSummariesRequest struct {
 
 func (x *ListSummariesRequest) Reset() {
 	*x = ListSummariesRequest{}
-	mi := &file_cortex_v1_cortex_proto_msgTypes[29]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1916,7 +2049,7 @@ func (x *ListSummariesRequest) String() string {
 func (*ListSummariesRequest) ProtoMessage() {}
 
 func (x *ListSummariesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_cortex_v1_cortex_proto_msgTypes[29]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1929,7 +2062,7 @@ func (x *ListSummariesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSummariesRequest.ProtoReflect.Descriptor instead.
 func (*ListSummariesRequest) Descriptor() ([]byte, []int) {
-	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{29}
+	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *ListSummariesRequest) GetNamespace() string {
@@ -1955,7 +2088,7 @@ type ListSummariesResponse struct {
 
 func (x *ListSummariesResponse) Reset() {
 	*x = ListSummariesResponse{}
-	mi := &file_cortex_v1_cortex_proto_msgTypes[30]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1967,7 +2100,7 @@ func (x *ListSummariesResponse) String() string {
 func (*ListSummariesResponse) ProtoMessage() {}
 
 func (x *ListSummariesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_cortex_v1_cortex_proto_msgTypes[30]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1980,7 +2113,7 @@ func (x *ListSummariesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSummariesResponse.ProtoReflect.Descriptor instead.
 func (*ListSummariesResponse) Descriptor() ([]byte, []int) {
-	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{30}
+	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *ListSummariesResponse) GetSummaries() []*ConversationSummary {
@@ -2000,7 +2133,7 @@ type LinkRequest struct {
 
 func (x *LinkRequest) Reset() {
 	*x = LinkRequest{}
-	mi := &file_cortex_v1_cortex_proto_msgTypes[31]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2012,7 +2145,7 @@ func (x *LinkRequest) String() string {
 func (*LinkRequest) ProtoMessage() {}
 
 func (x *LinkRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_cortex_v1_cortex_proto_msgTypes[31]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2025,7 +2158,7 @@ func (x *LinkRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LinkRequest.ProtoReflect.Descriptor instead.
 func (*LinkRequest) Descriptor() ([]byte, []int) {
-	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{31}
+	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *LinkRequest) GetId() string {
@@ -2051,7 +2184,7 @@ type LinkResponse struct {
 
 func (x *LinkResponse) Reset() {
 	*x = LinkResponse{}
-	mi := &file_cortex_v1_cortex_proto_msgTypes[32]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2063,7 +2196,7 @@ func (x *LinkResponse) String() string {
 func (*LinkResponse) ProtoMessage() {}
 
 func (x *LinkResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_cortex_v1_cortex_proto_msgTypes[32]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2076,7 +2209,7 @@ func (x *LinkResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LinkResponse.ProtoReflect.Descriptor instead.
 func (*LinkResponse) Descriptor() ([]byte, []int) {
-	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{32}
+	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *LinkResponse) GetLinkedIds() []string {
@@ -2096,7 +2229,7 @@ type UnlinkRequest struct {
 
 func (x *UnlinkRequest) Reset() {
 	*x = UnlinkRequest{}
-	mi := &file_cortex_v1_cortex_proto_msgTypes[33]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2108,7 +2241,7 @@ func (x *UnlinkRequest) String() string {
 func (*UnlinkRequest) ProtoMessage() {}
 
 func (x *UnlinkRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_cortex_v1_cortex_proto_msgTypes[33]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2121,7 +2254,7 @@ func (x *UnlinkRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UnlinkRequest.ProtoReflect.Descriptor instead.
 func (*UnlinkRequest) Descriptor() ([]byte, []int) {
-	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{33}
+	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *UnlinkRequest) GetId() string {
@@ -2147,7 +2280,7 @@ type UnlinkResponse struct {
 
 func (x *UnlinkResponse) Reset() {
 	*x = UnlinkResponse{}
-	mi := &file_cortex_v1_cortex_proto_msgTypes[34]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2159,7 +2292,7 @@ func (x *UnlinkResponse) String() string {
 func (*UnlinkResponse) ProtoMessage() {}
 
 func (x *UnlinkResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_cortex_v1_cortex_proto_msgTypes[34]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2172,7 +2305,7 @@ func (x *UnlinkResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UnlinkResponse.ProtoReflect.Descriptor instead.
 func (*UnlinkResponse) Descriptor() ([]byte, []int) {
-	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{34}
+	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *UnlinkResponse) GetLinkedIds() []string {
@@ -2192,7 +2325,7 @@ type ListDuplicateCandidatesRequest struct {
 
 func (x *ListDuplicateCandidatesRequest) Reset() {
 	*x = ListDuplicateCandidatesRequest{}
-	mi := &file_cortex_v1_cortex_proto_msgTypes[35]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2204,7 +2337,7 @@ func (x *ListDuplicateCandidatesRequest) String() string {
 func (*ListDuplicateCandidatesRequest) ProtoMessage() {}
 
 func (x *ListDuplicateCandidatesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_cortex_v1_cortex_proto_msgTypes[35]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2217,7 +2350,7 @@ func (x *ListDuplicateCandidatesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListDuplicateCandidatesRequest.ProtoReflect.Descriptor instead.
 func (*ListDuplicateCandidatesRequest) Descriptor() ([]byte, []int) {
-	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{35}
+	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *ListDuplicateCandidatesRequest) GetNamespace() string {
@@ -2248,7 +2381,7 @@ type DuplicateGroup struct {
 
 func (x *DuplicateGroup) Reset() {
 	*x = DuplicateGroup{}
-	mi := &file_cortex_v1_cortex_proto_msgTypes[36]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2260,7 +2393,7 @@ func (x *DuplicateGroup) String() string {
 func (*DuplicateGroup) ProtoMessage() {}
 
 func (x *DuplicateGroup) ProtoReflect() protoreflect.Message {
-	mi := &file_cortex_v1_cortex_proto_msgTypes[36]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2273,7 +2406,7 @@ func (x *DuplicateGroup) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DuplicateGroup.ProtoReflect.Descriptor instead.
 func (*DuplicateGroup) Descriptor() ([]byte, []int) {
-	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{36}
+	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *DuplicateGroup) GetMemory() *Memory {
@@ -2299,7 +2432,7 @@ type ListDuplicateCandidatesResponse struct {
 
 func (x *ListDuplicateCandidatesResponse) Reset() {
 	*x = ListDuplicateCandidatesResponse{}
-	mi := &file_cortex_v1_cortex_proto_msgTypes[37]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2311,7 +2444,7 @@ func (x *ListDuplicateCandidatesResponse) String() string {
 func (*ListDuplicateCandidatesResponse) ProtoMessage() {}
 
 func (x *ListDuplicateCandidatesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_cortex_v1_cortex_proto_msgTypes[37]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2324,7 +2457,7 @@ func (x *ListDuplicateCandidatesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListDuplicateCandidatesResponse.ProtoReflect.Descriptor instead.
 func (*ListDuplicateCandidatesResponse) Descriptor() ([]byte, []int) {
-	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{37}
+	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *ListDuplicateCandidatesResponse) GetGroups() []*DuplicateGroup {
@@ -2344,7 +2477,7 @@ type DismissDuplicateRequest struct {
 
 func (x *DismissDuplicateRequest) Reset() {
 	*x = DismissDuplicateRequest{}
-	mi := &file_cortex_v1_cortex_proto_msgTypes[38]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2356,7 +2489,7 @@ func (x *DismissDuplicateRequest) String() string {
 func (*DismissDuplicateRequest) ProtoMessage() {}
 
 func (x *DismissDuplicateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_cortex_v1_cortex_proto_msgTypes[38]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2369,7 +2502,7 @@ func (x *DismissDuplicateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DismissDuplicateRequest.ProtoReflect.Descriptor instead.
 func (*DismissDuplicateRequest) Descriptor() ([]byte, []int) {
-	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{38}
+	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *DismissDuplicateRequest) GetId() string {
@@ -2396,7 +2529,7 @@ type DismissDuplicateResponse struct {
 
 func (x *DismissDuplicateResponse) Reset() {
 	*x = DismissDuplicateResponse{}
-	mi := &file_cortex_v1_cortex_proto_msgTypes[39]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2408,7 +2541,7 @@ func (x *DismissDuplicateResponse) String() string {
 func (*DismissDuplicateResponse) ProtoMessage() {}
 
 func (x *DismissDuplicateResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_cortex_v1_cortex_proto_msgTypes[39]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2421,7 +2554,7 @@ func (x *DismissDuplicateResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DismissDuplicateResponse.ProtoReflect.Descriptor instead.
 func (*DismissDuplicateResponse) Descriptor() ([]byte, []int) {
-	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{39}
+	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *DismissDuplicateResponse) GetNotDuplicateOf() []string {
@@ -2460,6 +2593,15 @@ const file_cortex_v1_cortex_proto_rawDesc = "" +
 	"\x0fconversation_id\x18\x05 \x01(\tR\x0econversationId\x12\x17\n" +
 	"\alink_to\x18\x06 \x03(\tR\x06linkTo\"6\n" +
 	"\fSaveResponse\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x16\n" +
+	"\x06status\x18\x02 \x01(\tR\x06status\"\x8e\x01\n" +
+	"\x13UpdateMemoryRequest\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
+	"\x04text\x18\x02 \x01(\tR\x04text\x12\x12\n" +
+	"\x04tags\x18\x03 \x03(\tR\x04tags\x12!\n" +
+	"\freplace_tags\x18\x04 \x01(\bR\vreplaceTags\x12\x1c\n" +
+	"\tnamespace\x18\x05 \x01(\tR\tnamespace\">\n" +
+	"\x14UpdateMemoryResponse\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x16\n" +
 	"\x06status\x18\x02 \x01(\tR\x06status\"\xe8\x01\n" +
 	"\rSearchRequest\x12\x14\n" +
@@ -2608,9 +2750,11 @@ const file_cortex_v1_cortex_proto_rawDesc = "" +
 	"\x17DEAD_ACTION_UNSPECIFIED\x10\x00\x12\x14\n" +
 	"\x10DEAD_ACTION_LIST\x10\x01\x12\x17\n" +
 	"\x13DEAD_ACTION_REQUEUE\x10\x02\x12\x15\n" +
-	"\x11DEAD_ACTION_PURGE\x10\x032\xf9\t\n" +
+	"\x11DEAD_ACTION_PURGE\x10\x032\xcc\n" +
+	"\n" +
 	"\rMemoryService\x129\n" +
-	"\x04Save\x12\x16.cortex.v1.SaveRequest\x1a\x17.cortex.v1.SaveResponse\"\x00\x12?\n" +
+	"\x04Save\x12\x16.cortex.v1.SaveRequest\x1a\x17.cortex.v1.SaveResponse\"\x00\x12Q\n" +
+	"\fUpdateMemory\x12\x1e.cortex.v1.UpdateMemoryRequest\x1a\x1f.cortex.v1.UpdateMemoryResponse\"\x00\x12?\n" +
 	"\x06Search\x12\x18.cortex.v1.SearchRequest\x1a\x19.cortex.v1.SearchResponse\"\x00\x129\n" +
 	"\x04List\x12\x16.cortex.v1.ListRequest\x1a\x17.cortex.v1.ListResponse\"\x00\x12?\n" +
 	"\x06Delete\x12\x18.cortex.v1.DeleteRequest\x1a\x19.cortex.v1.DeleteResponse\"\x00\x12?\n" +
@@ -2642,105 +2786,109 @@ func file_cortex_v1_cortex_proto_rawDescGZIP() []byte {
 }
 
 var file_cortex_v1_cortex_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_cortex_v1_cortex_proto_msgTypes = make([]protoimpl.MessageInfo, 40)
+var file_cortex_v1_cortex_proto_msgTypes = make([]protoimpl.MessageInfo, 42)
 var file_cortex_v1_cortex_proto_goTypes = []any{
 	(DeadAction)(0),                         // 0: cortex.v1.DeadAction
 	(*Memory)(nil),                          // 1: cortex.v1.Memory
 	(*SaveRequest)(nil),                     // 2: cortex.v1.SaveRequest
 	(*SaveResponse)(nil),                    // 3: cortex.v1.SaveResponse
-	(*SearchRequest)(nil),                   // 4: cortex.v1.SearchRequest
-	(*Hit)(nil),                             // 5: cortex.v1.Hit
-	(*SearchResponse)(nil),                  // 6: cortex.v1.SearchResponse
-	(*ListRequest)(nil),                     // 7: cortex.v1.ListRequest
-	(*ListResponse)(nil),                    // 8: cortex.v1.ListResponse
-	(*DeleteRequest)(nil),                   // 9: cortex.v1.DeleteRequest
-	(*DeleteResponse)(nil),                  // 10: cortex.v1.DeleteResponse
-	(*StatusRequest)(nil),                   // 11: cortex.v1.StatusRequest
-	(*StatusResponse)(nil),                  // 12: cortex.v1.StatusResponse
-	(*DoctorRequest)(nil),                   // 13: cortex.v1.DoctorRequest
-	(*Check)(nil),                           // 14: cortex.v1.Check
-	(*DoctorResponse)(nil),                  // 15: cortex.v1.DoctorResponse
-	(*ReindexRequest)(nil),                  // 16: cortex.v1.ReindexRequest
-	(*ReindexResponse)(nil),                 // 17: cortex.v1.ReindexResponse
-	(*DeadLetter)(nil),                      // 18: cortex.v1.DeadLetter
-	(*DeadRequest)(nil),                     // 19: cortex.v1.DeadRequest
-	(*DeadResponse)(nil),                    // 20: cortex.v1.DeadResponse
-	(*IndexQueueRequest)(nil),               // 21: cortex.v1.IndexQueueRequest
-	(*IndexQueueResponse)(nil),              // 22: cortex.v1.IndexQueueResponse
-	(*PullModelRequest)(nil),                // 23: cortex.v1.PullModelRequest
-	(*PullModelResponse)(nil),               // 24: cortex.v1.PullModelResponse
-	(*ConversationSummary)(nil),             // 25: cortex.v1.ConversationSummary
-	(*SummarizeSessionRequest)(nil),         // 26: cortex.v1.SummarizeSessionRequest
-	(*SummarizeSessionResponse)(nil),        // 27: cortex.v1.SummarizeSessionResponse
-	(*RecallSessionRequest)(nil),            // 28: cortex.v1.RecallSessionRequest
-	(*RecallSessionResponse)(nil),           // 29: cortex.v1.RecallSessionResponse
-	(*ListSummariesRequest)(nil),            // 30: cortex.v1.ListSummariesRequest
-	(*ListSummariesResponse)(nil),           // 31: cortex.v1.ListSummariesResponse
-	(*LinkRequest)(nil),                     // 32: cortex.v1.LinkRequest
-	(*LinkResponse)(nil),                    // 33: cortex.v1.LinkResponse
-	(*UnlinkRequest)(nil),                   // 34: cortex.v1.UnlinkRequest
-	(*UnlinkResponse)(nil),                  // 35: cortex.v1.UnlinkResponse
-	(*ListDuplicateCandidatesRequest)(nil),  // 36: cortex.v1.ListDuplicateCandidatesRequest
-	(*DuplicateGroup)(nil),                  // 37: cortex.v1.DuplicateGroup
-	(*ListDuplicateCandidatesResponse)(nil), // 38: cortex.v1.ListDuplicateCandidatesResponse
-	(*DismissDuplicateRequest)(nil),         // 39: cortex.v1.DismissDuplicateRequest
-	(*DismissDuplicateResponse)(nil),        // 40: cortex.v1.DismissDuplicateResponse
-	(*timestamppb.Timestamp)(nil),           // 41: google.protobuf.Timestamp
+	(*UpdateMemoryRequest)(nil),             // 4: cortex.v1.UpdateMemoryRequest
+	(*UpdateMemoryResponse)(nil),            // 5: cortex.v1.UpdateMemoryResponse
+	(*SearchRequest)(nil),                   // 6: cortex.v1.SearchRequest
+	(*Hit)(nil),                             // 7: cortex.v1.Hit
+	(*SearchResponse)(nil),                  // 8: cortex.v1.SearchResponse
+	(*ListRequest)(nil),                     // 9: cortex.v1.ListRequest
+	(*ListResponse)(nil),                    // 10: cortex.v1.ListResponse
+	(*DeleteRequest)(nil),                   // 11: cortex.v1.DeleteRequest
+	(*DeleteResponse)(nil),                  // 12: cortex.v1.DeleteResponse
+	(*StatusRequest)(nil),                   // 13: cortex.v1.StatusRequest
+	(*StatusResponse)(nil),                  // 14: cortex.v1.StatusResponse
+	(*DoctorRequest)(nil),                   // 15: cortex.v1.DoctorRequest
+	(*Check)(nil),                           // 16: cortex.v1.Check
+	(*DoctorResponse)(nil),                  // 17: cortex.v1.DoctorResponse
+	(*ReindexRequest)(nil),                  // 18: cortex.v1.ReindexRequest
+	(*ReindexResponse)(nil),                 // 19: cortex.v1.ReindexResponse
+	(*DeadLetter)(nil),                      // 20: cortex.v1.DeadLetter
+	(*DeadRequest)(nil),                     // 21: cortex.v1.DeadRequest
+	(*DeadResponse)(nil),                    // 22: cortex.v1.DeadResponse
+	(*IndexQueueRequest)(nil),               // 23: cortex.v1.IndexQueueRequest
+	(*IndexQueueResponse)(nil),              // 24: cortex.v1.IndexQueueResponse
+	(*PullModelRequest)(nil),                // 25: cortex.v1.PullModelRequest
+	(*PullModelResponse)(nil),               // 26: cortex.v1.PullModelResponse
+	(*ConversationSummary)(nil),             // 27: cortex.v1.ConversationSummary
+	(*SummarizeSessionRequest)(nil),         // 28: cortex.v1.SummarizeSessionRequest
+	(*SummarizeSessionResponse)(nil),        // 29: cortex.v1.SummarizeSessionResponse
+	(*RecallSessionRequest)(nil),            // 30: cortex.v1.RecallSessionRequest
+	(*RecallSessionResponse)(nil),           // 31: cortex.v1.RecallSessionResponse
+	(*ListSummariesRequest)(nil),            // 32: cortex.v1.ListSummariesRequest
+	(*ListSummariesResponse)(nil),           // 33: cortex.v1.ListSummariesResponse
+	(*LinkRequest)(nil),                     // 34: cortex.v1.LinkRequest
+	(*LinkResponse)(nil),                    // 35: cortex.v1.LinkResponse
+	(*UnlinkRequest)(nil),                   // 36: cortex.v1.UnlinkRequest
+	(*UnlinkResponse)(nil),                  // 37: cortex.v1.UnlinkResponse
+	(*ListDuplicateCandidatesRequest)(nil),  // 38: cortex.v1.ListDuplicateCandidatesRequest
+	(*DuplicateGroup)(nil),                  // 39: cortex.v1.DuplicateGroup
+	(*ListDuplicateCandidatesResponse)(nil), // 40: cortex.v1.ListDuplicateCandidatesResponse
+	(*DismissDuplicateRequest)(nil),         // 41: cortex.v1.DismissDuplicateRequest
+	(*DismissDuplicateResponse)(nil),        // 42: cortex.v1.DismissDuplicateResponse
+	(*timestamppb.Timestamp)(nil),           // 43: google.protobuf.Timestamp
 }
 var file_cortex_v1_cortex_proto_depIdxs = []int32{
-	41, // 0: cortex.v1.Memory.created_at:type_name -> google.protobuf.Timestamp
+	43, // 0: cortex.v1.Memory.created_at:type_name -> google.protobuf.Timestamp
 	1,  // 1: cortex.v1.Hit.memory:type_name -> cortex.v1.Memory
-	5,  // 2: cortex.v1.SearchResponse.hits:type_name -> cortex.v1.Hit
+	7,  // 2: cortex.v1.SearchResponse.hits:type_name -> cortex.v1.Hit
 	1,  // 3: cortex.v1.ListResponse.memories:type_name -> cortex.v1.Memory
-	14, // 4: cortex.v1.DoctorResponse.checks:type_name -> cortex.v1.Check
+	16, // 4: cortex.v1.DoctorResponse.checks:type_name -> cortex.v1.Check
 	1,  // 5: cortex.v1.DeadLetter.record:type_name -> cortex.v1.Memory
-	41, // 6: cortex.v1.DeadLetter.failed_at:type_name -> google.protobuf.Timestamp
+	43, // 6: cortex.v1.DeadLetter.failed_at:type_name -> google.protobuf.Timestamp
 	0,  // 7: cortex.v1.DeadRequest.action:type_name -> cortex.v1.DeadAction
-	18, // 8: cortex.v1.DeadResponse.dead_letters:type_name -> cortex.v1.DeadLetter
-	41, // 9: cortex.v1.ConversationSummary.created_at:type_name -> google.protobuf.Timestamp
-	41, // 10: cortex.v1.ConversationSummary.updated_at:type_name -> google.protobuf.Timestamp
-	25, // 11: cortex.v1.RecallSessionResponse.summary:type_name -> cortex.v1.ConversationSummary
+	20, // 8: cortex.v1.DeadResponse.dead_letters:type_name -> cortex.v1.DeadLetter
+	43, // 9: cortex.v1.ConversationSummary.created_at:type_name -> google.protobuf.Timestamp
+	43, // 10: cortex.v1.ConversationSummary.updated_at:type_name -> google.protobuf.Timestamp
+	27, // 11: cortex.v1.RecallSessionResponse.summary:type_name -> cortex.v1.ConversationSummary
 	1,  // 12: cortex.v1.RecallSessionResponse.facts:type_name -> cortex.v1.Memory
-	25, // 13: cortex.v1.ListSummariesResponse.summaries:type_name -> cortex.v1.ConversationSummary
+	27, // 13: cortex.v1.ListSummariesResponse.summaries:type_name -> cortex.v1.ConversationSummary
 	1,  // 14: cortex.v1.DuplicateGroup.memory:type_name -> cortex.v1.Memory
 	1,  // 15: cortex.v1.DuplicateGroup.candidates:type_name -> cortex.v1.Memory
-	37, // 16: cortex.v1.ListDuplicateCandidatesResponse.groups:type_name -> cortex.v1.DuplicateGroup
+	39, // 16: cortex.v1.ListDuplicateCandidatesResponse.groups:type_name -> cortex.v1.DuplicateGroup
 	2,  // 17: cortex.v1.MemoryService.Save:input_type -> cortex.v1.SaveRequest
-	4,  // 18: cortex.v1.MemoryService.Search:input_type -> cortex.v1.SearchRequest
-	7,  // 19: cortex.v1.MemoryService.List:input_type -> cortex.v1.ListRequest
-	9,  // 20: cortex.v1.MemoryService.Delete:input_type -> cortex.v1.DeleteRequest
-	11, // 21: cortex.v1.MemoryService.Status:input_type -> cortex.v1.StatusRequest
-	13, // 22: cortex.v1.MemoryService.Doctor:input_type -> cortex.v1.DoctorRequest
-	16, // 23: cortex.v1.MemoryService.Reindex:input_type -> cortex.v1.ReindexRequest
-	19, // 24: cortex.v1.MemoryService.Dead:input_type -> cortex.v1.DeadRequest
-	21, // 25: cortex.v1.MemoryService.IndexQueue:input_type -> cortex.v1.IndexQueueRequest
-	23, // 26: cortex.v1.MemoryService.PullModel:input_type -> cortex.v1.PullModelRequest
-	26, // 27: cortex.v1.MemoryService.SummarizeSession:input_type -> cortex.v1.SummarizeSessionRequest
-	28, // 28: cortex.v1.MemoryService.RecallSession:input_type -> cortex.v1.RecallSessionRequest
-	30, // 29: cortex.v1.MemoryService.ListSummaries:input_type -> cortex.v1.ListSummariesRequest
-	32, // 30: cortex.v1.MemoryService.Link:input_type -> cortex.v1.LinkRequest
-	34, // 31: cortex.v1.MemoryService.Unlink:input_type -> cortex.v1.UnlinkRequest
-	36, // 32: cortex.v1.MemoryService.ListDuplicateCandidates:input_type -> cortex.v1.ListDuplicateCandidatesRequest
-	39, // 33: cortex.v1.MemoryService.DismissDuplicate:input_type -> cortex.v1.DismissDuplicateRequest
-	3,  // 34: cortex.v1.MemoryService.Save:output_type -> cortex.v1.SaveResponse
-	6,  // 35: cortex.v1.MemoryService.Search:output_type -> cortex.v1.SearchResponse
-	8,  // 36: cortex.v1.MemoryService.List:output_type -> cortex.v1.ListResponse
-	10, // 37: cortex.v1.MemoryService.Delete:output_type -> cortex.v1.DeleteResponse
-	12, // 38: cortex.v1.MemoryService.Status:output_type -> cortex.v1.StatusResponse
-	15, // 39: cortex.v1.MemoryService.Doctor:output_type -> cortex.v1.DoctorResponse
-	17, // 40: cortex.v1.MemoryService.Reindex:output_type -> cortex.v1.ReindexResponse
-	20, // 41: cortex.v1.MemoryService.Dead:output_type -> cortex.v1.DeadResponse
-	22, // 42: cortex.v1.MemoryService.IndexQueue:output_type -> cortex.v1.IndexQueueResponse
-	24, // 43: cortex.v1.MemoryService.PullModel:output_type -> cortex.v1.PullModelResponse
-	27, // 44: cortex.v1.MemoryService.SummarizeSession:output_type -> cortex.v1.SummarizeSessionResponse
-	29, // 45: cortex.v1.MemoryService.RecallSession:output_type -> cortex.v1.RecallSessionResponse
-	31, // 46: cortex.v1.MemoryService.ListSummaries:output_type -> cortex.v1.ListSummariesResponse
-	33, // 47: cortex.v1.MemoryService.Link:output_type -> cortex.v1.LinkResponse
-	35, // 48: cortex.v1.MemoryService.Unlink:output_type -> cortex.v1.UnlinkResponse
-	38, // 49: cortex.v1.MemoryService.ListDuplicateCandidates:output_type -> cortex.v1.ListDuplicateCandidatesResponse
-	40, // 50: cortex.v1.MemoryService.DismissDuplicate:output_type -> cortex.v1.DismissDuplicateResponse
-	34, // [34:51] is the sub-list for method output_type
-	17, // [17:34] is the sub-list for method input_type
+	4,  // 18: cortex.v1.MemoryService.UpdateMemory:input_type -> cortex.v1.UpdateMemoryRequest
+	6,  // 19: cortex.v1.MemoryService.Search:input_type -> cortex.v1.SearchRequest
+	9,  // 20: cortex.v1.MemoryService.List:input_type -> cortex.v1.ListRequest
+	11, // 21: cortex.v1.MemoryService.Delete:input_type -> cortex.v1.DeleteRequest
+	13, // 22: cortex.v1.MemoryService.Status:input_type -> cortex.v1.StatusRequest
+	15, // 23: cortex.v1.MemoryService.Doctor:input_type -> cortex.v1.DoctorRequest
+	18, // 24: cortex.v1.MemoryService.Reindex:input_type -> cortex.v1.ReindexRequest
+	21, // 25: cortex.v1.MemoryService.Dead:input_type -> cortex.v1.DeadRequest
+	23, // 26: cortex.v1.MemoryService.IndexQueue:input_type -> cortex.v1.IndexQueueRequest
+	25, // 27: cortex.v1.MemoryService.PullModel:input_type -> cortex.v1.PullModelRequest
+	28, // 28: cortex.v1.MemoryService.SummarizeSession:input_type -> cortex.v1.SummarizeSessionRequest
+	30, // 29: cortex.v1.MemoryService.RecallSession:input_type -> cortex.v1.RecallSessionRequest
+	32, // 30: cortex.v1.MemoryService.ListSummaries:input_type -> cortex.v1.ListSummariesRequest
+	34, // 31: cortex.v1.MemoryService.Link:input_type -> cortex.v1.LinkRequest
+	36, // 32: cortex.v1.MemoryService.Unlink:input_type -> cortex.v1.UnlinkRequest
+	38, // 33: cortex.v1.MemoryService.ListDuplicateCandidates:input_type -> cortex.v1.ListDuplicateCandidatesRequest
+	41, // 34: cortex.v1.MemoryService.DismissDuplicate:input_type -> cortex.v1.DismissDuplicateRequest
+	3,  // 35: cortex.v1.MemoryService.Save:output_type -> cortex.v1.SaveResponse
+	5,  // 36: cortex.v1.MemoryService.UpdateMemory:output_type -> cortex.v1.UpdateMemoryResponse
+	8,  // 37: cortex.v1.MemoryService.Search:output_type -> cortex.v1.SearchResponse
+	10, // 38: cortex.v1.MemoryService.List:output_type -> cortex.v1.ListResponse
+	12, // 39: cortex.v1.MemoryService.Delete:output_type -> cortex.v1.DeleteResponse
+	14, // 40: cortex.v1.MemoryService.Status:output_type -> cortex.v1.StatusResponse
+	17, // 41: cortex.v1.MemoryService.Doctor:output_type -> cortex.v1.DoctorResponse
+	19, // 42: cortex.v1.MemoryService.Reindex:output_type -> cortex.v1.ReindexResponse
+	22, // 43: cortex.v1.MemoryService.Dead:output_type -> cortex.v1.DeadResponse
+	24, // 44: cortex.v1.MemoryService.IndexQueue:output_type -> cortex.v1.IndexQueueResponse
+	26, // 45: cortex.v1.MemoryService.PullModel:output_type -> cortex.v1.PullModelResponse
+	29, // 46: cortex.v1.MemoryService.SummarizeSession:output_type -> cortex.v1.SummarizeSessionResponse
+	31, // 47: cortex.v1.MemoryService.RecallSession:output_type -> cortex.v1.RecallSessionResponse
+	33, // 48: cortex.v1.MemoryService.ListSummaries:output_type -> cortex.v1.ListSummariesResponse
+	35, // 49: cortex.v1.MemoryService.Link:output_type -> cortex.v1.LinkResponse
+	37, // 50: cortex.v1.MemoryService.Unlink:output_type -> cortex.v1.UnlinkResponse
+	40, // 51: cortex.v1.MemoryService.ListDuplicateCandidates:output_type -> cortex.v1.ListDuplicateCandidatesResponse
+	42, // 52: cortex.v1.MemoryService.DismissDuplicate:output_type -> cortex.v1.DismissDuplicateResponse
+	35, // [35:53] is the sub-list for method output_type
+	17, // [17:35] is the sub-list for method input_type
 	17, // [17:17] is the sub-list for extension type_name
 	17, // [17:17] is the sub-list for extension extendee
 	0,  // [0:17] is the sub-list for field type_name
@@ -2757,7 +2905,7 @@ func file_cortex_v1_cortex_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_cortex_v1_cortex_proto_rawDesc), len(file_cortex_v1_cortex_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   40,
+			NumMessages:   42,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

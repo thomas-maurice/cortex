@@ -52,6 +52,9 @@ func initConfig(cmd *cobra.Command) error {
 		_ = v.BindEnv(s.key, s.env)
 		*s.target = v.GetString(s.key)
 	}
+	v.SetDefault("save.hostname-tag", false) // opt-in: stamp host:<hostname> on saves
+	saveTags = v.GetStringSlice("save.tags")
+	hostnameTag = v.GetBool("save.hostname-tag")
 	return nil
 }
 
@@ -66,6 +69,11 @@ var (
 	defaultNS      string
 	source         string
 	conversationID string
+	// saveTags / hostnameTag drive the client-side tags stamped on every saved
+	// memory (config keys save.tags and save.hostname-tag). Resolved in
+	// initConfig; not flag-backed (string-slice/bool, unlike the settings table).
+	saveTags    []string
+	hostnameTag bool
 )
 
 // client builds an RPC client from the resolved global flags.
@@ -130,6 +138,11 @@ token: ""                       # bearer token (env: CORTEX_AUTH_TOKEN)
 namespace-default: global       # namespace used when none is given (env: DEFAULT_NAMESPACE)
 source: cli                     # source tag recorded on saved memories (env: MEMORY_SOURCE)
 
+# --- save-time tags (stamped client-side on every memory this host saves; save-only, never used to query) ---
+save:
+  tags: []                      # static tags added to every save, e.g. [personal] or [work] to mark this profile
+  hostname-tag: false           # when true, also stamp host:<hostname> on every save (opt-in)
+
 # --- MCP server defaults (applied when a tool call omits the field; 0 = defer to server) ---
 mcp:
   search-limit: 10              # default max results for cortex_memory_search
@@ -158,6 +171,7 @@ func configCmd() *cobra.Command {
 			fmt.Printf("token:             %s\n", maskToken(authToken))
 			fmt.Printf("namespace-default: %s\n", defaultNS)
 			fmt.Printf("source:            %s\n", source)
+			fmt.Printf("save auto-tags:    %v\n", config.AutoTags(saveTags, hostnameTag))
 			return nil
 		},
 	}
@@ -222,7 +236,7 @@ func main() {
 		pf.StringVar(s.target, s.key, s.def, s.usage)
 	}
 
-	root.AddCommand(saveCmd(), listCmd(), searchCmd(), deleteCmd(), exportCmd(), reindexCmd(), deadCmd(), statusCmd(), doctorCmd(), summarizeCmd(), summariesCmd(), recallCmd(), candidatesCmd(), hashPasswordCmd(), configCmd())
+	root.AddCommand(saveCmd(), editCmd(), listCmd(), searchCmd(), deleteCmd(), exportCmd(), reindexCmd(), deadCmd(), statusCmd(), doctorCmd(), summarizeCmd(), summariesCmd(), recallCmd(), candidatesCmd(), hashPasswordCmd(), configCmd())
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -249,7 +263,7 @@ func saveCmd() *cobra.Command {
 			resp, err := client().Save(cmd.Context(), connect.NewRequest(&cortexv1.SaveRequest{
 				Text:           text,
 				Namespace:      ns,
-				Tags:           tags,
+				Tags:           config.MergeTags(tags, config.AutoTags(saveTags, hostnameTag)),
 				LinkTo:         linkTo,
 				Source:         source,
 				ConversationId: conversationID,
@@ -264,6 +278,50 @@ func saveCmd() *cobra.Command {
 	cmd.Flags().StringVarP(&namespace, "namespace", "n", "", "namespace to scope the memory (default: configured default)")
 	cmd.Flags().StringSliceVarP(&tags, "tag", "t", nil, "tag to attach (repeatable)")
 	cmd.Flags().StringSliceVarP(&linkTo, "link-to", "L", nil, "ID of an existing memory to link this one to (repeatable; applied after indexing)")
+	return cmd
+}
+
+func editCmd() *cobra.Command {
+	var namespace string
+	var tags []string
+	var replaceTags bool
+	cmd := &cobra.Command{
+		Use:   "edit <id> <text>",
+		Short: "Edit an existing memory's text (re-embedded; keeps id, links, history)",
+		Long: "Replace a memory's text and re-embed it through the worker, preserving its ID, creation time,\n" +
+			"links and dedup decisions. Tags are kept unless you pass --tag (which sets --replace-tags); the\n" +
+			"namespace is kept unless you pass --namespace. The edit is queued for async re-indexing.",
+		Args: cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			id := strings.TrimSpace(args[0])
+			text := strings.TrimSpace(args[1])
+			if id == "" {
+				return fmt.Errorf("id must not be empty")
+			}
+			if text == "" {
+				return fmt.Errorf("text must not be empty")
+			}
+			// Passing --tag implies the user wants those tags applied.
+			if cmd.Flags().Changed("tag") {
+				replaceTags = true
+			}
+			resp, err := client().UpdateMemory(cmd.Context(), connect.NewRequest(&cortexv1.UpdateMemoryRequest{
+				Id:          id,
+				Text:        text,
+				Tags:        tags,
+				ReplaceTags: replaceTags,
+				Namespace:   namespace,
+			}))
+			if err != nil {
+				return err
+			}
+			fmt.Printf("queued %s for re-indexing\n", resp.Msg.GetId())
+			return nil
+		},
+	}
+	cmd.Flags().StringVarP(&namespace, "namespace", "n", "", "move the memory to this namespace (default: keep current)")
+	cmd.Flags().StringSliceVarP(&tags, "tag", "t", nil, "replace the memory's tags with these (repeatable; implies --replace-tags)")
+	cmd.Flags().BoolVar(&replaceTags, "replace-tags", false, "replace tags even with an empty set (clears all tags)")
 	return cmd
 }
 

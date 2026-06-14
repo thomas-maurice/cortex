@@ -35,6 +35,9 @@ const (
 const (
 	// MemoryServiceSaveProcedure is the fully-qualified name of the MemoryService's Save RPC.
 	MemoryServiceSaveProcedure = "/cortex.v1.MemoryService/Save"
+	// MemoryServiceUpdateMemoryProcedure is the fully-qualified name of the MemoryService's
+	// UpdateMemory RPC.
+	MemoryServiceUpdateMemoryProcedure = "/cortex.v1.MemoryService/UpdateMemory"
 	// MemoryServiceSearchProcedure is the fully-qualified name of the MemoryService's Search RPC.
 	MemoryServiceSearchProcedure = "/cortex.v1.MemoryService/Search"
 	// MemoryServiceListProcedure is the fully-qualified name of the MemoryService's List RPC.
@@ -79,6 +82,11 @@ const (
 type MemoryServiceClient interface {
 	// Save queues a memory for asynchronous, durable indexing (NATS JetStream).
 	Save(context.Context, *connect.Request[v1.SaveRequest]) (*connect.Response[v1.SaveResponse], error)
+	// UpdateMemory edits an existing memory and re-embeds it through the worker.
+	// It preserves the memory's id, creation time, source, conversation, links and
+	// dedup decisions; only text (always) and, opt-in, tags/namespace change. Like
+	// Save it is asynchronous: the new vector lands once the worker re-indexes.
+	UpdateMemory(context.Context, *connect.Request[v1.UpdateMemoryRequest]) (*connect.Response[v1.UpdateMemoryResponse], error)
 	// Search runs a semantic (vector) search over stored memories.
 	Search(context.Context, *connect.Request[v1.SearchRequest]) (*connect.Response[v1.SearchResponse], error)
 	// List returns stored memories newest-first, without a vector query.
@@ -132,6 +140,12 @@ func NewMemoryServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			httpClient,
 			baseURL+MemoryServiceSaveProcedure,
 			connect.WithSchema(memoryServiceMethods.ByName("Save")),
+			connect.WithClientOptions(opts...),
+		),
+		updateMemory: connect.NewClient[v1.UpdateMemoryRequest, v1.UpdateMemoryResponse](
+			httpClient,
+			baseURL+MemoryServiceUpdateMemoryProcedure,
+			connect.WithSchema(memoryServiceMethods.ByName("UpdateMemory")),
 			connect.WithClientOptions(opts...),
 		),
 		search: connect.NewClient[v1.SearchRequest, v1.SearchResponse](
@@ -236,6 +250,7 @@ func NewMemoryServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 // memoryServiceClient implements MemoryServiceClient.
 type memoryServiceClient struct {
 	save                    *connect.Client[v1.SaveRequest, v1.SaveResponse]
+	updateMemory            *connect.Client[v1.UpdateMemoryRequest, v1.UpdateMemoryResponse]
 	search                  *connect.Client[v1.SearchRequest, v1.SearchResponse]
 	list                    *connect.Client[v1.ListRequest, v1.ListResponse]
 	delete                  *connect.Client[v1.DeleteRequest, v1.DeleteResponse]
@@ -257,6 +272,11 @@ type memoryServiceClient struct {
 // Save calls cortex.v1.MemoryService.Save.
 func (c *memoryServiceClient) Save(ctx context.Context, req *connect.Request[v1.SaveRequest]) (*connect.Response[v1.SaveResponse], error) {
 	return c.save.CallUnary(ctx, req)
+}
+
+// UpdateMemory calls cortex.v1.MemoryService.UpdateMemory.
+func (c *memoryServiceClient) UpdateMemory(ctx context.Context, req *connect.Request[v1.UpdateMemoryRequest]) (*connect.Response[v1.UpdateMemoryResponse], error) {
+	return c.updateMemory.CallUnary(ctx, req)
 }
 
 // Search calls cortex.v1.MemoryService.Search.
@@ -343,6 +363,11 @@ func (c *memoryServiceClient) DismissDuplicate(ctx context.Context, req *connect
 type MemoryServiceHandler interface {
 	// Save queues a memory for asynchronous, durable indexing (NATS JetStream).
 	Save(context.Context, *connect.Request[v1.SaveRequest]) (*connect.Response[v1.SaveResponse], error)
+	// UpdateMemory edits an existing memory and re-embeds it through the worker.
+	// It preserves the memory's id, creation time, source, conversation, links and
+	// dedup decisions; only text (always) and, opt-in, tags/namespace change. Like
+	// Save it is asynchronous: the new vector lands once the worker re-indexes.
+	UpdateMemory(context.Context, *connect.Request[v1.UpdateMemoryRequest]) (*connect.Response[v1.UpdateMemoryResponse], error)
 	// Search runs a semantic (vector) search over stored memories.
 	Search(context.Context, *connect.Request[v1.SearchRequest]) (*connect.Response[v1.SearchResponse], error)
 	// List returns stored memories newest-first, without a vector query.
@@ -392,6 +417,12 @@ func NewMemoryServiceHandler(svc MemoryServiceHandler, opts ...connect.HandlerOp
 		MemoryServiceSaveProcedure,
 		svc.Save,
 		connect.WithSchema(memoryServiceMethods.ByName("Save")),
+		connect.WithHandlerOptions(opts...),
+	)
+	memoryServiceUpdateMemoryHandler := connect.NewUnaryHandler(
+		MemoryServiceUpdateMemoryProcedure,
+		svc.UpdateMemory,
+		connect.WithSchema(memoryServiceMethods.ByName("UpdateMemory")),
 		connect.WithHandlerOptions(opts...),
 	)
 	memoryServiceSearchHandler := connect.NewUnaryHandler(
@@ -494,6 +525,8 @@ func NewMemoryServiceHandler(svc MemoryServiceHandler, opts ...connect.HandlerOp
 		switch r.URL.Path {
 		case MemoryServiceSaveProcedure:
 			memoryServiceSaveHandler.ServeHTTP(w, r)
+		case MemoryServiceUpdateMemoryProcedure:
+			memoryServiceUpdateMemoryHandler.ServeHTTP(w, r)
 		case MemoryServiceSearchProcedure:
 			memoryServiceSearchHandler.ServeHTTP(w, r)
 		case MemoryServiceListProcedure:
@@ -537,6 +570,10 @@ type UnimplementedMemoryServiceHandler struct{}
 
 func (UnimplementedMemoryServiceHandler) Save(context.Context, *connect.Request[v1.SaveRequest]) (*connect.Response[v1.SaveResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cortex.v1.MemoryService.Save is not implemented"))
+}
+
+func (UnimplementedMemoryServiceHandler) UpdateMemory(context.Context, *connect.Request[v1.UpdateMemoryRequest]) (*connect.Response[v1.UpdateMemoryResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cortex.v1.MemoryService.UpdateMemory is not implemented"))
 }
 
 func (UnimplementedMemoryServiceHandler) Search(context.Context, *connect.Request[v1.SearchRequest]) (*connect.Response[v1.SearchResponse], error) {

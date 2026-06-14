@@ -286,6 +286,123 @@ export class SaveResponse extends Message<SaveResponse> {
 }
 
 /**
+ * @generated from message cortex.v1.UpdateMemoryRequest
+ */
+export class UpdateMemoryRequest extends Message<UpdateMemoryRequest> {
+  /**
+   * required: the memory to edit (e.g. from a search hit)
+   *
+   * @generated from field: string id = 1;
+   */
+  id = "";
+
+  /**
+   * required: the new full memory text; replaces and re-embeds
+   *
+   * @generated from field: string text = 2;
+   */
+  text = "";
+
+  /**
+   * tags is the desired tag set, applied ONLY when replace_tags is true. proto3
+   * can't tell an empty list from an unset one, so replace_tags is the explicit
+   * switch: it lets an editor clear all tags while letting a text-only edit (e.g.
+   * from an agent) leave the existing tags untouched.
+   *
+   * @generated from field: repeated string tags = 3;
+   */
+  tags: string[] = [];
+
+  /**
+   * @generated from field: bool replace_tags = 4;
+   */
+  replaceTags = false;
+
+  /**
+   * namespace moves the memory when non-empty; empty keeps the current namespace.
+   *
+   * @generated from field: string namespace = 5;
+   */
+  namespace = "";
+
+  constructor(data?: PartialMessage<UpdateMemoryRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "cortex.v1.UpdateMemoryRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "text", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "tags", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
+    { no: 4, name: "replace_tags", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+    { no: 5, name: "namespace", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): UpdateMemoryRequest {
+    return new UpdateMemoryRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): UpdateMemoryRequest {
+    return new UpdateMemoryRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): UpdateMemoryRequest {
+    return new UpdateMemoryRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: UpdateMemoryRequest | PlainMessage<UpdateMemoryRequest> | undefined, b: UpdateMemoryRequest | PlainMessage<UpdateMemoryRequest> | undefined): boolean {
+    return proto3.util.equals(UpdateMemoryRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message cortex.v1.UpdateMemoryResponse
+ */
+export class UpdateMemoryResponse extends Message<UpdateMemoryResponse> {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id = "";
+
+  /**
+   * "queued"
+   *
+   * @generated from field: string status = 2;
+   */
+  status = "";
+
+  constructor(data?: PartialMessage<UpdateMemoryResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "cortex.v1.UpdateMemoryResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "status", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): UpdateMemoryResponse {
+    return new UpdateMemoryResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): UpdateMemoryResponse {
+    return new UpdateMemoryResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): UpdateMemoryResponse {
+    return new UpdateMemoryResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: UpdateMemoryResponse | PlainMessage<UpdateMemoryResponse> | undefined, b: UpdateMemoryResponse | PlainMessage<UpdateMemoryResponse> | undefined): boolean {
+    return proto3.util.equals(UpdateMemoryResponse, a, b);
+  }
+}
+
+/**
  * @generated from message cortex.v1.SearchRequest
  */
 export class SearchRequest extends Message<SearchRequest> {

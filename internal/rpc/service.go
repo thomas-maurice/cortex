@@ -88,6 +88,48 @@ func (s *Service) Save(ctx context.Context, req *connect.Request[cortexv1.SaveRe
 	return connect.NewResponse(&cortexv1.SaveResponse{Id: rec.ID, Status: "queued"}), nil
 }
 
+// UpdateMemory edits an existing memory's text (and, opt-in, its tags/namespace)
+// and republishes it for re-embedding — the same path Reindex uses per record,
+// so the worker re-embeds, re-stamps provenance and recomputes dedup candidates.
+// Reading the current record first preserves everything the edit does not touch:
+// id, creation time, source, conversation, links and not-duplicate decisions.
+func (s *Service) UpdateMemory(ctx context.Context, req *connect.Request[cortexv1.UpdateMemoryRequest]) (*connect.Response[cortexv1.UpdateMemoryResponse], error) {
+	id := strings.TrimSpace(req.Msg.GetId())
+	if id == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id must not be empty"))
+	}
+	text := strings.TrimSpace(req.Msg.GetText())
+	if text == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("text must not be empty"))
+	}
+
+	rec, ok, err := s.store.Get(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("memory %s not found", id))
+	}
+
+	rec.Text = text
+	if req.Msg.GetReplaceTags() {
+		rec.Tags = req.Msg.GetTags()
+	}
+	if ns := strings.TrimSpace(req.Msg.GetNamespace()); ns != "" {
+		rec.Namespace = ns
+	}
+	// DupCandidates are recomputed by the worker on every (re)index; clear the
+	// stale set so a failed republish never leaves an old hint behind. LinkTo is a
+	// one-shot save instruction, never relevant to an edit.
+	rec.DupCandidates = nil
+	rec.LinkTo = nil
+
+	if err := bus.PublishIndex(ctx, s.js, rec); err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(&cortexv1.UpdateMemoryResponse{Id: id, Status: "queued"}), nil
+}
+
 func (s *Service) Search(ctx context.Context, req *connect.Request[cortexv1.SearchRequest]) (*connect.Response[cortexv1.SearchResponse], error) {
 	query := strings.TrimSpace(req.Msg.GetQuery())
 	if query == "" {
