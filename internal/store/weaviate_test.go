@@ -33,6 +33,18 @@ func TestMemoryClassVectorizerNone(t *testing.T) {
 // properties), that a text[] tags property survives the *pb.ListValue
 // round-trip, and that an int dims arrives as int64 — a regression here would
 // silently return memories with empty IDs (breaking delete) or dropped tags.
+// hybridDistance maps Weaviate's relativeScoreFusion score (higher = better)
+// onto Cortex's distance metric (lower = better) so hybrid hits sort and filter
+// against the same maxDistance cutoff as vector hits. The contract: a perfect
+// score (1) is distance 0, a zero score is distance 1, and the result is never
+// negative (scores can marginally exceed 1).
+func TestHybridDistance(t *testing.T) {
+	assert.InDelta(t, 0.0, hybridDistance(1.0), 1e-6, "top score maps to distance 0")
+	assert.InDelta(t, 1.0, hybridDistance(0.0), 1e-6, "zero score maps to distance 1")
+	assert.InDelta(t, 0.25, hybridDistance(0.75), 1e-6, "monotonic: higher score -> lower distance")
+	assert.Equal(t, float32(0), hybridDistance(1.5), "never negative even if score exceeds 1")
+}
+
 func TestResultToRecord(t *testing.T) {
 	r := graphql.SearchResult{
 		ID: "abc-123",

@@ -118,6 +118,7 @@ automatically without per-call bookkeeping.
 | `OLLAMA_URL` | `http://localhost:11434` | both |
 | `OLLAMA_MODEL` | `qwen3-embedding:0.6b` | both |
 | `WEAVIATE_HOST` | `localhost:8080` | both |
+| `SEARCH_ALPHA` | `0.5` | server (hybrid blend: 1=pure vector, 0=pure keyword/BM25) |
 | `DEFAULT_NAMESPACE` | auto (git remote / dir basename) | mcp |
 | `MEMORY_SOURCE` | `claude-code` | mcp |
 | `CORTEX_AUTH_TOKEN` | _(empty = open)_ | server/clients (static bearer token) |

@@ -32,10 +32,11 @@ const allLimit = 10000
 
 // Config holds the server-side defaults applied to inbound requests.
 type Config struct {
-	DefaultNamespace string // namespace stamped when a request omits one
-	Source           string // source stamped when a request omits one
-	Version          string // reported by Status
-	BackupDir        string // where Reindex writes its safety snapshot
+	DefaultNamespace string  // namespace stamped when a request omits one
+	Source           string  // source stamped when a request omits one
+	Version          string  // reported by Status
+	BackupDir        string  // where Reindex writes its safety snapshot
+	SearchAlpha      float32 // hybrid blend for text searches: 1=pure vector, 0=pure keyword; <=0 = Weaviate default
 }
 
 // Service implements the MemoryService Connect handler. It is the single owner
@@ -149,6 +150,8 @@ func (s *Service) Search(ctx context.Context, req *connect.Request[cortexv1.Sear
 		IncludeTags: req.Msg.GetTags(),
 		AnyTags:     req.Msg.GetAnyTags(),
 		ExcludeTags: req.Msg.GetExcludeTags(),
+		Query:       query, // enables hybrid (BM25 + vector) so exact tokens resolve
+		Alpha:       s.cfg.SearchAlpha,
 	})
 	if err != nil {
 		return nil, err
@@ -665,6 +668,8 @@ func (s *Service) Consolidate(ctx context.Context, req *connect.Request[cortexv1
 		IncludeTags: includeTags,
 		AnyTags:     anyTags,
 		ExcludeTags: excludeTags,
+		Query:       topic, // hybrid: a topic that is a literal token still gathers its cluster
+		Alpha:       s.cfg.SearchAlpha,
 	})
 	if err != nil {
 		return nil, err

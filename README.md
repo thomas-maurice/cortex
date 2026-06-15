@@ -48,19 +48,46 @@ Full rationale in [`docs/DESIGN.md`](docs/DESIGN.md); background research in
 export CORTEX_AUTH_TOKEN=$(openssl rand -hex 16)   # the shared client token
 make bootstrap          # = docker compose up -d --build + ollama pull qwen3-embedding:0.6b
 
-# 2. Build the host-side binaries (the MCP client Claude execs, and the CLI)
-make build              # -> ./bin/cortex-server, cortex-mcp, cortex-worker, cortex
+# 2. Install the host-side client binaries (the MCP server Claude execs + the CLI)
+curl -fsSL https://raw.githubusercontent.com/thomas-maurice/cortex/master/scripts/install.sh | bash
 
 # 3. Point Claude at it (see below), then in a Claude session:
 #    "save a memory: I prefer Go for backend services"
 #    "search your memory for my language preference"
 ```
 
+> Step 2 downloads the latest CI-built release binaries (no local toolchain
+> needed). To build from source instead, use `make build` (-> `./bin/...`).
+
 > Regenerate the protobuf-generated Go code with `make proto` after editing
 > anything in `proto/` (needs `buf`).
 
 `make help` lists every target. `make logs` tails the indexer. `make nuke` wipes
 all data volumes.
+
+## Installing / updating the client (`scripts/install.sh`)
+
+The MCP server and CLI run on your machine (the server/worker run wherever you
+host them). Install or update those two client binaries from the latest
+CI-published release — **re-run the same command to update**:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/thomas-maurice/cortex/master/scripts/install.sh | bash
+```
+
+It detects your OS/arch, downloads the matching release tarball, verifies its
+`checksums.txt`, drops `cortex-mcp` + `cortex` into `~/bin` (or `~/.local/bin`),
+and clears the macOS quarantine flag so the MCP binary launches. Overrides:
+
+| Env | Default | Purpose |
+|-----|---------|---------|
+| `CORTEX_VERSION` | latest release | pin a tag, e.g. `v0.0.3` |
+| `CORTEX_INSTALL_DIR` | `~/bin` if present, else `~/.local/bin` | where binaries land |
+| `CORTEX_BINS` | `cortex-mcp cortex` | which binaries to install |
+
+After updating `cortex-mcp`, reconnect/restart the MCP server in Claude so it
+re-execs the new binary. Binaries come from CI (goreleaser); no local Go
+toolchain is needed.
 
 ## Wiring into Claude Code
 
@@ -269,7 +296,7 @@ The MCP server exposes these tools to Claude:
 | Tool | What it does |
 |------|--------------|
 | `cortex_memory_save` | Queue a memory for indexing. Args: `text`, `namespace?`, `tags?`, `linkTo?`, `supersedes?` (ids this memory replaces — the worker deletes them once this one is indexed). Returns its `id`. |
-| `cortex_memory_search` | Semantic search. Args: `query`, `namespace?` (`*` = all namespaces), `limit?`, `tags?` (must have all), `excludeTags?`, `maxDistance?` (relevance cutoff). Each hit includes its `id`, any `linkedIds`, and any `dupCandidates` (flagged likely-duplicates — the output hints when consolidation would help). |
+| `cortex_memory_search` | **Hybrid** search (BM25 keyword + vector, blended by `SEARCH_ALPHA`, default 0.5) so exact tokens/codenames resolve, not just semantic matches. Args: `query`, `namespace?` (`*` = all namespaces), `limit?`, `tags?` (must have all), `excludeTags?`, `maxDistance?` (relevance cutoff). Each hit includes its `id`, any `linkedIds`, and any `dupCandidates` (flagged likely-duplicates — the output hints when consolidation would help). |
 | `cortex_memory_delete` | Delete a memory by `id` (get the `id` from a `cortex_memory_search` result first). |
 | `cortex_memory_link` | Explicitly link two related memories (bidirectional) so they connect in the graph. Args: `id`, `targetId` — both from a prior search/recall. Claude is told to do this proactively when two memories are meaningfully related. |
 | `cortex_memory_unlink` | Remove the link between two memories. Args: `id`, `targetId`. |

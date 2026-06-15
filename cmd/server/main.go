@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -40,6 +41,19 @@ func env(key, def string) string {
 	return def
 }
 
+// envFloat reads a float32 env var, returning def when unset or unparseable.
+func envFloat(key string, def float32) float32 {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	f, err := strconv.ParseFloat(v, 32)
+	if err != nil {
+		return def
+	}
+	return float32(f)
+}
+
 func main() {
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
@@ -53,6 +67,7 @@ func main() {
 		defaultNS    = env("DEFAULT_NAMESPACE", "global")
 		source       = env("MEMORY_SOURCE", "cortex")
 		backupDir    = env("CORTEX_BACKUP_DIR", ".")
+		searchAlpha  = envFloat("SEARCH_ALPHA", 0.5) // hybrid blend: 1=pure vector, 0=pure keyword
 		authToken    = os.Getenv("CORTEX_AUTH_TOKEN")
 		uiUser       = env("CORTEX_UI_USER", "admin")
 		uiPass       = os.Getenv("CORTEX_UI_PASSWORD")
@@ -114,6 +129,7 @@ func main() {
 		Source:           source,
 		Version:          version,
 		BackupDir:        backupDir,
+		SearchAlpha:      searchAlpha,
 	}, log)
 
 	// When the API token is set, accept either it (MCP/CLI) or a UI-issued JWT

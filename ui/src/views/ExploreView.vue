@@ -19,7 +19,7 @@
         <input v-model.number="limit" type="number" min="1" max="100" class="form-control form-control-sm" />
       </div>
       <div class="col-auto" style="width: 110px">
-        <label class="form-label small mb-1" title="drop matches farther than this vector distance">Max dist</label>
+        <label class="form-label small mb-1" title="relevance cutoff (lower = closer match). Search is hybrid (keyword + vector), so this blends both; raise it to surface weaker matches, lower it to tighten.">Max dist</label>
         <input v-model.number="cutoff" type="number" min="0.1" max="1.5" step="0.05" class="form-control form-control-sm" />
       </div>
       <div class="col-auto">

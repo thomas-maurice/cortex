@@ -34,6 +34,16 @@ type SearchOpts struct {
 	IncludeTags    []string // memory must carry ALL of these tags (server-side)
 	AnyTags        []string // memory must carry AT LEAST ONE of these tags (server-side)
 	ExcludeTags    []string // drop memories carrying ANY of these tags (post-filter)
+	// Query, when non-empty, switches Search from a pure nearVector query to a
+	// HYBRID (BM25 keyword + vector) query using this raw text for the keyword
+	// side and the supplied vector for the vector side. This is what lets exact
+	// tokens that don't embed near their meaning — codenames, hostnames, IDs —
+	// still surface. Empty Query keeps the original pure-vector behaviour (used by
+	// dedup candidate scans, which have no query text).
+	Query string
+	// Alpha is the hybrid blend: 1=pure vector, 0=pure keyword. Only used when
+	// Query is set; <=0 leaves Weaviate's default.
+	Alpha float32
 }
 
 // ListOpts configures a non-vector listing.
@@ -471,17 +481,34 @@ func (s *Store) Search(ctx context.Context, vector []float32, opts SearchOpts) (
 		limit = 5
 	}
 
-	nearVector := (&graphql.NearVectorArgumentBuilder{}).WithVector(vector)
-	if opts.MaxDistance > 0 {
-		nearVector = nearVector.WithDistance(opts.MaxDistance)
-	}
-
 	query := s.client.Experimental().Search().
 		WithCollection(memory.ClassName).
 		WithProperties(memoryProps...).
-		WithMetadata(&graphql.Metadata{ID: true, Distance: true}).
-		WithNearVector(nearVector).
 		WithLimit(limit)
+
+	hybrid := strings.TrimSpace(opts.Query) != ""
+	if hybrid {
+		// Hybrid = BM25 keyword over `text` + vector, fused. relativeScoreFusion
+		// normalises both signals to 0..1 so the fused score maps cleanly onto our
+		// distance metric (see hybridDistance). The keyword side is what surfaces
+		// exact tokens — codenames, hostnames, IDs — that the vector side misses
+		// because they don't embed near their meaning.
+		h := (&graphql.HybridArgumentBuilder{}).
+			WithQuery(opts.Query).
+			WithVector(vector).
+			WithProperties([]string{"text"}).
+			WithFusionType(graphql.RelativeScore)
+		if opts.Alpha > 0 {
+			h = h.WithAlpha(opts.Alpha)
+		}
+		query = query.WithHybrid(h).WithMetadata(&graphql.Metadata{ID: true, Score: true})
+	} else {
+		nearVector := (&graphql.NearVectorArgumentBuilder{}).WithVector(vector)
+		if opts.MaxDistance > 0 {
+			nearVector = nearVector.WithDistance(opts.MaxDistance)
+		}
+		query = query.WithNearVector(nearVector).WithMetadata(&graphql.Metadata{ID: true, Distance: true})
+	}
 
 	if opts.Autocut > 0 {
 		query = query.WithAutocut(opts.Autocut)
@@ -497,9 +524,30 @@ func (s *Store) Search(ctx context.Context, vector []float32, opts SearchOpts) (
 
 	hits := make([]memory.Hit, 0, len(res))
 	for _, r := range res {
-		hits = append(hits, memory.Hit{Record: resultToRecord(r), Distance: r.Metadata.Distance})
+		dist := r.Metadata.Distance
+		if hybrid {
+			// Hybrid has no cosine distance; map the fused score and apply the
+			// cutoff in Go (the score can't be bounded server-side like distance).
+			dist = hybridDistance(r.Metadata.Score)
+			if opts.MaxDistance > 0 && dist > opts.MaxDistance {
+				continue
+			}
+		}
+		hits = append(hits, memory.Hit{Record: resultToRecord(r), Distance: dist})
 	}
 	return excludeTagged(hits, func(h memory.Hit) []string { return h.Tags }, opts.ExcludeTags), nil
+}
+
+// hybridDistance maps a relativeScoreFusion score (0..1, higher = more relevant)
+// onto Cortex's distance metric (lower = more relevant, like cosine distance) as
+// 1-score, so hybrid hits sort and filter against the SAME maxDistance cutoff as
+// vector hits and the rest of the stack (UI, MCP) needs no special case.
+func hybridDistance(score float32) float32 {
+	d := 1 - score
+	if d < 0 {
+		return 0
+	}
+	return d
 }
 
 // SearchByID runs a nearObject query: it finds the stored memories most similar
