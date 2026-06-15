@@ -58,6 +58,14 @@ service MemoryService {
   // DismissDuplicate records that two memories are confirmed NOT duplicates, so
   // the worker stops re-flagging the pair on future re-indexing.
   rpc DismissDuplicate(DismissDuplicateRequest) returns (DismissDuplicateResponse) {}
+  // Consolidate gathers the cluster of memories about a topic — the vector
+  // matches plus their linked and duplicate-candidate neighbours — so a client
+  // (the LLM) can merge them into fewer, richer memories. It is READ-ONLY: it
+  // never writes or deletes. The merge is committed by saving the compiled
+  // memories with SaveRequest.supersedes set to the obsolete ids from the
+  // returned manifest; the worker then deletes those sources once the
+  // replacement is durably indexed.
+  rpc Consolidate(ConsolidateRequest) returns (ConsolidateResponse) {}
 }
 
 // Memory is one stored memory. Only `text` is ever embedded; every other field
@@ -96,6 +104,13 @@ message SaveRequest {
   // where the new memory has no Weaviate object to link until it is indexed.
   // Missing targets are skipped (logged), never fatal.
   repeated string link_to = 6;
+  // supersedes carries IDs of EXISTING memories this new memory replaces (e.g.
+  // the sources gathered by Consolidate). The worker deletes each of them ONLY
+  // after this memory is durably upserted, so consolidation never opens a window
+  // where the merged content is lost if indexing fails. Best-effort, like
+  // link_to: a missing/already-deleted source is skipped (logged), never fatal.
+  // One-shot, not persisted as a property.
+  repeated string supersedes = 7;
 }
 
 message SaveResponse {
@@ -343,4 +358,22 @@ message DismissDuplicateRequest {
 message DismissDuplicateResponse {
   // not_duplicate_of is the updated confirmed-not-duplicate set of `id`.
   repeated string not_duplicate_of = 1;
+}
+
+message ConsolidateRequest {
+  string topic = 1;        // natural-language description of what to consolidate
+  string namespace = 2;    // "" = server default, "*" = all namespaces
+  int32 limit = 3;         // max memories to gather into the cluster (default 25)
+  float max_distance = 4;  // relevance cutoff on the topic match; <=0 = server default
+}
+
+message ConsolidateResponse {
+  // cluster is the gathered memories: the topic's vector matches first (most
+  // relevant), then their linked and duplicate-candidate neighbours, deduped and
+  // capped at limit. Full memories (text included) so the client can merge them
+  // without a second lookup.
+  repeated Memory cluster = 1;
+  // manifest is the ids in cluster, the exact set eligible to be superseded. A
+  // compiled memory's SaveRequest.supersedes should only reference ids from here.
+  repeated string manifest = 2;
 }

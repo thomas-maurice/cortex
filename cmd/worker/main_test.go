@@ -66,3 +66,30 @@ func TestPlanLinks(t *testing.T) {
 		assert.Empty(t, reverse)
 	})
 }
+
+// planSupersedes decides which sources a merged memory deletes. Consolidation is
+// destructive, so the guarantees that matter are: never delete the memory itself
+// (that would erase the merge result), never act on an empty id, and collapse
+// duplicates so a repeated id can't be deleted twice. Each subtest pins one so a
+// regression can't quietly turn a merge into data loss.
+func TestPlanSupersedes(t *testing.T) {
+	t.Run("returns the distinct sources to delete", func(t *testing.T) {
+		assert.Equal(t, []string{"a", "b"}, planSupersedes("new", []string{"a", "b"}))
+	})
+
+	t.Run("self-reference is dropped so the merge result is never deleted", func(t *testing.T) {
+		assert.Equal(t, []string{"a"}, planSupersedes("new", []string{"a", "new"}))
+	})
+
+	t.Run("empty ids are dropped", func(t *testing.T) {
+		assert.Equal(t, []string{"a"}, planSupersedes("new", []string{"", "a", ""}))
+	})
+
+	t.Run("duplicates collapse to one delete", func(t *testing.T) {
+		assert.Equal(t, []string{"a"}, planSupersedes("new", []string{"a", "a"}))
+	})
+
+	t.Run("nothing to supersede yields no deletes", func(t *testing.T) {
+		assert.Empty(t, planSupersedes("new", nil))
+	})
+}

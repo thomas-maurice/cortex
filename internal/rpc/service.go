@@ -81,6 +81,7 @@ func (s *Service) Save(ctx context.Context, req *connect.Request[cortexv1.SaveRe
 		CreatedAt:      time.Now().UTC(),
 		ConversationID: req.Msg.GetConversationId(),
 		LinkTo:         req.Msg.GetLinkTo(),
+		Supersedes:     req.Msg.GetSupersedes(),
 	}
 	if err := bus.PublishIndex(ctx, s.js, rec); err != nil {
 		return nil, err
@@ -626,6 +627,104 @@ func (s *Service) DismissDuplicate(ctx context.Context, req *connect.Request[cor
 	}
 
 	return connect.NewResponse(&cortexv1.DismissDuplicateResponse{NotDuplicateOf: aNot}), nil
+}
+
+// consolidateDefaultLimit caps how many memories Consolidate gathers when the
+// request omits a limit: large enough to pull a whole topic cluster, small
+// enough to stay within a client's context budget.
+const consolidateDefaultLimit = 25
+
+// Consolidate gathers the cluster of memories about a topic for a client (the
+// LLM) to merge, and is strictly READ-ONLY. The cluster is the topic's vector
+// matches (most relevant first) expanded with each match's duplicate-candidate
+// and linked neighbours, deduped and capped at limit. The client merges the
+// cluster into fewer, richer memories and commits the result via
+// Save(supersedes=...) using the returned manifest; the worker then deletes the
+// superseded sources once the replacement is durably indexed. This RPC never
+// writes or deletes — gathering and committing are deliberately separate so the
+// destructive step only happens behind a durable save.
+func (s *Service) Consolidate(ctx context.Context, req *connect.Request[cortexv1.ConsolidateRequest]) (*connect.Response[cortexv1.ConsolidateResponse], error) {
+	topic := strings.TrimSpace(req.Msg.GetTopic())
+	if topic == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("topic must not be empty"))
+	}
+	limit := int(req.Msg.GetLimit())
+	if limit <= 0 {
+		limit = consolidateDefaultLimit
+	}
+
+	vec, err := s.embedder.Embed(ctx, topic)
+	if err != nil {
+		return nil, err
+	}
+	seeds, err := s.store.Search(ctx, vec, store.SearchOpts{
+		Namespace:   resolveNamespace(req.Msg.GetNamespace(), s.cfg.DefaultNamespace),
+		Limit:       limit,
+		MaxDistance: req.Msg.GetMaxDistance(),
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	cluster := assembleCluster(seeds, limit, func(id string) (memory.Record, bool, error) {
+		return s.store.Get(ctx, id)
+	})
+
+	out := &cortexv1.ConsolidateResponse{
+		Cluster:  make([]*cortexv1.Memory, 0, len(cluster)),
+		Manifest: make([]string, 0, len(cluster)),
+	}
+	for _, r := range cluster {
+		out.Cluster = append(out.Cluster, recordToProto(r))
+		out.Manifest = append(out.Manifest, r.ID)
+	}
+	return connect.NewResponse(out), nil
+}
+
+// assembleCluster builds the consolidation cluster: the seed hits (most relevant
+// first) followed by their duplicate-candidate and linked neighbours, deduped
+// and capped at limit. Only the seeds are expanded, so the cluster stays one hop
+// from the topic and bounded. get resolves a neighbour id to its full record; a
+// neighbour that errors or no longer exists is skipped. Pure but for get, so the
+// dedup/cap/expansion contract is unit-testable with a fake getter.
+func assembleCluster(seeds []memory.Hit, limit int, get func(string) (memory.Record, bool, error)) []memory.Record {
+	if limit <= 0 {
+		return nil
+	}
+	seen := make(map[string]bool, limit)
+	cluster := make([]memory.Record, 0, limit)
+	add := func(r memory.Record) {
+		if r.ID == "" || seen[r.ID] || len(cluster) >= limit {
+			return
+		}
+		seen[r.ID] = true
+		cluster = append(cluster, r)
+	}
+
+	for _, h := range seeds {
+		if len(cluster) >= limit {
+			return cluster
+		}
+		add(h.Record)
+	}
+	for _, h := range seeds {
+		// Duplicate candidates first — surfacing them for merge is the whole point
+		// of consolidation — then explicit links.
+		for _, id := range append(append([]string(nil), h.DupCandidates...), h.LinkedIDs...) {
+			if len(cluster) >= limit {
+				return cluster
+			}
+			if id == "" || seen[id] {
+				continue
+			}
+			r, found, err := get(id)
+			if err != nil || !found {
+				continue
+			}
+			add(r)
+		}
+	}
+	return cluster
 }
 
 // linkEndpoints validates two distinct, existing memory ids and returns both

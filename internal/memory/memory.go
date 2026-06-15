@@ -68,6 +68,17 @@ type Record struct {
 	// established links live in LinkedIDs by then.
 	LinkTo []string `json:"linkTo,omitempty"`
 
+	// Supersedes carries a one-shot instruction (NOT persisted state): ids of
+	// existing memories this record replaces, e.g. the sources gathered by a
+	// Consolidate call and merged into this memory. Like LinkTo it rides the NATS
+	// index payload from the Save RPC to the worker, which — only AFTER this
+	// record is durably upserted — deletes each superseded source, then discards
+	// the list. Deleting post-upsert is the safety property: a crash mid-way can
+	// leave stale sources behind (the pre-merge state) but never loses the merged
+	// content. Never written as a Weaviate property, so it is empty on
+	// reindex/redelivery.
+	Supersedes []string `json:"supersedes,omitempty"`
+
 	// DupCandidates are ids of existing memories the worker found to be near
 	// duplicates of this one at index time (vector distance within
 	// DEDUP_DISTANCE). It is a heuristic hint for review, NOT a confirmed

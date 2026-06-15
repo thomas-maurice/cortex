@@ -287,6 +287,39 @@ func addUnique(xs []string, v string) []string {
 	return append(xs, v)
 }
 
+// planSupersedes returns the distinct source ids a freshly-indexed record should
+// delete: rec.Supersedes minus empties, self-references, and duplicates. Pure,
+// so the skip/dedup contract is unit-testable without a live store.
+func planSupersedes(recID string, supersedes []string) []string {
+	seen := make(map[string]bool, len(supersedes))
+	out := make([]string, 0, len(supersedes))
+	for _, id := range supersedes {
+		if id == "" || id == recID || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	return out
+}
+
+// applySupersedes deletes the memories rec replaces, AFTER rec itself has been
+// durably upserted by the caller. This ordering is the safety property of
+// consolidation: the merged memory is persisted before any source is removed, so
+// a failure here leaves stale sources behind (the pre-merge state) rather than
+// losing the merged content. Best-effort and non-fatal: a missing/already-gone
+// source is logged and skipped, so a redelivery that re-runs this (sources
+// already deleted) is harmless.
+func applySupersedes(ctx context.Context, log *slog.Logger, st *store.Store, rec memory.Record) {
+	for _, id := range planSupersedes(rec.ID, rec.Supersedes) {
+		if err := st.Delete(ctx, id); err != nil {
+			log.Warn("supersede delete failed, skipping", "id", rec.ID, "superseded", id, "err", err)
+			continue
+		}
+		log.Info("superseded", "id", rec.ID, "deleted", id)
+	}
+}
+
 // candidateLimit caps how many duplicate candidates one memory records. A handful
 // is enough to flag a cluster for review; the rest of the cluster surfaces via
 // each member's own candidates.
@@ -363,6 +396,10 @@ func handleIndex(ctx context.Context, log *slog.Logger, js jetstream.JetStream, 
 			// applied. Best-effort and non-fatal: link problems must not fail the
 			// (already successful) index.
 			applyLinks(ctx, log, st, rec)
+			// Now that the merged memory is durable, delete the sources it
+			// supersedes. Ordering matters: post-upsert means a crash here can't
+			// lose the merged content. Best-effort, like links.
+			applySupersedes(ctx, log, st, rec)
 		}
 		storeDur = time.Since(storeStart)
 	}

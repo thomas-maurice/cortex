@@ -124,8 +124,9 @@ The MCP client also stamps each save with the Claude Code session ID (read from
 
 Verify it's connected with `/mcp` inside Claude — you should see `cortex` with
 its tools: `cortex_memory_save`, `cortex_memory_search`, `cortex_memory_delete`,
-`cortex_memory_link`, `cortex_memory_unlink`, `cortex_session_summarize`, and
-`cortex_recall_session`.
+`cortex_memory_link`, `cortex_memory_unlink`, `cortex_consolidate`,
+`cortex_review_candidates`, `cortex_dismiss_duplicate`, `cortex_session_summarize`,
+and `cortex_recall_session`.
 
 ## Web UI
 
@@ -267,13 +268,48 @@ The MCP server exposes these tools to Claude:
 
 | Tool | What it does |
 |------|--------------|
-| `cortex_memory_save` | Queue a memory for indexing. Args: `text`, `namespace?`, `tags?`. Returns its `id`. |
-| `cortex_memory_search` | Semantic search. Args: `query`, `namespace?` (`*` = all namespaces), `limit?`, `tags?` (must have all), `excludeTags?`, `maxDistance?` (relevance cutoff). Each hit includes its `id` and any `linkedIds`. |
+| `cortex_memory_save` | Queue a memory for indexing. Args: `text`, `namespace?`, `tags?`, `linkTo?`, `supersedes?` (ids this memory replaces — the worker deletes them once this one is indexed). Returns its `id`. |
+| `cortex_memory_search` | Semantic search. Args: `query`, `namespace?` (`*` = all namespaces), `limit?`, `tags?` (must have all), `excludeTags?`, `maxDistance?` (relevance cutoff). Each hit includes its `id`, any `linkedIds`, and any `dupCandidates` (flagged likely-duplicates — the output hints when consolidation would help). |
 | `cortex_memory_delete` | Delete a memory by `id` (get the `id` from a `cortex_memory_search` result first). |
 | `cortex_memory_link` | Explicitly link two related memories (bidirectional) so they connect in the graph. Args: `id`, `targetId` — both from a prior search/recall. Claude is told to do this proactively when two memories are meaningfully related. |
 | `cortex_memory_unlink` | Remove the link between two memories. Args: `id`, `targetId`. |
+| `cortex_consolidate` | Gather the cluster of memories about a `topic` (vector matches + their linked/duplicate neighbours, capped at `limit?`) for Claude to merge into fewer, richer memories. Read-only: returns the cluster and a `manifest` of ids; Claude commits the merge by saving compiled memories with `supersedes` set from the manifest. Args: `topic`, `namespace?`, `limit?`, `maxDistance?`. |
+| `cortex_review_candidates` | List memories the worker flagged as likely duplicates, each with the candidates it resembles, for review. Args: `namespace?`, `limit?`. |
+| `cortex_dismiss_duplicate` | Record that two flagged memories are NOT duplicates, so the pair stops being re-flagged. Args: `id`, `targetId`. |
 | `cortex_session_summarize` | Save/update the **running summary of the current conversation** (one per session, replaced each call). Args: `text`, `namespace?`. The session ID is attached automatically. **Meant to be called frequently** — see below. |
 | `cortex_recall_session` | Recall a **past session** by describing it (`query`). Returns the best-matching summary **and** the facts saved during that conversation. Args: `query`, `namespace?`, `factLimit?`, `maxDistance?`. |
+
+### Consolidating duplicates — gather, merge, supersede
+
+Over time a topic accumulates overlapping or stale memories. `cortex_consolidate`
+turns that into a safe, LLM-driven merge:
+
+1. **Gather (server, read-only).** Given a `topic`, the server vector-searches it
+   and expands the cluster with each match's `linkedIds` and `dupCandidates`,
+   deduped and capped at `limit`. It returns the full cluster plus a `manifest` of
+   the gathered ids. It never writes or deletes.
+2. **Merge (Claude).** Claude reads the cluster and writes the fewest faithful
+   memories that preserve every distinct fact and drop the redundancy.
+3. **Supersede (worker).** Each compiled memory is saved with `supersedes` set to
+   the source ids it absorbs (only ids from the manifest). The worker deletes
+   those sources **only after the new memory is durably indexed**.
+
+That ordering is the safety property: because deletion happens *after* the merged
+memory is persisted, a crash mid-consolidation can leave stale sources behind (the
+pre-merge state) but **can never lose the merged content**. This is why Claude
+sets `supersedes` rather than calling `cortex_memory_delete` itself — a manual
+delete could land before the replacement is indexed and lose data.
+
+Search results help kick this off: when a hit carries flagged `dupCandidates`, the
+search output hints that `cortex_consolidate` can gather and merge the cluster.
+The `cortex consolidate <topic>` CLI command prints the same cluster + manifest for
+inspection (the merge itself needs an LLM).
+
+> **`cortex_consolidate` vs the `/consolidate-memories` skill.** The skill is a
+> broad, repo-wide pass that reconciles *all* knowledge sources (files, docs,
+> code, existing memories). `cortex_consolidate` is a focused, on-demand merge of
+> the memories already stored about one topic. Use the skill to bootstrap; use the
+> tool to keep a topic tidy.
 
 ### Session summaries — recall a whole conversation
 
@@ -388,9 +424,10 @@ authenticate with `--token` / `CORTEX_AUTH_TOKEN`.
 
 | Command | What it does |
 |---------|--------------|
-| `cortex save "<text>" -n <ns> -t tag` | Queue a memory (server publishes to NATS). |
+| `cortex save "<text>" -n <ns> -t tag [-S <id>]` | Queue a memory (server publishes to NATS). `-S/--supersedes` lists ids this memory replaces (deleted after indexing). |
 | `cortex list -n '*' [-t tag] [-x tag]` | List memories newest-first; filter by namespace/tags. |
 | `cortex search "<q>" [-d 0.6] [-t tag] [-x tag]` | Semantic search with a relevance cutoff and tag filters. |
+| `cortex consolidate "<topic>" [-n '*'] [-l N]` | Print the cluster of memories about a topic + their manifest (read-only gather; the LLM does the merge). |
 | `cortex delete <id>` | Delete a memory by ID. |
 | `cortex export -o backup.json` | Dump all memories (text + metadata) to JSON. |
 | `cortex reindex --yes` | Re-embed every memory through the worker (see below). |

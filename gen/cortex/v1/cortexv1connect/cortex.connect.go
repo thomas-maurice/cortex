@@ -79,6 +79,9 @@ const (
 	// MemoryServiceDismissDuplicateProcedure is the fully-qualified name of the MemoryService's
 	// DismissDuplicate RPC.
 	MemoryServiceDismissDuplicateProcedure = "/cortex.v1.MemoryService/DismissDuplicate"
+	// MemoryServiceConsolidateProcedure is the fully-qualified name of the MemoryService's Consolidate
+	// RPC.
+	MemoryServiceConsolidateProcedure = "/cortex.v1.MemoryService/Consolidate"
 )
 
 // MemoryServiceClient is a client for the cortex.v1.MemoryService service.
@@ -130,6 +133,14 @@ type MemoryServiceClient interface {
 	// DismissDuplicate records that two memories are confirmed NOT duplicates, so
 	// the worker stops re-flagging the pair on future re-indexing.
 	DismissDuplicate(context.Context, *connect.Request[v1.DismissDuplicateRequest]) (*connect.Response[v1.DismissDuplicateResponse], error)
+	// Consolidate gathers the cluster of memories about a topic — the vector
+	// matches plus their linked and duplicate-candidate neighbours — so a client
+	// (the LLM) can merge them into fewer, richer memories. It is READ-ONLY: it
+	// never writes or deletes. The merge is committed by saving the compiled
+	// memories with SaveRequest.supersedes set to the obsolete ids from the
+	// returned manifest; the worker then deletes those sources once the
+	// replacement is durably indexed.
+	Consolidate(context.Context, *connect.Request[v1.ConsolidateRequest]) (*connect.Response[v1.ConsolidateResponse], error)
 }
 
 // NewMemoryServiceClient constructs a client for the cortex.v1.MemoryService service. By default,
@@ -257,6 +268,12 @@ func NewMemoryServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(memoryServiceMethods.ByName("DismissDuplicate")),
 			connect.WithClientOptions(opts...),
 		),
+		consolidate: connect.NewClient[v1.ConsolidateRequest, v1.ConsolidateResponse](
+			httpClient,
+			baseURL+MemoryServiceConsolidateProcedure,
+			connect.WithSchema(memoryServiceMethods.ByName("Consolidate")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -281,6 +298,7 @@ type memoryServiceClient struct {
 	unlink                  *connect.Client[v1.UnlinkRequest, v1.UnlinkResponse]
 	listDuplicateCandidates *connect.Client[v1.ListDuplicateCandidatesRequest, v1.ListDuplicateCandidatesResponse]
 	dismissDuplicate        *connect.Client[v1.DismissDuplicateRequest, v1.DismissDuplicateResponse]
+	consolidate             *connect.Client[v1.ConsolidateRequest, v1.ConsolidateResponse]
 }
 
 // Save calls cortex.v1.MemoryService.Save.
@@ -378,6 +396,11 @@ func (c *memoryServiceClient) DismissDuplicate(ctx context.Context, req *connect
 	return c.dismissDuplicate.CallUnary(ctx, req)
 }
 
+// Consolidate calls cortex.v1.MemoryService.Consolidate.
+func (c *memoryServiceClient) Consolidate(ctx context.Context, req *connect.Request[v1.ConsolidateRequest]) (*connect.Response[v1.ConsolidateResponse], error) {
+	return c.consolidate.CallUnary(ctx, req)
+}
+
 // MemoryServiceHandler is an implementation of the cortex.v1.MemoryService service.
 type MemoryServiceHandler interface {
 	// Save queues a memory for asynchronous, durable indexing (NATS JetStream).
@@ -427,6 +450,14 @@ type MemoryServiceHandler interface {
 	// DismissDuplicate records that two memories are confirmed NOT duplicates, so
 	// the worker stops re-flagging the pair on future re-indexing.
 	DismissDuplicate(context.Context, *connect.Request[v1.DismissDuplicateRequest]) (*connect.Response[v1.DismissDuplicateResponse], error)
+	// Consolidate gathers the cluster of memories about a topic — the vector
+	// matches plus their linked and duplicate-candidate neighbours — so a client
+	// (the LLM) can merge them into fewer, richer memories. It is READ-ONLY: it
+	// never writes or deletes. The merge is committed by saving the compiled
+	// memories with SaveRequest.supersedes set to the obsolete ids from the
+	// returned manifest; the worker then deletes those sources once the
+	// replacement is durably indexed.
+	Consolidate(context.Context, *connect.Request[v1.ConsolidateRequest]) (*connect.Response[v1.ConsolidateResponse], error)
 }
 
 // NewMemoryServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -550,6 +581,12 @@ func NewMemoryServiceHandler(svc MemoryServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(memoryServiceMethods.ByName("DismissDuplicate")),
 		connect.WithHandlerOptions(opts...),
 	)
+	memoryServiceConsolidateHandler := connect.NewUnaryHandler(
+		MemoryServiceConsolidateProcedure,
+		svc.Consolidate,
+		connect.WithSchema(memoryServiceMethods.ByName("Consolidate")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/cortex.v1.MemoryService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case MemoryServiceSaveProcedure:
@@ -590,6 +627,8 @@ func NewMemoryServiceHandler(svc MemoryServiceHandler, opts ...connect.HandlerOp
 			memoryServiceListDuplicateCandidatesHandler.ServeHTTP(w, r)
 		case MemoryServiceDismissDuplicateProcedure:
 			memoryServiceDismissDuplicateHandler.ServeHTTP(w, r)
+		case MemoryServiceConsolidateProcedure:
+			memoryServiceConsolidateHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -673,4 +712,8 @@ func (UnimplementedMemoryServiceHandler) ListDuplicateCandidates(context.Context
 
 func (UnimplementedMemoryServiceHandler) DismissDuplicate(context.Context, *connect.Request[v1.DismissDuplicateRequest]) (*connect.Response[v1.DismissDuplicateResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cortex.v1.MemoryService.DismissDuplicate is not implemented"))
+}
+
+func (UnimplementedMemoryServiceHandler) Consolidate(context.Context, *connect.Request[v1.ConsolidateRequest]) (*connect.Response[v1.ConsolidateResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cortex.v1.MemoryService.Consolidate is not implemented"))
 }

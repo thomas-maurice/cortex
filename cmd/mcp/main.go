@@ -270,6 +270,21 @@ func main() {
 			"does NOT delete or link anything — it only suppresses the false-positive duplicate flag.",
 	}, d.dismissDuplicate)
 
+	mcp.AddTool(server, &mcp.Tool{
+		Name: "cortex_consolidate",
+		Description: "Consolidate the user's memories about a topic into fewer, richer ones. Use when the user " +
+			"asks to consolidate / merge / clean up / deduplicate what's stored about something, or when a search " +
+			"surfaces overlapping memories worth merging. This returns a CLUSTER of related memories — the topic's " +
+			"best vector matches plus their linked and likely-duplicate neighbours — for YOU to analyse; it does NOT " +
+			"merge or delete anything itself. After reading the cluster, write the FEWEST faithful memories that " +
+			"capture everything important (lossless on facts, lossy on redundancy), and save each with " +
+			"cortex_memory_save passing the `supersedes` field set to the ids (from this response's `manifest`) that " +
+			"the new memory replaces. The server deletes those superseded sources automatically once the new memory " +
+			"is durably indexed, so do NOT call cortex_memory_delete on them yourself — that would risk losing " +
+			"content if indexing hasn't finished. Only supersede ids that appear in the manifest. Scope with " +
+			"namespace (omit for default, \"*\" for all).",
+	}, d.consolidate)
+
 	log.Info("cortex mcp server starting on stdio", "namespace", defaultNS, "server", serverURL, "autoSaveTags", autoSaveTags)
 	if err := server.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
 		log.Error("server run", "err", err)
@@ -280,10 +295,11 @@ func main() {
 // ---- memory_save ----
 
 type SaveIn struct {
-	Text      string   `json:"text" jsonschema:"the memory content to store; a self-contained note that captures the fact AND enough context to be understood on its own later. Can be as long as needed; strongly prefer Markdown formatting (headings, bullets, code fences) as the UI renders it as Markdown"`
-	Namespace string   `json:"namespace,omitempty" jsonschema:"optional namespace to scope the memory (e.g. a project name); defaults to the server's configured namespace"`
-	Tags      []string `json:"tags,omitempty" jsonschema:"optional free-form tags for later filtering"`
-	LinkTo    []string `json:"linkTo,omitempty" jsonschema:"optional IDs of EXISTING related memories (from a prior memory_search) to bidirectionally link this new memory to; the link is applied once this memory is indexed, so pass IDs returned by a search, not one you are saving right now"`
+	Text       string   `json:"text" jsonschema:"the memory content to store; a self-contained note that captures the fact AND enough context to be understood on its own later. Can be as long as needed; strongly prefer Markdown formatting (headings, bullets, code fences) as the UI renders it as Markdown"`
+	Namespace  string   `json:"namespace,omitempty" jsonschema:"optional namespace to scope the memory (e.g. a project name); defaults to the server's configured namespace"`
+	Tags       []string `json:"tags,omitempty" jsonschema:"optional free-form tags for later filtering"`
+	LinkTo     []string `json:"linkTo,omitempty" jsonschema:"optional IDs of EXISTING related memories (from a prior memory_search) to bidirectionally link this new memory to; the link is applied once this memory is indexed, so pass IDs returned by a search, not one you are saving right now"`
+	Supersedes []string `json:"supersedes,omitempty" jsonschema:"optional IDs of EXISTING memories this new memory replaces (e.g. the sources from a cortex_consolidate manifest that this merged memory absorbs); the server deletes them automatically once this memory is durably indexed, so do not also call cortex_memory_delete on them. Only pass IDs you actually merged into this text"`
 }
 
 type SaveOut struct {
@@ -306,6 +322,7 @@ func (d *deps) save(ctx context.Context, _ *mcp.CallToolRequest, in SaveIn) (*mc
 		Namespace:      ns,
 		Tags:           config.MergeTags(in.Tags, d.autoSaveTags),
 		LinkTo:         in.LinkTo,
+		Supersedes:     in.Supersedes,
 		Source:         d.source,
 		ConversationId: d.conversationID,
 	}))
@@ -331,13 +348,14 @@ type SearchIn struct {
 }
 
 type SearchHit struct {
-	ID        string   `json:"id"`
-	Text      string   `json:"text"`
-	Namespace string   `json:"namespace"`
-	Tags      []string `json:"tags,omitempty"`
-	Distance  float32  `json:"distance"`
-	Model     string   `json:"model,omitempty"`
-	LinkedIDs []string `json:"linkedIds,omitempty"`
+	ID            string   `json:"id"`
+	Text          string   `json:"text"`
+	Namespace     string   `json:"namespace"`
+	Tags          []string `json:"tags,omitempty"`
+	Distance      float32  `json:"distance"`
+	Model         string   `json:"model,omitempty"`
+	LinkedIDs     []string `json:"linkedIds,omitempty"`
+	DupCandidates []string `json:"dupCandidates,omitempty"`
 }
 
 type SearchOut struct {
@@ -379,18 +397,28 @@ func (d *deps) search(ctx context.Context, _ *mcp.CallToolRequest, in SearchIn) 
 	if len(hits) == 0 {
 		b.WriteString("No memories found.")
 	}
+	flagged := 0
 	for i, h := range hits {
 		m := h.GetMemory()
+		dups := m.GetDupCandidates()
 		out.Hits = append(out.Hits, SearchHit{
-			ID:        m.GetId(),
-			Text:      m.GetText(),
-			Namespace: m.GetNamespace(),
-			Tags:      m.GetTags(),
-			Distance:  h.GetDistance(),
-			Model:     m.GetModel(),
-			LinkedIDs: m.GetLinkedIds(),
+			ID:            m.GetId(),
+			Text:          m.GetText(),
+			Namespace:     m.GetNamespace(),
+			Tags:          m.GetTags(),
+			Distance:      h.GetDistance(),
+			Model:         m.GetModel(),
+			LinkedIDs:     m.GetLinkedIds(),
+			DupCandidates: dups,
 		})
 		fmt.Fprintf(&b, "%d. id=%s [%s] (dist %.3f) %s\n", i+1, m.GetId(), m.GetNamespace(), h.GetDistance(), m.GetText())
+		if len(dups) > 0 {
+			flagged++
+			fmt.Fprintf(&b, "   ⚠ %d likely duplicate(s) flagged — run cortex_consolidate to merge\n", len(dups))
+		}
+	}
+	if flagged > 0 {
+		fmt.Fprintf(&b, "\n%d of %d result(s) have duplicate candidates; cortex_consolidate can gather and merge the cluster.\n", flagged, len(hits))
 	}
 	return text2result(strings.TrimSpace(b.String())), out, nil
 }
@@ -612,12 +640,13 @@ type ReviewOut struct {
 
 func memToHit(m *cortexv1.Memory) SearchHit {
 	return SearchHit{
-		ID:        m.GetId(),
-		Text:      m.GetText(),
-		Namespace: m.GetNamespace(),
-		Tags:      m.GetTags(),
-		Model:     m.GetModel(),
-		LinkedIDs: m.GetLinkedIds(),
+		ID:            m.GetId(),
+		Text:          m.GetText(),
+		Namespace:     m.GetNamespace(),
+		Tags:          m.GetTags(),
+		Model:         m.GetModel(),
+		LinkedIDs:     m.GetLinkedIds(),
+		DupCandidates: m.GetDupCandidates(),
 	}
 }
 
@@ -684,6 +713,56 @@ func (d *deps) dismissDuplicate(ctx context.Context, _ *mcp.CallToolRequest, in 
 	}
 	out := DismissOut{NotDuplicateOf: resp.Msg.GetNotDuplicateOf()}
 	return text2result(fmt.Sprintf("Marked %s and %s as not duplicates; they won't be flagged again.", id, target)), out, nil
+}
+
+// ---- consolidate ----
+
+type ConsolidateIn struct {
+	Topic       string  `json:"topic" jsonschema:"natural-language description of the topic/subject whose memories to gather and consolidate"`
+	Namespace   string  `json:"namespace,omitempty" jsonschema:"optional namespace filter; omit for default, pass \"*\" for all namespaces"`
+	Limit       int     `json:"limit,omitempty" jsonschema:"max memories to gather into the cluster (default 25)"`
+	MaxDistance float32 `json:"maxDistance,omitempty" jsonschema:"relevance cutoff on the topic match; omit to use the server default"`
+}
+
+type ConsolidateOut struct {
+	Cluster  []SearchHit `json:"cluster" jsonschema:"the related memories to analyse and merge"`
+	Manifest []string    `json:"manifest" jsonschema:"the ids present in the cluster; the ONLY ids eligible to pass to cortex_memory_save's supersedes field"`
+}
+
+func (d *deps) consolidate(ctx context.Context, _ *mcp.CallToolRequest, in ConsolidateIn) (*mcp.CallToolResult, ConsolidateOut, error) {
+	topic := strings.TrimSpace(in.Topic)
+	if topic == "" {
+		return nil, ConsolidateOut{}, fmt.Errorf("topic must not be empty")
+	}
+	resp, err := d.client.Consolidate(ctx, connect.NewRequest(&cortexv1.ConsolidateRequest{
+		Topic:       topic,
+		Namespace:   in.Namespace,
+		Limit:       int32(in.Limit),
+		MaxDistance: in.MaxDistance,
+	}))
+	if err != nil {
+		return nil, ConsolidateOut{}, err
+	}
+
+	cluster := resp.Msg.GetCluster()
+	out := ConsolidateOut{
+		Cluster:  make([]SearchHit, 0, len(cluster)),
+		Manifest: resp.Msg.GetManifest(),
+	}
+	if len(cluster) == 0 {
+		return text2result("No memories found for that topic; nothing to consolidate."), out, nil
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "Cluster of %d memor%s about %q. Merge into the FEWEST faithful memories (keep every distinct fact, drop redundancy), "+
+		"then cortex_memory_save each new memory with supersedes set to the ids it absorbs (only ids from the manifest below).\n",
+		len(cluster), plural(len(cluster), "y", "ies"), topic)
+	for i, m := range cluster {
+		out.Cluster = append(out.Cluster, memToHit(m))
+		fmt.Fprintf(&b, "\n%d. id=%s [%s] %s\n", i+1, m.GetId(), m.GetNamespace(), m.GetText())
+	}
+	fmt.Fprintf(&b, "\nmanifest (supersede-able ids): %s\n", strings.Join(out.Manifest, " "))
+	return text2result(strings.TrimSpace(b.String())), out, nil
 }
 
 func text2result(msg string) *mcp.CallToolResult {

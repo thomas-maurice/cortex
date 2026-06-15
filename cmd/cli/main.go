@@ -236,7 +236,7 @@ func main() {
 		pf.StringVar(s.target, s.key, s.def, s.usage)
 	}
 
-	root.AddCommand(saveCmd(), editCmd(), listCmd(), searchCmd(), deleteCmd(), exportCmd(), reindexCmd(), deadCmd(), statusCmd(), doctorCmd(), summarizeCmd(), summariesCmd(), recallCmd(), candidatesCmd(), hashPasswordCmd(), configCmd())
+	root.AddCommand(saveCmd(), editCmd(), listCmd(), searchCmd(), deleteCmd(), exportCmd(), reindexCmd(), deadCmd(), statusCmd(), doctorCmd(), summarizeCmd(), summariesCmd(), recallCmd(), candidatesCmd(), consolidateCmd(), hashPasswordCmd(), configCmd())
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -246,7 +246,7 @@ func main() {
 
 func saveCmd() *cobra.Command {
 	var namespace string
-	var tags, linkTo []string
+	var tags, linkTo, supersedes []string
 	cmd := &cobra.Command{
 		Use:   "save <text>",
 		Short: "Save a memory (queued on the server for async indexing)",
@@ -265,6 +265,7 @@ func saveCmd() *cobra.Command {
 				Namespace:      ns,
 				Tags:           config.MergeTags(tags, config.AutoTags(saveTags, hostnameTag)),
 				LinkTo:         linkTo,
+				Supersedes:     supersedes,
 				Source:         source,
 				ConversationId: conversationID,
 			}))
@@ -278,6 +279,7 @@ func saveCmd() *cobra.Command {
 	cmd.Flags().StringVarP(&namespace, "namespace", "n", "", "namespace to scope the memory (default: configured default)")
 	cmd.Flags().StringSliceVarP(&tags, "tag", "t", nil, "tag to attach (repeatable)")
 	cmd.Flags().StringSliceVarP(&linkTo, "link-to", "L", nil, "ID of an existing memory to link this one to (repeatable; applied after indexing)")
+	cmd.Flags().StringSliceVarP(&supersedes, "supersedes", "S", nil, "ID of an existing memory this one replaces (repeatable; the server deletes it once this memory is indexed)")
 	return cmd
 }
 
@@ -774,6 +776,50 @@ func dismissCandidateCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+func consolidateCmd() *cobra.Command {
+	var namespace string
+	var limit int
+	var maxDistance float32
+	cmd := &cobra.Command{
+		Use:   "consolidate <topic>",
+		Short: "Gather the cluster of memories about a topic, for review/merging",
+		Long: "Print the related memories about a topic — the vector matches plus their linked and likely-\n" +
+			"duplicate neighbours — and the manifest of their ids. This is the read-only gather step; merging is\n" +
+			"done by an LLM (the MCP cortex_consolidate tool), which saves the compiled memories with\n" +
+			"--supersedes set to the ids they replace. Nothing is written or deleted by this command.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			topic := strings.TrimSpace(args[0])
+			if topic == "" {
+				return fmt.Errorf("topic must not be empty")
+			}
+			resp, err := client().Consolidate(cmd.Context(), connect.NewRequest(&cortexv1.ConsolidateRequest{
+				Topic:       topic,
+				Namespace:   namespace,
+				Limit:       int32(limit),
+				MaxDistance: maxDistance,
+			}))
+			if err != nil {
+				return err
+			}
+			cluster := resp.Msg.GetCluster()
+			if len(cluster) == 0 {
+				fmt.Println("No memories found for that topic; nothing to consolidate.")
+				return nil
+			}
+			for _, m := range cluster {
+				printMemory(m)
+			}
+			fmt.Printf("\nmanifest (%d supersede-able ids): %s\n", len(resp.Msg.GetManifest()), strings.Join(resp.Msg.GetManifest(), " "))
+			return nil
+		},
+	}
+	cmd.Flags().StringVarP(&namespace, "namespace", "n", "", `namespace filter; "*" for all namespaces`)
+	cmd.Flags().IntVarP(&limit, "limit", "l", 25, "max memories to gather into the cluster")
+	cmd.Flags().Float32VarP(&maxDistance, "max-distance", "d", 0, "relevance cutoff on the topic match (<=0 = server default)")
+	return cmd
 }
 
 // allLimit caps a full-store fetch (export). Matches the server-side cap.
