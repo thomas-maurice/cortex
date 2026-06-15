@@ -478,7 +478,8 @@ authenticate with `--token` / `CORTEX_AUTH_TOKEN`.
 | `cortex search "<q>" [-d 0.6] [-t tag] [-x tag]` | Semantic search with a relevance cutoff and tag filters. |
 | `cortex consolidate "<topic>" [-n '*'] [-l N] [-t tag] [-x tag]` | Print the cluster of memories about a topic + their manifest (read-only gather; the LLM does the merge). No tag flag = no tag filter (whole cluster). |
 | `cortex delete <id>` | Delete a memory by ID. |
-| `cortex export -o backup.json` | Dump all memories (text + metadata) to JSON. |
+| `cortex export -o backup.json` | Dump all memories (text + metadata, no vectors) to JSON. |
+| `cortex import backup.json` | Restore a dump into the target via its NATS ingest queue (worker re-embeds). Preserves ids/links; point `--server` at the target. See [docs/PROD_TO_DEV.md](docs/PROD_TO_DEV.md). |
 | `cortex reindex --yes` | Re-embed every memory through the worker (see below). |
 | `cortex status` | Server health + store size (nats/weaviate/ollama/model/count). |
 | `cortex doctor` | Per-check diagnostics from the server. |

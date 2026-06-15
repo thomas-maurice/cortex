@@ -17,6 +17,7 @@ import (
 	"github.com/alexedwards/argon2id"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	cortexv1 "github.com/thomas-maurice/cortex/gen/cortex/v1"
 	"github.com/thomas-maurice/cortex/gen/cortex/v1/cortexv1connect"
@@ -236,7 +237,7 @@ func main() {
 		pf.StringVar(s.target, s.key, s.def, s.usage)
 	}
 
-	root.AddCommand(saveCmd(), editCmd(), listCmd(), searchCmd(), deleteCmd(), exportCmd(), reindexCmd(), deadCmd(), statusCmd(), doctorCmd(), summarizeCmd(), summariesCmd(), recallCmd(), candidatesCmd(), consolidateCmd(), hashPasswordCmd(), configCmd())
+	root.AddCommand(saveCmd(), editCmd(), listCmd(), searchCmd(), deleteCmd(), exportCmd(), importCmd(), reindexCmd(), deadCmd(), statusCmd(), doctorCmd(), summarizeCmd(), summariesCmd(), recallCmd(), candidatesCmd(), consolidateCmd(), hashPasswordCmd(), configCmd())
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -446,6 +447,8 @@ type exportRecord struct {
 	Model          string   `json:"model,omitempty"`
 	Dims           int32    `json:"dims,omitempty"`
 	ConversationID string   `json:"conversationId,omitempty"`
+	LinkedIDs      []string `json:"linkedIds,omitempty"`
+	NotDuplicateOf []string `json:"notDuplicateOf,omitempty"`
 }
 
 func exportCmd() *cobra.Command {
@@ -484,6 +487,75 @@ func exportCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVarP(&namespace, "namespace", "n", "*", `namespace to export; "*" for all (default)`)
 	cmd.Flags().StringVarP(&out, "out", "o", "", "output file (default stdout)")
+	return cmd
+}
+
+func importCmd() *cobra.Command {
+	var batch int
+	cmd := &cobra.Command{
+		Use:   "import <file>",
+		Short: "Restore memories from a `cortex export` JSON dump via the normal NATS ingest queue",
+		Long: "Reads a JSON dump (from `cortex export`) and republishes every memory onto the server's NATS\n" +
+			"index queue — the SAME path a save takes — so the worker re-embeds and upserts each one. Ids,\n" +
+			"namespace, tags, createdAt, links and not-duplicate decisions are preserved; vectors are NOT\n" +
+			"carried but recomputed by the target worker's model, so a restore is safe across model changes.\n" +
+			"An existing id is overwritten (upsert). Point --server/--token at the TARGET (e.g. a dev stack).",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			data, err := os.ReadFile(args[0])
+			if err != nil {
+				return err
+			}
+			var recs []exportRecord
+			if err := json.Unmarshal(data, &recs); err != nil {
+				return fmt.Errorf("parse %s: %w", args[0], err)
+			}
+			if len(recs) == 0 {
+				fmt.Println("nothing to import")
+				return nil
+			}
+
+			mems := make([]*cortexv1.Memory, 0, len(recs))
+			for _, r := range recs {
+				m := &cortexv1.Memory{
+					Id:             r.ID,
+					Text:           r.Text,
+					Namespace:      r.Namespace,
+					Tags:           r.Tags,
+					Source:         r.Source,
+					Model:          r.Model,
+					Dims:           r.Dims,
+					ConversationId: r.ConversationID,
+					LinkedIds:      r.LinkedIDs,
+					NotDuplicateOf: r.NotDuplicateOf,
+				}
+				if r.CreatedAt != "" {
+					if t, err := time.Parse(time.RFC3339, r.CreatedAt); err == nil {
+						m.CreatedAt = timestamppb.New(t)
+					}
+				}
+				mems = append(mems, m)
+			}
+
+			total := 0
+			for start := 0; start < len(mems); start += batch {
+				end := start + batch
+				if end > len(mems) {
+					end = len(mems)
+				}
+				resp, err := client().RestoreMemories(cmd.Context(), connect.NewRequest(&cortexv1.RestoreMemoriesRequest{
+					Memories: mems[start:end],
+				}))
+				if err != nil {
+					return fmt.Errorf("restore batch [%d:%d]: %w", start, end, err)
+				}
+				total += int(resp.Msg.GetQueued())
+			}
+			fmt.Printf("queued %d/%d memories for re-indexing\n", total, len(recs))
+			return nil
+		},
+	}
+	cmd.Flags().IntVar(&batch, "batch", 500, "memories per request")
 	return cmd
 }
 
@@ -852,6 +924,8 @@ func toExportRecord(m *cortexv1.Memory) exportRecord {
 		Model:          m.GetModel(),
 		Dims:           m.GetDims(),
 		ConversationID: m.GetConversationId(),
+		LinkedIDs:      m.GetLinkedIds(),
+		NotDuplicateOf: m.GetNotDuplicateOf(),
 	}
 }
 

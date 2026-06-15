@@ -72,6 +72,11 @@ services:
       OLLAMA_MODEL: qwen3-embedding:0.6b
       WEAVIATE_HOST: weaviate:8080
       WEAVIATE_GRPC_HOST: weaviate:50051
+      # Hybrid search blend (BM25 keyword vs vector): 1.0 = pure vector/semantic,
+      # 0.0 = pure keyword. 0.5 leans more on keyword than Weaviate's 0.75 default
+      # so exact tokens — hostnames, codenames, IDs — surface, not just semantic
+      # matches. Tune per your data; <=0 falls back to the built-in default.
+      SEARCH_ALPHA: ${SEARCH_ALPHA:-0.5}
       DEFAULT_NAMESPACE: global
       MEMORY_SOURCE: cortex
       CORTEX_AUTH_TOKEN: ${CORTEX_AUTH_TOKEN:-}

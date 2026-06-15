@@ -785,6 +785,40 @@ func assembleCluster(seeds []memory.Hit, limit int, get func(string) (memory.Rec
 	return cluster
 }
 
+// RestoreMemories re-ingests a dump by publishing each record onto the SAME NATS
+// index queue a save uses — no write bypass, so the worker re-embeds and upserts
+// them with all the usual durability (retries, dead-lettering). Vectors are not
+// carried; the worker recomputes them with its current model, so a restore is
+// safe across model/dimension changes. A record with empty text is skipped
+// (nothing to embed); a missing id/namespace/source is filled from defaults.
+func (s *Service) RestoreMemories(ctx context.Context, req *connect.Request[cortexv1.RestoreMemoriesRequest]) (*connect.Response[cortexv1.RestoreMemoriesResponse], error) {
+	queued := 0
+	for _, m := range req.Msg.GetMemories() {
+		rec := protoToRecord(m)
+		rec.Text = strings.TrimSpace(rec.Text)
+		if rec.Text == "" {
+			continue // can't embed an empty memory
+		}
+		if rec.ID == "" {
+			rec.ID = uuid.NewString()
+		}
+		if rec.Namespace == "" {
+			rec.Namespace = s.cfg.DefaultNamespace
+		}
+		if rec.Source == "" {
+			rec.Source = s.cfg.Source
+		}
+		if rec.CreatedAt.IsZero() {
+			rec.CreatedAt = time.Now().UTC()
+		}
+		if err := bus.PublishIndex(ctx, s.js, rec); err != nil {
+			return nil, fmt.Errorf("restore publish %s: %w", rec.ID, err)
+		}
+		queued++
+	}
+	return connect.NewResponse(&cortexv1.RestoreMemoriesResponse{Queued: int32(queued)}), nil
+}
+
 // linkEndpoints validates two distinct, existing memory ids and returns both
 // records (with their current link sets). Shared by Link and Unlink.
 func (s *Service) linkEndpoints(ctx context.Context, idA, idB string) (memory.Record, memory.Record, error) {

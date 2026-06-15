@@ -1,11 +1,37 @@
 package rpc
 
 import (
+	"time"
+
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	cortexv1 "github.com/thomas-maurice/cortex/gen/cortex/v1"
 	"github.com/thomas-maurice/cortex/internal/memory"
 )
+
+// protoToRecord maps a wire memory back to an internal record. It is the inverse
+// of recordToProto, used by RestoreMemories to re-ingest a dump. DupCandidates
+// are intentionally dropped — the worker recomputes them on (re)index. Model and
+// Dims are carried for provenance but the worker re-stamps them on re-embed.
+func protoToRecord(m *cortexv1.Memory) memory.Record {
+	var created time.Time
+	if ts := m.GetCreatedAt(); ts != nil {
+		created = ts.AsTime()
+	}
+	return memory.Record{
+		ID:             m.GetId(),
+		Text:           m.GetText(),
+		Namespace:      m.GetNamespace(),
+		Tags:           m.GetTags(),
+		Source:         m.GetSource(),
+		CreatedAt:      created,
+		Model:          m.GetModel(),
+		Dims:           int(m.GetDims()),
+		ConversationID: m.GetConversationId(),
+		LinkedIDs:      m.GetLinkedIds(),
+		NotDuplicateOf: m.GetNotDuplicateOf(),
+	}
+}
 
 // recordToProto maps an internal memory record to its wire form.
 func recordToProto(r memory.Record) *cortexv1.Memory {

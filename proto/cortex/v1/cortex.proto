@@ -66,6 +66,14 @@ service MemoryService {
   // returned manifest; the worker then deletes those sources once the
   // replacement is durably indexed.
   rpc Consolidate(ConsolidateRequest) returns (ConsolidateResponse) {}
+  // RestoreMemories re-ingests memories from a dump (e.g. `cortex export`) by
+  // republishing each onto the SAME NATS index queue a normal save uses — the
+  // worker then re-embeds and upserts them. It is the import half of dump/restore
+  // (move a store between deployments). Vectors are NOT carried; they are
+  // recomputed by the target worker's current model, so a restore is safe across
+  // model changes. Ids, namespace, tags, createdAt, links and not-duplicate
+  // decisions are preserved; an existing id is overwritten (upsert).
+  rpc RestoreMemories(RestoreMemoriesRequest) returns (RestoreMemoriesResponse) {}
 }
 
 // Memory is one stored memory. Only `text` is ever embedded; every other field
@@ -372,6 +380,18 @@ message ConsolidateRequest {
   repeated string tags = 5;         // cluster member must carry ALL of these
   repeated string exclude_tags = 6; // drop members carrying ANY of these
   repeated string any_tags = 7;     // cluster member must carry AT LEAST ONE of these
+}
+
+message RestoreMemoriesRequest {
+  // memories to (re)ingest. Each is published to the same NATS index queue a
+  // save uses, so the worker re-embeds and upserts it. Vectors on these objects
+  // (if any) are ignored — recomputed by the worker. A record with empty text is
+  // skipped (nothing to embed); a missing id is assigned one.
+  repeated Memory memories = 1;
+}
+
+message RestoreMemoriesResponse {
+  int32 queued = 1; // how many memories were accepted onto the index queue
 }
 
 message ConsolidateResponse {

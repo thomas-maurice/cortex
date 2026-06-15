@@ -82,6 +82,9 @@ const (
 	// MemoryServiceConsolidateProcedure is the fully-qualified name of the MemoryService's Consolidate
 	// RPC.
 	MemoryServiceConsolidateProcedure = "/cortex.v1.MemoryService/Consolidate"
+	// MemoryServiceRestoreMemoriesProcedure is the fully-qualified name of the MemoryService's
+	// RestoreMemories RPC.
+	MemoryServiceRestoreMemoriesProcedure = "/cortex.v1.MemoryService/RestoreMemories"
 )
 
 // MemoryServiceClient is a client for the cortex.v1.MemoryService service.
@@ -141,6 +144,14 @@ type MemoryServiceClient interface {
 	// returned manifest; the worker then deletes those sources once the
 	// replacement is durably indexed.
 	Consolidate(context.Context, *connect.Request[v1.ConsolidateRequest]) (*connect.Response[v1.ConsolidateResponse], error)
+	// RestoreMemories re-ingests memories from a dump (e.g. `cortex export`) by
+	// republishing each onto the SAME NATS index queue a normal save uses — the
+	// worker then re-embeds and upserts them. It is the import half of dump/restore
+	// (move a store between deployments). Vectors are NOT carried; they are
+	// recomputed by the target worker's current model, so a restore is safe across
+	// model changes. Ids, namespace, tags, createdAt, links and not-duplicate
+	// decisions are preserved; an existing id is overwritten (upsert).
+	RestoreMemories(context.Context, *connect.Request[v1.RestoreMemoriesRequest]) (*connect.Response[v1.RestoreMemoriesResponse], error)
 }
 
 // NewMemoryServiceClient constructs a client for the cortex.v1.MemoryService service. By default,
@@ -274,6 +285,12 @@ func NewMemoryServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(memoryServiceMethods.ByName("Consolidate")),
 			connect.WithClientOptions(opts...),
 		),
+		restoreMemories: connect.NewClient[v1.RestoreMemoriesRequest, v1.RestoreMemoriesResponse](
+			httpClient,
+			baseURL+MemoryServiceRestoreMemoriesProcedure,
+			connect.WithSchema(memoryServiceMethods.ByName("RestoreMemories")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -299,6 +316,7 @@ type memoryServiceClient struct {
 	listDuplicateCandidates *connect.Client[v1.ListDuplicateCandidatesRequest, v1.ListDuplicateCandidatesResponse]
 	dismissDuplicate        *connect.Client[v1.DismissDuplicateRequest, v1.DismissDuplicateResponse]
 	consolidate             *connect.Client[v1.ConsolidateRequest, v1.ConsolidateResponse]
+	restoreMemories         *connect.Client[v1.RestoreMemoriesRequest, v1.RestoreMemoriesResponse]
 }
 
 // Save calls cortex.v1.MemoryService.Save.
@@ -401,6 +419,11 @@ func (c *memoryServiceClient) Consolidate(ctx context.Context, req *connect.Requ
 	return c.consolidate.CallUnary(ctx, req)
 }
 
+// RestoreMemories calls cortex.v1.MemoryService.RestoreMemories.
+func (c *memoryServiceClient) RestoreMemories(ctx context.Context, req *connect.Request[v1.RestoreMemoriesRequest]) (*connect.Response[v1.RestoreMemoriesResponse], error) {
+	return c.restoreMemories.CallUnary(ctx, req)
+}
+
 // MemoryServiceHandler is an implementation of the cortex.v1.MemoryService service.
 type MemoryServiceHandler interface {
 	// Save queues a memory for asynchronous, durable indexing (NATS JetStream).
@@ -458,6 +481,14 @@ type MemoryServiceHandler interface {
 	// returned manifest; the worker then deletes those sources once the
 	// replacement is durably indexed.
 	Consolidate(context.Context, *connect.Request[v1.ConsolidateRequest]) (*connect.Response[v1.ConsolidateResponse], error)
+	// RestoreMemories re-ingests memories from a dump (e.g. `cortex export`) by
+	// republishing each onto the SAME NATS index queue a normal save uses — the
+	// worker then re-embeds and upserts them. It is the import half of dump/restore
+	// (move a store between deployments). Vectors are NOT carried; they are
+	// recomputed by the target worker's current model, so a restore is safe across
+	// model changes. Ids, namespace, tags, createdAt, links and not-duplicate
+	// decisions are preserved; an existing id is overwritten (upsert).
+	RestoreMemories(context.Context, *connect.Request[v1.RestoreMemoriesRequest]) (*connect.Response[v1.RestoreMemoriesResponse], error)
 }
 
 // NewMemoryServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -587,6 +618,12 @@ func NewMemoryServiceHandler(svc MemoryServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(memoryServiceMethods.ByName("Consolidate")),
 		connect.WithHandlerOptions(opts...),
 	)
+	memoryServiceRestoreMemoriesHandler := connect.NewUnaryHandler(
+		MemoryServiceRestoreMemoriesProcedure,
+		svc.RestoreMemories,
+		connect.WithSchema(memoryServiceMethods.ByName("RestoreMemories")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/cortex.v1.MemoryService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case MemoryServiceSaveProcedure:
@@ -629,6 +666,8 @@ func NewMemoryServiceHandler(svc MemoryServiceHandler, opts ...connect.HandlerOp
 			memoryServiceDismissDuplicateHandler.ServeHTTP(w, r)
 		case MemoryServiceConsolidateProcedure:
 			memoryServiceConsolidateHandler.ServeHTTP(w, r)
+		case MemoryServiceRestoreMemoriesProcedure:
+			memoryServiceRestoreMemoriesHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -716,4 +755,8 @@ func (UnimplementedMemoryServiceHandler) DismissDuplicate(context.Context, *conn
 
 func (UnimplementedMemoryServiceHandler) Consolidate(context.Context, *connect.Request[v1.ConsolidateRequest]) (*connect.Response[v1.ConsolidateResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cortex.v1.MemoryService.Consolidate is not implemented"))
+}
+
+func (UnimplementedMemoryServiceHandler) RestoreMemories(context.Context, *connect.Request[v1.RestoreMemoriesRequest]) (*connect.Response[v1.RestoreMemoriesResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cortex.v1.MemoryService.RestoreMemories is not implemented"))
 }
