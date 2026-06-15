@@ -753,12 +753,21 @@ func tagFilter(include, anyOf, exclude []string) func([]string) bool {
 	}
 }
 
-// assembleCluster builds the consolidation cluster: the seed hits (most relevant
-// first) followed by their duplicate-candidate and linked neighbours, deduped
-// and capped at limit. Only the seeds are expanded, so the cluster stays one hop
-// from the topic and bounded. get resolves a neighbour id to its full record; a
-// neighbour that errors or no longer exists is skipped. Pure but for get, so the
-// dedup/cap/expansion contract is unit-testable with a fake getter.
+// assembleCluster builds the consolidation cluster: each seed hit (most relevant
+// first) immediately followed by its own duplicate-candidate and linked
+// neighbours, deduped and capped at limit. Only the seeds are expanded, so the
+// cluster stays one hop from the topic and bounded. get resolves a neighbour id
+// to its full record; a neighbour that errors or no longer exists is skipped.
+// Pure but for get, so the dedup/cap/expansion contract is unit-testable with a
+// fake getter.
+//
+// Seeds and their neighbours are INTERLEAVED (seed, its neighbours, next seed,
+// …) rather than "all seeds, then all neighbours". The old ordering let a topic
+// with `limit` matches of its own saturate the budget so that NOT ONE linked or
+// duplicate neighbour was ever pulled in — the links were silently dropped.
+// Interleaving guarantees the graph around the top matches is gathered before
+// lower-ranked seeds consume the budget, while still degrading to "all seeds in
+// order" when nothing has neighbours (no regression for the pure-dedup case).
 func assembleCluster(seeds []memory.Hit, limit int, get func(string) (memory.Record, bool, error)) []memory.Record {
 	if limit <= 0 {
 		return nil
@@ -775,16 +784,14 @@ func assembleCluster(seeds []memory.Hit, limit int, get func(string) (memory.Rec
 
 	for _, h := range seeds {
 		if len(cluster) >= limit {
-			return cluster
+			break
 		}
 		add(h.Record)
-	}
-	for _, h := range seeds {
 		// Duplicate candidates first — surfacing them for merge is the whole point
 		// of consolidation — then explicit links.
 		for _, id := range append(append([]string(nil), h.DupCandidates...), h.LinkedIDs...) {
 			if len(cluster) >= limit {
-				return cluster
+				break
 			}
 			if id == "" || seen[id] {
 				continue

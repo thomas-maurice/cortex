@@ -285,8 +285,11 @@ func main() {
 			"cortex_memory_save passing the `supersedes` field set to the ids (from this response's `manifest`) that " +
 			"the new memory replaces. The server deletes those superseded sources automatically once the new memory " +
 			"is durably indexed, so do NOT call cortex_memory_delete on them yourself — that would risk losing " +
-			"content if indexing hasn't finished. Only supersede ids that appear in the manifest. Scope with " +
-			"namespace (omit for default, \"*\" for all).",
+			"content if indexing hasn't finished. Only supersede ids that appear in the manifest. " +
+			"SCOPE: OMIT namespace to consolidate ONLY the current project (the default — almost always what you " +
+			"want; it gathers fewer, more relevant memories and costs far fewer tokens). Pass \"*\" to span ALL " +
+			"projects ONLY when the user explicitly asks to consolidate across everything — it pulls in much more " +
+			"and is expensive.",
 	}, d.consolidate)
 
 	log.Info("cortex mcp server starting on stdio", "namespace", defaultNS, "server", serverURL, "autoSaveTags", autoSaveTags)
@@ -723,7 +726,7 @@ func (d *deps) dismissDuplicate(ctx context.Context, _ *mcp.CallToolRequest, in 
 
 type ConsolidateIn struct {
 	Topic       string   `json:"topic" jsonschema:"natural-language description of the topic/subject whose memories to gather and consolidate"`
-	Namespace   string   `json:"namespace,omitempty" jsonschema:"optional namespace filter; omit for default, pass \"*\" for all namespaces"`
+	Namespace   string   `json:"namespace,omitempty" jsonschema:"optional namespace filter; OMIT to consolidate only the current project (the default — fewer, more relevant memories, far cheaper in tokens). Pass \"*\" for ALL namespaces only when explicitly asked to span every project, as it gathers much more and is expensive"`
 	Limit       int      `json:"limit,omitempty" jsonschema:"max memories to gather into the cluster (default 25)"`
 	MaxDistance float32  `json:"maxDistance,omitempty" jsonschema:"relevance cutoff on the topic match; omit to use the server default"`
 	Tags        []string `json:"tags,omitempty" jsonschema:"only consolidate memories carrying ALL of these tags; omit to NOT filter by tag (gathers the whole topic cluster across every tag, NOT only untagged memories)"`

@@ -32,12 +32,14 @@ func hit(id string, dups, links []string) memory.Hit {
 // and safety (don't surface an id the merge can then delete without having seen
 // its content). Each subtest pins one guarantee.
 func TestAssembleCluster(t *testing.T) {
-	t.Run("seeds come first, in order, before any neighbour", func(t *testing.T) {
+	t.Run("each seed's neighbours are interleaved right after it", func(t *testing.T) {
 		seeds := []memory.Hit{hit("s1", []string{"n1"}, nil), hit("s2", nil, nil)}
 		recs := map[string]memory.Record{"n1": {ID: "n1"}}
 		cluster := assembleCluster(seeds, 10, fakeGetter(recs, nil))
 		ids := clusterIDs(cluster)
-		assert.Equal(t, []string{"s1", "s2", "n1"}, ids, "seeds precede expanded neighbours")
+		// s1's neighbour n1 comes before s2: interleaving is what stops a flood of
+		// bare seeds from saturating the budget and dropping every neighbour.
+		assert.Equal(t, []string{"s1", "n1", "s2"}, ids, "a seed's neighbours follow it, before the next seed")
 	})
 
 	t.Run("expands duplicate candidates AND links of seeds", func(t *testing.T) {
@@ -64,7 +66,8 @@ func TestAssembleCluster(t *testing.T) {
 		seeds := []memory.Hit{hit("s1", []string{"n"}, nil), hit("s2", []string{"n"}, nil)}
 		recs := map[string]memory.Record{"n": {ID: "n"}}
 		cluster := assembleCluster(seeds, 10, fakeGetter(recs, nil))
-		assert.Equal(t, []string{"s1", "s2", "n"}, clusterIDs(cluster))
+		// n is pulled in after s1 (its first referrer) and not re-added for s2.
+		assert.Equal(t, []string{"s1", "n", "s2"}, clusterIDs(cluster))
 	})
 
 	t.Run("a vanished neighbour (deleted since flagging) is skipped, not surfaced", func(t *testing.T) {
@@ -85,6 +88,20 @@ func TestAssembleCluster(t *testing.T) {
 		cluster := assembleCluster(seeds, 2, fakeGetter(recs, nil))
 		require.Len(t, cluster, 2)
 		assert.Equal(t, []string{"s1", "n1"}, clusterIDs(cluster), "seed plus one neighbour, then the cap stops expansion")
+	})
+
+	t.Run("a top seed's neighbour is pulled in even when bare seeds could fill the budget", func(t *testing.T) {
+		// The bug this guards: with "all seeds first", limit=3 and 4 seeds would
+		// yield [s1,s2,s3] and silently drop s1's link. Interleaving keeps it.
+		seeds := []memory.Hit{
+			hit("s1", nil, []string{"lnk"}),
+			hit("s2", nil, nil),
+			hit("s3", nil, nil),
+			hit("s4", nil, nil),
+		}
+		recs := map[string]memory.Record{"lnk": {ID: "lnk"}}
+		cluster := assembleCluster(seeds, 3, fakeGetter(recs, nil))
+		assert.Equal(t, []string{"s1", "lnk", "s2"}, clusterIDs(cluster), "the link survives instead of being crowded out by lower-ranked seeds")
 	})
 
 	t.Run("limit smaller than the seed count truncates seeds", func(t *testing.T) {
