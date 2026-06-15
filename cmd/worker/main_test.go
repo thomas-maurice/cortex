@@ -4,66 +4,45 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+
+	"github.com/thomas-maurice/cortex/internal/memory"
 )
 
-// planLinks is the correctness core of model-driven linking: links must be
-// bidirectional (the record points at each target AND each target points back),
-// and bad inputs the model can realistically send — a self-reference, a
-// duplicate, an empty id, or a stale/missing target — must be silently dropped
-// rather than producing a dangling or one-sided edge. Each subtest pins one of
-// those guarantees so a regression can't quietly corrupt the link graph.
-func TestPlanLinks(t *testing.T) {
-	t.Run("bidirectional link to an existing target", func(t *testing.T) {
-		forward, reverse := planLinks("new", nil, []linkTarget{
-			{id: "a", links: nil, exists: true},
-		})
-		assert.Equal(t, []string{"a"}, forward, "record must point at the target")
-		assert.Equal(t, []string{"new"}, reverse["a"], "target must point back at the record")
+// applyEdge is the correctness core of the async link path: an add must produce a
+// bidirectional edge (each endpoint points at the other), a remove must clear
+// both sides, and — because the message can be redelivered or double-published —
+// both operations must be idempotent so a retry never duplicates or corrupts the
+// link graph. Each subtest pins one of those guarantees.
+func TestApplyEdge(t *testing.T) {
+	t.Run("add creates a bidirectional edge", func(t *testing.T) {
+		newA, newB := applyEdge(memory.LinkOpAdd, "a", nil, "b", nil)
+		assert.Equal(t, []string{"b"}, newA, "a must point at b")
+		assert.Equal(t, []string{"a"}, newB, "b must point back at a")
 	})
 
-	t.Run("merges into the target's existing links, not replace", func(t *testing.T) {
-		_, reverse := planLinks("new", nil, []linkTarget{
-			{id: "a", links: []string{"old1", "old2"}, exists: true},
-		})
-		assert.Equal(t, []string{"old1", "old2", "new"}, reverse["a"], "existing links of the target must be preserved")
+	t.Run("add merges into existing links, not replace", func(t *testing.T) {
+		newA, newB := applyEdge(memory.LinkOpAdd, "a", []string{"x"}, "b", []string{"y"})
+		assert.Equal(t, []string{"x", "b"}, newA)
+		assert.Equal(t, []string{"y", "a"}, newB)
 	})
 
-	t.Run("missing target is skipped entirely", func(t *testing.T) {
-		forward, reverse := planLinks("new", nil, []linkTarget{
-			{id: "ghost", exists: false},
-		})
-		assert.Empty(t, forward, "a non-existent target must not appear in forward links")
-		assert.NotContains(t, reverse, "ghost", "a non-existent target gets no reverse update")
+	t.Run("add is idempotent", func(t *testing.T) {
+		a1, b1 := applyEdge(memory.LinkOpAdd, "a", nil, "b", nil)
+		a2, b2 := applyEdge(memory.LinkOpAdd, "a", a1, "b", b1)
+		assert.Equal(t, a1, a2, "re-adding the same edge must not duplicate")
+		assert.Equal(t, b1, b2)
 	})
 
-	t.Run("self-reference is dropped", func(t *testing.T) {
-		forward, reverse := planLinks("new", nil, []linkTarget{
-			{id: "new", exists: true},
-		})
-		assert.Empty(t, forward)
-		assert.Empty(t, reverse)
+	t.Run("remove clears both sides", func(t *testing.T) {
+		newA, newB := applyEdge(memory.LinkOpRemove, "a", []string{"b", "x"}, "b", []string{"a", "y"})
+		assert.Equal(t, []string{"x"}, newA)
+		assert.Equal(t, []string{"y"}, newB)
 	})
 
-	t.Run("duplicate targets are applied once", func(t *testing.T) {
-		forward, reverse := planLinks("new", nil, []linkTarget{
-			{id: "a", exists: true},
-			{id: "a", exists: true},
-		})
-		assert.Equal(t, []string{"a"}, forward)
-		assert.Len(t, reverse, 1)
-	})
-
-	t.Run("existing forward links are kept when adding new ones", func(t *testing.T) {
-		forward, _ := planLinks("new", []string{"existing"}, []linkTarget{
-			{id: "a", exists: true},
-		})
-		assert.Equal(t, []string{"existing", "a"}, forward)
-	})
-
-	t.Run("no valid targets leaves forward links unchanged", func(t *testing.T) {
-		forward, reverse := planLinks("new", []string{"existing"}, nil)
-		assert.Equal(t, []string{"existing"}, forward)
-		assert.Empty(t, reverse)
+	t.Run("remove is idempotent on an already-absent edge", func(t *testing.T) {
+		newA, newB := applyEdge(memory.LinkOpRemove, "a", []string{"x"}, "b", []string{"y"})
+		assert.Equal(t, []string{"x"}, newA, "removing an absent edge is a no-op")
+		assert.Equal(t, []string{"y"}, newB)
 	})
 }
 

@@ -66,6 +66,28 @@ func PublishSummary(ctx context.Context, js jetstream.JetStream, sum memory.Summ
 	return nil
 }
 
+// PublishLink publishes a single bidirectional edge mutation to SubjectLink for
+// the worker's link consumer to apply idempotently. Endpoints are canonicalized
+// (sorted) so the same edge always carries the same Nats-Msg-Id, letting
+// JetStream collapse redundant publishes within its dedup window; the worker's
+// apply is idempotent regardless, so the dedup is an optimisation, not a
+// correctness requirement.
+func PublishLink(ctx context.Context, js jetstream.JetStream, op memory.LinkOp, a, b string) error {
+	if a > b {
+		a, b = b, a
+	}
+	data, err := json.Marshal(memory.LinkMsg{Op: op, A: a, B: b})
+	if err != nil {
+		return err
+	}
+	msg := &nats.Msg{Subject: memory.SubjectLink, Data: data, Header: nats.Header{}}
+	msg.Header.Set("Nats-Msg-Id", fmt.Sprintf("link:%s:%s:%s", op, a, b))
+	if _, err := js.PublishMsg(ctx, msg); err != nil {
+		return fmt.Errorf("publish link: %w", err)
+	}
+	return nil
+}
+
 // PublishDead records a record that exhausted its indexing retries onto the
 // dead-letter subject, preserving it for later inspection or requeue.
 func PublishDead(ctx context.Context, js jetstream.JetStream, dl memory.DeadLetter) error {

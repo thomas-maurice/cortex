@@ -15,15 +15,46 @@ const (
 	StreamName       = "MEMORY"
 	SubjectIndex     = "memory.index"
 	SubjectSummary   = "memory.summary"
+	SubjectLink      = "memory.link"
 	SubjectDead      = "memory.dead"
 	SubjectAll       = "memory.>"
 	ConsumerName     = "indexer"
+	LinkConsumerName = "linker"
 
 	// MaxDeliver is how many times the worker attempts to index a message
 	// before giving up and dead-lettering it to SubjectDead. Both subjects live
 	// in StreamName (covered by SubjectAll), so dead letters persist for review.
 	MaxDeliver = 10
+
+	// LinkMaxDeliver is the link consumer's retry budget. It is much larger than
+	// MaxDeliver because a link's endpoint may simply be a record whose index
+	// event is still queued: the link must out-wait the embedding backlog before
+	// it concludes the endpoint genuinely does not exist. With the capped backoff
+	// in the worker this spans many minutes.
+	LinkMaxDeliver = 50
 )
+
+// LinkOp is the mutation a LinkMsg requests on an edge.
+type LinkOp string
+
+const (
+	LinkOpAdd    LinkOp = "add"
+	LinkOpRemove LinkOp = "remove"
+)
+
+// LinkMsg is a single bidirectional edge mutation published to SubjectLink and
+// applied idempotently by the worker's link consumer. A and B are canonicalized
+// (sorted) by the publisher so {A,B} and {B,A} are the same edge, giving a stable
+// Nats-Msg-Id for broker-level dedup. The apply is idempotent: add is a set-union
+// on both endpoints' link lists, remove is a set-difference, so redelivery and
+// double-publish are no-ops. For add, if either endpoint is not yet indexed (its
+// index event may still be queued) the worker NAKs for retry until both land or
+// LinkMaxDeliver is exhausted — the out-of-order case this queue exists for.
+type LinkMsg struct {
+	Op LinkOp `json:"op"`
+	A  string `json:"a"`
+	B  string `json:"b"`
+}
 
 // SummaryID derives the deterministic Weaviate object ID for a conversation's
 // summary. Because the ID is a pure function of the conversation ID, re-saving a
@@ -60,18 +91,10 @@ type Record struct {
 	// threads through the worker upsert so reindex/redelivery preserve links.
 	LinkedIDs []string `json:"linkedIds,omitempty"`
 
-	// LinkTo carries a one-shot instruction (NOT persisted state): ids of
-	// existing memories this record should be bidirectionally linked to once
-	// indexed. It rides the NATS index payload from the Save RPC to the worker,
-	// which applies the links after Upsert and then discards it. It is never
-	// written as a Weaviate property, so it is empty on reindex/redelivery —
-	// established links live in LinkedIDs by then.
-	LinkTo []string `json:"linkTo,omitempty"`
-
 	// Supersedes carries a one-shot instruction (NOT persisted state): ids of
 	// existing memories this record replaces, e.g. the sources gathered by a
-	// Consolidate call and merged into this memory. Like LinkTo it rides the NATS
-	// index payload from the Save RPC to the worker, which — only AFTER this
+	// Consolidate call and merged into this memory. It rides the NATS index
+	// payload from the Save RPC to the worker, which — only AFTER this
 	// record is durably upserted — deletes each superseded source, then discards
 	// the list. Deleting post-upsert is the safety property: a crash mid-way can
 	// leave stale sources behind (the pre-merge state) but never loses the merged

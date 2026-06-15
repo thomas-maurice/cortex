@@ -268,6 +268,9 @@ You have a persistent memory via the `cortex` MCP server. Use it actively:
   related to another (a decision and its motivating bug, a preference and its
   project, two facts about one system), call `cortex_memory_link` with the two
   IDs. This builds a navigable knowledge graph; links are bidirectional and durable.
+  Linking is queued and applied asynchronously once both endpoints are indexed, so
+  you can link an ID you just saved this turn (still indexing) — or skip the extra
+  call entirely and pass `linkTo` when you `cortex_memory_save` the new memory.
 ```
 
 ### `consolidate-memories` skill (bundled)
@@ -295,11 +298,11 @@ The MCP server exposes these tools to Claude:
 
 | Tool | What it does |
 |------|--------------|
-| `cortex_memory_save` | Queue a memory for indexing. Args: `text`, `namespace?`, `tags?`, `linkTo?`, `supersedes?` (ids this memory replaces — the worker deletes them once this one is indexed). Returns its `id`. |
+| `cortex_memory_save` | Queue a memory for indexing. Args: `text`, `namespace?`, `tags?`, `linkTo?` (ids to bidirectionally link this memory to — queued and applied once both ends are indexed, so targets need not exist yet), `supersedes?` (ids this memory replaces — the worker deletes them once this one is indexed). Returns its `id`. |
 | `cortex_memory_search` | **Hybrid** search (BM25 keyword + vector, blended by `SEARCH_ALPHA`, default 0.5) so exact tokens/codenames resolve, not just semantic matches. Args: `query`, `namespace?` (`*` = all namespaces), `limit?`, `tags?` (must have all), `excludeTags?`, `maxDistance?` (relevance cutoff). Each hit includes its `id`, any `linkedIds`, and any `dupCandidates` (flagged likely-duplicates — the output hints when consolidation would help). |
 | `cortex_memory_delete` | Delete a memory by `id` (get the `id` from a `cortex_memory_search` result first). |
-| `cortex_memory_link` | Explicitly link two related memories (bidirectional) so they connect in the graph. Args: `id`, `targetId` — both from a prior search/recall. Claude is told to do this proactively when two memories are meaningfully related. |
-| `cortex_memory_unlink` | Remove the link between two memories. Args: `id`, `targetId`. |
+| `cortex_memory_link` | Explicitly link two related memories (bidirectional) so they connect in the graph. Args: `id`, `targetId` — from a prior search/recall, or an id just returned by `cortex_memory_save`. The edge is queued on the `memory.link` subject and applied once both endpoints are indexed (it waits for them), so out-of-order/just-saved ids link correctly. Claude is told to do this proactively when two memories are meaningfully related. |
+| `cortex_memory_unlink` | Remove the link between two memories (queued, applied asynchronously). Args: `id`, `targetId`. |
 | `cortex_consolidate` | Gather the cluster of memories about a `topic` (vector matches + their linked/duplicate neighbours, capped at `limit?`) for Claude to merge into fewer, richer memories. Read-only: returns the cluster and a `manifest` of ids; Claude commits the merge by saving compiled memories with `supersedes` set from the manifest. Args: `topic`, `namespace?`, `limit?`, `maxDistance?`, `tags?` (all), `anyTags?` (at least one), `excludeTags?`. **Omitting the tag args means no tag filter** (the whole topic cluster, every tag — not "only untagged"). |
 | `cortex_review_candidates` | List memories the worker flagged as likely duplicates, each with the candidates it resembles, for review. Args: `namespace?`, `limit?`. |
 | `cortex_dismiss_duplicate` | Record that two flagged memories are NOT duplicates, so the pair stops being re-flagged. Args: `id`, `targetId`. |

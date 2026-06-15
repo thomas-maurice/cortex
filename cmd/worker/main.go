@@ -101,6 +101,20 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Links ride their own durable consumer, decoupled from indexing: an edge
+	// whose endpoint is still being embedded retries on this consumer's budget
+	// without blocking or being blocked by the index stream.
+	linkCons, err := js.CreateOrUpdateConsumer(ctx, memory.StreamName, jetstream.ConsumerConfig{
+		Durable:        memory.LinkConsumerName,
+		AckPolicy:      jetstream.AckExplicitPolicy,
+		FilterSubjects: []string{memory.SubjectLink},
+		MaxDeliver:     memory.LinkMaxDeliver,
+	})
+	if err != nil {
+		log.Error("create link consumer", "err", err)
+		os.Exit(1)
+	}
+
 	log.Info("worker up", "nats", natsURL, "weaviate", weaviate, "model", ollamaModel, "dedup_distance", dedupDistance)
 
 	cc, err := cons.Consume(func(msg jetstream.Msg) {
@@ -111,6 +125,15 @@ func main() {
 		os.Exit(1)
 	}
 	defer cc.Stop()
+
+	lcc, err := linkCons.Consume(func(msg jetstream.Msg) {
+		handleLink(ctx, log, st, msg)
+	})
+	if err != nil {
+		log.Error("consume links", "err", err)
+		os.Exit(1)
+	}
+	defer lcc.Stop()
 
 	<-ctx.Done()
 	log.Info("shutting down")
@@ -199,84 +222,129 @@ func handleSummary(ctx context.Context, log *slog.Logger, embedder *embed.Client
 	_ = msg.NakWithDelay(2 * time.Second)
 }
 
-// linkMu serializes the read-modify-write that link application performs on each
-// target's linkedIds. SetLinks replaces the whole list, so concurrent consumers
-// linking to the same target would otherwise lose updates (the Link RPC guards
-// the same hazard with its own mutex). This protects a single worker process;
-// running multiple worker replicas reintroduces the cross-process race, which is
-// non-fatal (it can leave a link asymmetric) but worth knowing.
+// linkMu serializes the read-modify-write the link consumer performs on each
+// endpoint's linkedIds. SetLinks replaces the whole list, so concurrent applies
+// touching the same endpoint would otherwise lose updates. This protects a single
+// worker process; running multiple worker replicas reintroduces the cross-process
+// race, which is non-fatal (it can leave a link asymmetric) but worth knowing.
 var linkMu sync.Mutex
 
-// linkTarget is one resolved entry of rec.LinkTo: the target id, its current
-// link set, and whether it actually exists in the store.
-type linkTarget struct {
-	id     string
-	links  []string // the target's current linkedIds
-	exists bool
-}
-
-// planLinks computes the bidirectional link mutations for a freshly-indexed
-// record. A target is skipped when it is empty, equals the record itself, was
-// not found, or repeats an earlier target. It returns the record's full desired
-// forward link set and, per changed target, that target's new link set (the
-// reverse direction). Pure: all store IO is done by the caller, so the
-// skip/dedup/bidirectional contract is unit-testable without a live Weaviate.
-func planLinks(recID string, recLinks []string, targets []linkTarget) (forward []string, reverse map[string][]string) {
-	forward = append([]string(nil), recLinks...)
-	reverse = make(map[string][]string)
-	seen := make(map[string]bool, len(targets))
-	for _, t := range targets {
-		if t.id == "" || t.id == recID || !t.exists || seen[t.id] {
-			continue
-		}
-		seen[t.id] = true
-		forward = addUnique(forward, t.id)
-		reverse[t.id] = addUnique(t.links, recID)
-	}
-	return forward, reverse
-}
-
-// applyLinks bidirectionally links a freshly-indexed record to each target in
-// rec.LinkTo. Best-effort: a missing/stale target is skipped and logged, never
-// fatal — the record is already indexed by the time this runs.
-func applyLinks(ctx context.Context, log *slog.Logger, st *store.Store, rec memory.Record) {
-	if len(rec.LinkTo) == 0 {
+// handleLink applies one bidirectional edge mutation (memory.LinkMsg) to the
+// store. It is the durable, retrying replacement for the old inline link-on-index
+// path: links now arrive on their own subject decoupled from indexing.
+//
+// For an add, BOTH endpoints must already exist; if either is missing its index
+// event is presumably still queued, so the message is NAK'd with a capped backoff
+// and retried — up to memory.LinkMaxDeliver — rather than silently dropped. A
+// remove needs no waiting: a missing endpoint has no edge to clear, so it applies
+// to whichever endpoint exists and acks. The apply itself is idempotent
+// (set-union / set-difference), so redelivery and duplicate publishes are no-ops.
+func handleLink(ctx context.Context, log *slog.Logger, st *store.Store, msg jetstream.Msg) {
+	var lm memory.LinkMsg
+	if err := json.Unmarshal(msg.Data(), &lm); err != nil {
+		log.Error("bad link payload, terminating", "err", err)
+		_ = msg.Term()
 		return
 	}
+	if lm.A == "" || lm.B == "" || lm.A == lm.B {
+		log.Warn("invalid link msg, terminating", "op", lm.Op, "a", lm.A, "b", lm.B)
+		_ = msg.Term()
+		return
+	}
+
 	linkMu.Lock()
 	defer linkMu.Unlock()
 
-	targets := make([]linkTarget, 0, len(rec.LinkTo))
-	for _, id := range rec.LinkTo {
-		if id == "" || id == rec.ID {
-			continue
-		}
-		t, found, err := st.Get(ctx, id)
-		if err != nil {
-			log.Warn("link target lookup failed, skipping", "id", rec.ID, "target", id, "err", err)
-			continue
-		}
-		if !found {
-			log.Warn("link target does not exist, skipping", "id", rec.ID, "target", id)
-			continue
-		}
-		targets = append(targets, linkTarget{id: id, links: t.LinkedIDs, exists: true})
+	a, aOK, err := st.Get(ctx, lm.A)
+	if err != nil {
+		linkRetry(log, msg, lm, "endpoint lookup failed", err)
+		return
+	}
+	b, bOK, err := st.Get(ctx, lm.B)
+	if err != nil {
+		linkRetry(log, msg, lm, "endpoint lookup failed", err)
+		return
 	}
 
-	forward, reverse := planLinks(rec.ID, rec.LinkedIDs, targets)
-	for id, links := range reverse {
-		if err := st.SetLinks(ctx, id, links); err != nil {
-			log.Warn("link target update failed, skipping", "id", rec.ID, "target", id, "err", err)
-			continue
+	if lm.Op == memory.LinkOpAdd && (!aOK || !bOK) {
+		// The out-of-order case the queue exists for: an endpoint is not indexed
+		// yet. Retry until it lands or the budget is spent (a genuinely bad id).
+		deliveries := numDelivered(msg)
+		if deliveries >= memory.LinkMaxDeliver {
+			log.Error("gave up linking, endpoint never appeared", "a", lm.A, "b", lm.B,
+				"a_exists", aOK, "b_exists", bOK, "deliveries", deliveries)
+			_ = msg.Term()
+			return
 		}
-		log.Info("linked", "id", rec.ID, "target", id)
+		log.Info("link endpoint not indexed yet, will retry", "a", lm.A, "b", lm.B,
+			"a_exists", aOK, "b_exists", bOK, "deliveries", deliveries)
+		_ = msg.NakWithDelay(linkRetryDelay(deliveries))
+		return
 	}
-	// Write the record's own forward links only if any target was actually added.
-	if len(forward) > len(rec.LinkedIDs) {
-		if err := st.SetLinks(ctx, rec.ID, forward); err != nil {
-			log.Warn("forward link update failed", "id", rec.ID, "err", err)
+
+	newA, newB := applyEdge(lm.Op, lm.A, a.LinkedIDs, lm.B, b.LinkedIDs)
+	if aOK {
+		if err := st.SetLinks(ctx, lm.A, newA); err != nil {
+			linkRetry(log, msg, lm, "set links failed", err)
+			return
 		}
 	}
+	if bOK {
+		if err := st.SetLinks(ctx, lm.B, newB); err != nil {
+			linkRetry(log, msg, lm, "set links failed", err)
+			return
+		}
+	}
+	log.Info("link applied", "op", lm.Op, "a", lm.A, "b", lm.B)
+	_ = msg.Ack()
+}
+
+// applyEdge returns the new link slices for endpoints a and b after applying op.
+// Pure and idempotent: add is set-union, remove is set-difference, so applying
+// the same edge twice yields the same result as applying it once.
+func applyEdge(op memory.LinkOp, aID string, aLinks []string, bID string, bLinks []string) (newA, newB []string) {
+	if op == memory.LinkOpRemove {
+		return removeString(aLinks, bID), removeString(bLinks, aID)
+	}
+	return addUnique(aLinks, bID), addUnique(bLinks, aID)
+}
+
+// linkRetryDelay backs off proportionally to delivery count, capped at 30s, so a
+// link waiting on a slow embedding backlog retries gently over minutes rather
+// than hammering the store.
+func linkRetryDelay(deliveries int) time.Duration {
+	d := time.Duration(deliveries) * 2 * time.Second
+	if d > 30*time.Second {
+		return 30 * time.Second
+	}
+	return d
+}
+
+// linkRetry NAKs a transient link failure (store error) with backoff; on a fresh
+// message deliveries is 0, giving an immediate redelivery.
+func linkRetry(log *slog.Logger, msg jetstream.Msg, lm memory.LinkMsg, what string, err error) {
+	deliveries := numDelivered(msg)
+	log.Warn("link apply failed, will retry", "reason", what, "op", lm.Op, "a", lm.A, "b", lm.B, "deliveries", deliveries, "err", err)
+	_ = msg.NakWithDelay(linkRetryDelay(deliveries))
+}
+
+// numDelivered reads the JetStream delivery count for msg, or 0 if unavailable.
+func numDelivered(msg jetstream.Msg) int {
+	if md, err := msg.Metadata(); err == nil {
+		return int(md.NumDelivered)
+	}
+	return 0
+}
+
+// removeString returns xs without any element equal to v.
+func removeString(xs []string, v string) []string {
+	out := make([]string, 0, len(xs))
+	for _, x := range xs {
+		if x != v {
+			out = append(out, x)
+		}
+	}
+	return out
 }
 
 // addUnique appends v to xs if absent, preserving order.
@@ -392,13 +460,12 @@ func handleIndex(ctx context.Context, log *slog.Logger, js jetstream.JetStream, 
 		if err := st.Upsert(ctx, rec, vec); err != nil {
 			procErr = fmt.Errorf("upsert: %w", err)
 		} else {
-			// The record now exists in the store, so its requested links can be
-			// applied. Best-effort and non-fatal: link problems must not fail the
-			// (already successful) index.
-			applyLinks(ctx, log, st, rec)
-			// Now that the merged memory is durable, delete the sources it
-			// supersedes. Ordering matters: post-upsert means a crash here can't
-			// lose the merged content. Best-effort, like links.
+			// Requested links are no longer applied here: they travel on
+			// SubjectLink and are applied by the link consumer, which waits for both
+			// endpoints to exist. Supersedes still runs inline — now that the merged
+			// memory is durable, delete the sources it replaces. Ordering matters:
+			// post-upsert means a crash here can't lose the merged content.
+			// Best-effort and non-fatal.
 			applySupersedes(ctx, log, st, rec)
 		}
 		storeDur = time.Since(storeStart)

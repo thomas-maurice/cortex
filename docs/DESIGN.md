@@ -74,18 +74,31 @@ Object **ID** = a UUID minted by the MCP server at save time. The worker upserts
 with that ID, so redelivery/retry is **idempotent** (overwrite, never dup).
 
 **Memory links.** `linkedIds` holds explicit, user/model-created relationships
-between memories (distinct from tag or vector similarity). They are written by
-the `Link`/`Unlink` RPCs via a Weaviate **merge** (PATCH) so they never trigger a
-re-embed, and they thread through `memory.Record` → worker upsert, so reindex /
+between memories (distinct from tag or vector similarity). They persist as a
+Weaviate property and thread through `memory.Record` → worker upsert, so reindex /
 redelivery preserve them. Links are **bidirectional** (both memories list each
-other) and `Link`/`Unlink` are serialized by a per-server mutex to avoid lost
-updates on the read-modify-write. See [WEB_UI.md](WEB_UI.md) for how the graph UI
-and the MCP tools drive them.
+other).
+
+Linking is its own **async, retrying NATS operation**, decoupled from indexing.
+The `Link`/`Unlink` RPCs (and the `linkTo` field of `memory_save`) publish a
+single edge mutation to the `memory.link` subject — `{op: add|remove, a, b}` with
+endpoints canonicalized (sorted) and a stable `Nats-Msg-Id` for broker-level
+dedup. The worker's `linker` consumer applies it idempotently (add = set-union,
+remove = set-difference, written via a Weaviate **merge**/PATCH so it never
+re-embeds). This exists because indexing is much slower than a write: an edge can
+reference a memory whose index event is still queued. For an `add` where either
+endpoint is missing, the consumer **NAKs and retries** (capped backoff, up to
+`LinkMaxDeliver: 50`) until both land — out-of-order links are no longer silently
+dropped, the failure mode of the old inline link-on-index path. A single worker
+serializes the read-modify-write with a mutex to avoid lost updates. See
+[WEB_UI.md](WEB_UI.md) for how the graph UI and the MCP tools drive links.
 
 NATS stream `MEMORY`, subjects `memory.>`, file storage. Subject `memory.index`
-carries save events; subject `memory.dead` carries dead-letters (same stream).
-Durable consumer `indexer`, explicit ack, `MaxDeliver: 10`, nak-with-delay (2s)
-on transient embed/write failures, term on unparseable payloads. A message that
+carries save events and `memory.summary` carries conversation summaries (both on
+the `indexer` consumer); `memory.link` carries edge mutations (the `linker`
+consumer); `memory.dead` carries dead-letters (same stream). The `indexer` is a
+durable consumer, explicit ack, `MaxDeliver: 10`, nak-with-delay (2s) on
+transient embed/write failures, term on unparseable payloads. A message that
 still fails on its 10th delivery is published to `memory.dead` (with the error
 and delivery count) and acked — preserved for inspection/requeue via the CLI,
 never silently dropped.
@@ -97,8 +110,8 @@ never silently dropped.
 | `memory_save` | NATS publish | `text`, `namespace?`, `tags?` | `{id, status:"queued"}` |
 | `memory_search` | Ollama + Weaviate | `query`, `namespace?` (`*` = all), `limit?` | `{hits:[{id,text,namespace,tags,distance}]}` |
 | `memory_delete` | Weaviate | `id` | `{status:"deleted"}` |
-| `memory_link` | Weaviate merge | `id`, `targetId` | `{linkedIds}` (bidirectional link) |
-| `memory_unlink` | Weaviate merge | `id`, `targetId` | `{linkedIds}` |
+| `memory_link` | NATS publish (`memory.link`) | `id`, `targetId` | `{status:"queued"}` (applied async once both ends indexed) |
+| `memory_unlink` | NATS publish (`memory.link`) | `id`, `targetId` | `{status:"queued"}` |
 
 (Plus `session_summarize` / `recall_session` for conversation summaries.) All
 tool calls go through the Connect RPC server; the MCP server holds no NATS/

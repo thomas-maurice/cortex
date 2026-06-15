@@ -49,8 +49,10 @@ type Service struct {
 	embedder *embed.Client
 	cfg      Config
 	log      *slog.Logger
-	// linkMu serializes Link/Unlink to prevent lost updates from concurrent
-	// read-modify-write on each memory's linked-IDs list.
+	// linkMu serializes the read-modify-write that DismissDuplicate performs on
+	// each memory's not-duplicate / candidate lists, preventing lost updates.
+	// (Link/Unlink no longer mutate the store directly — they publish to
+	// SubjectLink and the worker's link consumer serialises the apply.)
 	linkMu sync.Mutex
 }
 
@@ -81,11 +83,25 @@ func (s *Service) Save(ctx context.Context, req *connect.Request[cortexv1.SaveRe
 		Source:         src,
 		CreatedAt:      time.Now().UTC(),
 		ConversationID: req.Msg.GetConversationId(),
-		LinkTo:         req.Msg.GetLinkTo(),
 		Supersedes:     req.Msg.GetSupersedes(),
 	}
 	if err := bus.PublishIndex(ctx, s.js, rec); err != nil {
 		return nil, err
+	}
+	// Requested links go onto the durable link subject, not the index payload:
+	// the link consumer waits for this record to finish indexing (and for each
+	// target to exist) before applying the edge, so order of arrival no longer
+	// loses links. Best-effort per target — the record is already queued, so a
+	// link publish failure must not fail the save (and re-saving would mint a new
+	// id), it is logged loudly instead.
+	for _, target := range req.Msg.GetLinkTo() {
+		target = strings.TrimSpace(target)
+		if target == "" || target == rec.ID {
+			continue
+		}
+		if err := bus.PublishLink(ctx, s.js, memory.LinkOpAdd, rec.ID, target); err != nil {
+			s.log.Warn("publish link failed", "id", rec.ID, "target", target, "err", err)
+		}
 	}
 	return connect.NewResponse(&cortexv1.SaveResponse{Id: rec.ID, Status: "queued"}), nil
 }
@@ -121,10 +137,8 @@ func (s *Service) UpdateMemory(ctx context.Context, req *connect.Request[cortexv
 		rec.Namespace = ns
 	}
 	// DupCandidates are recomputed by the worker on every (re)index; clear the
-	// stale set so a failed republish never leaves an old hint behind. LinkTo is a
-	// one-shot save instruction, never relevant to an edit.
+	// stale set so a failed republish never leaves an old hint behind.
 	rec.DupCandidates = nil
-	rec.LinkTo = nil
 
 	if err := bus.PublishIndex(ctx, s.js, rec); err != nil {
 		return nil, err
@@ -522,42 +536,42 @@ func (s *Service) ListSummaries(ctx context.Context, req *connect.Request[cortex
 	return connect.NewResponse(out), nil
 }
 
+// Link queues a bidirectional edge between two memories. It is async: the edge
+// is published to SubjectLink and applied by the worker's idempotent link
+// consumer, which waits for both endpoints to exist before writing — so an
+// endpoint that is still indexing (or arrives out of order) no longer drops the
+// link. The response carries no resolved link set because the edge has not been
+// applied yet; the caller observes the result by re-reading the memory.
 func (s *Service) Link(ctx context.Context, req *connect.Request[cortexv1.LinkRequest]) (*connect.Response[cortexv1.LinkResponse], error) {
-	s.linkMu.Lock()
-	defer s.linkMu.Unlock()
-
-	a, b, err := s.linkEndpoints(ctx, req.Msg.GetId(), req.Msg.GetTargetId())
-	if err != nil {
+	if err := s.publishEdge(ctx, memory.LinkOpAdd, req.Msg.GetId(), req.Msg.GetTargetId()); err != nil {
 		return nil, err
 	}
-	aLinks := addUnique(a.LinkedIDs, b.ID)
-	bLinks := addUnique(b.LinkedIDs, a.ID)
-	if err := s.store.SetLinks(ctx, a.ID, aLinks); err != nil {
-		return nil, fmt.Errorf("link %s<->%s: updating %s failed (graph may be left asymmetric, retry): %w", a.ID, b.ID, a.ID, err)
-	}
-	if err := s.store.SetLinks(ctx, b.ID, bLinks); err != nil {
-		return nil, fmt.Errorf("link %s<->%s: updating %s failed (graph may be left asymmetric, retry): %w", a.ID, b.ID, b.ID, err)
-	}
-	return connect.NewResponse(&cortexv1.LinkResponse{LinkedIds: aLinks}), nil
+	return connect.NewResponse(&cortexv1.LinkResponse{}), nil
 }
 
+// Unlink queues removal of the edge between two memories, applied asynchronously
+// by the same idempotent link consumer as Link.
 func (s *Service) Unlink(ctx context.Context, req *connect.Request[cortexv1.UnlinkRequest]) (*connect.Response[cortexv1.UnlinkResponse], error) {
-	s.linkMu.Lock()
-	defer s.linkMu.Unlock()
-
-	a, b, err := s.linkEndpoints(ctx, req.Msg.GetId(), req.Msg.GetTargetId())
-	if err != nil {
+	if err := s.publishEdge(ctx, memory.LinkOpRemove, req.Msg.GetId(), req.Msg.GetTargetId()); err != nil {
 		return nil, err
 	}
-	aLinks := removeString(a.LinkedIDs, b.ID)
-	bLinks := removeString(b.LinkedIDs, a.ID)
-	if err := s.store.SetLinks(ctx, a.ID, aLinks); err != nil {
-		return nil, fmt.Errorf("link %s<->%s: updating %s failed (graph may be left asymmetric, retry): %w", a.ID, b.ID, a.ID, err)
+	return connect.NewResponse(&cortexv1.UnlinkResponse{}), nil
+}
+
+// publishEdge validates the two endpoint ids and publishes the edge mutation to
+// the link subject. It validates shape only (non-empty, distinct); endpoint
+// existence is intentionally not checked here, because the whole point of the
+// async path is to allow linking a memory that is not indexed yet.
+func (s *Service) publishEdge(ctx context.Context, op memory.LinkOp, idA, idB string) error {
+	idA = strings.TrimSpace(idA)
+	idB = strings.TrimSpace(idB)
+	if idA == "" || idB == "" {
+		return connect.NewError(connect.CodeInvalidArgument, errors.New("id and target_id must not be empty"))
 	}
-	if err := s.store.SetLinks(ctx, b.ID, bLinks); err != nil {
-		return nil, fmt.Errorf("link %s<->%s: updating %s failed (graph may be left asymmetric, retry): %w", a.ID, b.ID, b.ID, err)
+	if idA == idB {
+		return connect.NewError(connect.CodeInvalidArgument, errors.New("cannot link a memory to itself"))
 	}
-	return connect.NewResponse(&cortexv1.UnlinkResponse{LinkedIds: aLinks}), nil
+	return bus.PublishLink(ctx, s.js, op, idA, idB)
 }
 
 // ListDuplicateCandidates returns memories the worker flagged as likely

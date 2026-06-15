@@ -175,7 +175,10 @@ func main() {
 			"as Markdown: use headings, bullet lists, code fences, and links where they make the note " +
 			"clearer, since the UI renders it as formatted Markdown. Summarising a discussion or a " +
 			"conclusion into one rich memory is encouraged. Scope it with a namespace (e.g. the " +
-			"project or topic) and tags. Indexing is asynchronous and durable; saving is cheap, so " +
+			"project or topic) and tags. To connect this memory to related ones in the same call, pass " +
+			"their IDs in the linkTo field — links are bidirectional and queued, applied once both this " +
+			"memory and each target are indexed, so you do not need a separate cortex_memory_link call and " +
+			"the targets need not be indexed yet. Indexing is asynchronous and durable; saving is cheap, so " +
 			"err on the side of saving more.",
 	}, d.save)
 
@@ -213,10 +216,11 @@ func main() {
 			"the project it applies to, or two facts about the same system — link them AUTOMATICALLY without " +
 			"asking first; only pause to ask on borderline or weakly-related pairs. Do not link merely " +
 			"topically-adjacent memories — that produces a useless hairball graph; the bar is a real " +
-			"relationship, not surface similarity. The link is bidirectional. Pass two memory IDs as returned " +
-			"by cortex_memory_search or cortex_recall_session (the memories must already be indexed, so link " +
-			"IDs you got from a search, not one you just saved this turn — to link a memory at save time, " +
-			"pass the related IDs via the linkTo field of cortex_memory_save instead).",
+			"relationship, not surface similarity. The link is bidirectional and applied asynchronously: it is " +
+			"queued and takes effect once both memories are indexed, so you may pass an ID you just got back " +
+			"from cortex_memory_save this turn (still being indexed) as well as IDs from cortex_memory_search " +
+			"or cortex_recall_session — the link waits for both endpoints to exist. The linkTo field of " +
+			"cortex_memory_save remains a convenient shortcut for linking a new memory at save time.",
 	}, d.link)
 
 	mcp.AddTool(server, &mcp.Tool{
@@ -298,7 +302,7 @@ type SaveIn struct {
 	Text       string   `json:"text" jsonschema:"the memory content to store; a self-contained note that captures the fact AND enough context to be understood on its own later. Can be as long as needed; strongly prefer Markdown formatting (headings, bullets, code fences) as the UI renders it as Markdown"`
 	Namespace  string   `json:"namespace,omitempty" jsonschema:"optional namespace to scope the memory (e.g. a project name); defaults to the server's configured namespace"`
 	Tags       []string `json:"tags,omitempty" jsonschema:"optional free-form tags for later filtering"`
-	LinkTo     []string `json:"linkTo,omitempty" jsonschema:"optional IDs of EXISTING related memories (from a prior memory_search) to bidirectionally link this new memory to; the link is applied once this memory is indexed, so pass IDs returned by a search, not one you are saving right now"`
+	LinkTo     []string `json:"linkTo,omitempty" jsonschema:"optional IDs of related memories to bidirectionally link this new memory to (e.g. from a prior memory_search). Linking is queued and applied once both memories are indexed, so the targets do not need to be indexed yet — they just need to be real memory IDs that exist or are being saved"`
 	Supersedes []string `json:"supersedes,omitempty" jsonschema:"optional IDs of EXISTING memories this new memory replaces (e.g. the sources from a cortex_consolidate manifest that this merged memory absorbs); the server deletes them automatically once this memory is durably indexed, so do not also call cortex_memory_delete on them. Only pass IDs you actually merged into this text"`
 }
 
@@ -486,12 +490,12 @@ func (d *deps) edit(ctx context.Context, _ *mcp.CallToolRequest, in EditIn) (*mc
 // ---- memory_link / memory_unlink ----
 
 type LinkIn struct {
-	ID       string `json:"id" jsonschema:"first memory ID to link (from cortex_memory_search or cortex_recall_session)"`
+	ID       string `json:"id" jsonschema:"first memory ID to link (from cortex_memory_search, cortex_recall_session, or just returned by cortex_memory_save)"`
 	TargetID string `json:"targetId" jsonschema:"second memory ID to link"`
 }
 
 type LinkOut struct {
-	LinkedIDs []string `json:"linkedIds" jsonschema:"the updated link set of the first memory"`
+	LinkedIDs []string `json:"linkedIds" jsonschema:"empty: linking is queued and applied asynchronously once both memories are indexed, so the resulting link set is not returned here"`
 }
 
 func (d *deps) link(ctx context.Context, _ *mcp.CallToolRequest, in LinkIn) (*mcp.CallToolResult, LinkOut, error) {
@@ -504,7 +508,7 @@ func (d *deps) link(ctx context.Context, _ *mcp.CallToolRequest, in LinkIn) (*mc
 	if err != nil {
 		return nil, LinkOut{}, err
 	}
-	return text2result(fmt.Sprintf("linked %s <-> %s", id, target)), LinkOut{LinkedIDs: resp.Msg.GetLinkedIds()}, nil
+	return text2result(fmt.Sprintf("queued link %s <-> %s (applied once both memories are indexed)", id, target)), LinkOut{LinkedIDs: resp.Msg.GetLinkedIds()}, nil
 }
 
 type UnlinkIn struct {
@@ -513,7 +517,7 @@ type UnlinkIn struct {
 }
 
 type UnlinkOut struct {
-	LinkedIDs []string `json:"linkedIds" jsonschema:"the remaining link set of the first memory"`
+	LinkedIDs []string `json:"linkedIds" jsonschema:"empty: unlinking is queued and applied asynchronously, so the remaining link set is not returned here"`
 }
 
 func (d *deps) unlink(ctx context.Context, _ *mcp.CallToolRequest, in UnlinkIn) (*mcp.CallToolResult, UnlinkOut, error) {
@@ -526,7 +530,7 @@ func (d *deps) unlink(ctx context.Context, _ *mcp.CallToolRequest, in UnlinkIn) 
 	if err != nil {
 		return nil, UnlinkOut{}, err
 	}
-	return text2result(fmt.Sprintf("unlinked %s <-> %s", id, target)), UnlinkOut{LinkedIDs: resp.Msg.GetLinkedIds()}, nil
+	return text2result(fmt.Sprintf("queued unlink %s <-> %s", id, target)), UnlinkOut{LinkedIDs: resp.Msg.GetLinkedIds()}, nil
 }
 
 // ---- session_summarize ----
