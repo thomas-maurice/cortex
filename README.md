@@ -273,7 +273,7 @@ The MCP server exposes these tools to Claude:
 | `cortex_memory_delete` | Delete a memory by `id` (get the `id` from a `cortex_memory_search` result first). |
 | `cortex_memory_link` | Explicitly link two related memories (bidirectional) so they connect in the graph. Args: `id`, `targetId` — both from a prior search/recall. Claude is told to do this proactively when two memories are meaningfully related. |
 | `cortex_memory_unlink` | Remove the link between two memories. Args: `id`, `targetId`. |
-| `cortex_consolidate` | Gather the cluster of memories about a `topic` (vector matches + their linked/duplicate neighbours, capped at `limit?`) for Claude to merge into fewer, richer memories. Read-only: returns the cluster and a `manifest` of ids; Claude commits the merge by saving compiled memories with `supersedes` set from the manifest. Args: `topic`, `namespace?`, `limit?`, `maxDistance?`. |
+| `cortex_consolidate` | Gather the cluster of memories about a `topic` (vector matches + their linked/duplicate neighbours, capped at `limit?`) for Claude to merge into fewer, richer memories. Read-only: returns the cluster and a `manifest` of ids; Claude commits the merge by saving compiled memories with `supersedes` set from the manifest. Args: `topic`, `namespace?`, `limit?`, `maxDistance?`, `tags?` (all), `anyTags?` (at least one), `excludeTags?`. **Omitting the tag args means no tag filter** (the whole topic cluster, every tag — not "only untagged"). |
 | `cortex_review_candidates` | List memories the worker flagged as likely duplicates, each with the candidates it resembles, for review. Args: `namespace?`, `limit?`. |
 | `cortex_dismiss_duplicate` | Record that two flagged memories are NOT duplicates, so the pair stops being re-flagged. Args: `id`, `targetId`. |
 | `cortex_session_summarize` | Save/update the **running summary of the current conversation** (one per session, replaced each call). Args: `text`, `namespace?`. The session ID is attached automatically. **Meant to be called frequently** — see below. |
@@ -304,6 +304,28 @@ Search results help kick this off: when a hit carries flagged `dupCandidates`, t
 search output hints that `cortex_consolidate` can gather and merge the cluster.
 The `cortex consolidate <topic>` CLI command prints the same cluster + manifest for
 inspection (the merge itself needs an LLM).
+
+#### How to ask for a consolidation
+
+Just ask Claude in natural language; it picks the scope from how you phrase it:
+
+- **This project (default).** *"Consolidate what you know about the router setup."*
+  The namespace auto-derives from the repo's git remote, so the cluster is scoped
+  to the current project without you saying so.
+- **A specific project / everything.** *"Consolidate the WireGuard notes in the
+  `homelab` namespace"* → `namespace: "homelab"`. *"…across all my projects"* →
+  `namespace: "*"`.
+- **By tag.** *"Consolidate everything tagged `router` and `mtu`."* → `tags`
+  (must have **all**). *"…tagged `router` **or** `firewall`"* → `anyTags` (at
+  least one). *"…but skip anything tagged `archived`"* → `excludeTags`.
+
+> **What if I don't mention tags?** Then there is **no tag filter**: Cortex
+> gathers the whole topical cluster in the namespace, across every tag. Omitting
+> tags does **not** restrict it to untagged memories — it just means tags don't
+> constrain the set (same as `cortex_memory_search`). Tag scoping is opt-in, and
+> when you do scope by tag, the *entire* cluster — including linked and
+> duplicate-candidate neighbours pulled in by expansion — stays inside that tag
+> filter, so a tag-scoped merge can never supersede an out-of-scope memory.
 
 > **`cortex_consolidate` vs the `/consolidate-memories` skill.** The skill is a
 > broad, repo-wide pass that reconciles *all* knowledge sources (files, docs,
@@ -427,7 +449,7 @@ authenticate with `--token` / `CORTEX_AUTH_TOKEN`.
 | `cortex save "<text>" -n <ns> -t tag [-S <id>]` | Queue a memory (server publishes to NATS). `-S/--supersedes` lists ids this memory replaces (deleted after indexing). |
 | `cortex list -n '*' [-t tag] [-x tag]` | List memories newest-first; filter by namespace/tags. |
 | `cortex search "<q>" [-d 0.6] [-t tag] [-x tag]` | Semantic search with a relevance cutoff and tag filters. |
-| `cortex consolidate "<topic>" [-n '*'] [-l N]` | Print the cluster of memories about a topic + their manifest (read-only gather; the LLM does the merge). |
+| `cortex consolidate "<topic>" [-n '*'] [-l N] [-t tag] [-x tag]` | Print the cluster of memories about a topic + their manifest (read-only gather; the LLM does the merge). No tag flag = no tag filter (whole cluster). |
 | `cortex delete <id>` | Delete a memory by ID. |
 | `cortex export -o backup.json` | Dump all memories (text + metadata) to JSON. |
 | `cortex reindex --yes` | Re-embed every memory through the worker (see below). |

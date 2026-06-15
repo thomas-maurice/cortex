@@ -718,10 +718,13 @@ func (d *deps) dismissDuplicate(ctx context.Context, _ *mcp.CallToolRequest, in 
 // ---- consolidate ----
 
 type ConsolidateIn struct {
-	Topic       string  `json:"topic" jsonschema:"natural-language description of the topic/subject whose memories to gather and consolidate"`
-	Namespace   string  `json:"namespace,omitempty" jsonschema:"optional namespace filter; omit for default, pass \"*\" for all namespaces"`
-	Limit       int     `json:"limit,omitempty" jsonschema:"max memories to gather into the cluster (default 25)"`
-	MaxDistance float32 `json:"maxDistance,omitempty" jsonschema:"relevance cutoff on the topic match; omit to use the server default"`
+	Topic       string   `json:"topic" jsonschema:"natural-language description of the topic/subject whose memories to gather and consolidate"`
+	Namespace   string   `json:"namespace,omitempty" jsonschema:"optional namespace filter; omit for default, pass \"*\" for all namespaces"`
+	Limit       int      `json:"limit,omitempty" jsonschema:"max memories to gather into the cluster (default 25)"`
+	MaxDistance float32  `json:"maxDistance,omitempty" jsonschema:"relevance cutoff on the topic match; omit to use the server default"`
+	Tags        []string `json:"tags,omitempty" jsonschema:"only consolidate memories carrying ALL of these tags; omit to NOT filter by tag (gathers the whole topic cluster across every tag, NOT only untagged memories)"`
+	AnyTags     []string `json:"anyTags,omitempty" jsonschema:"only consolidate memories carrying AT LEAST ONE of these tags"`
+	ExcludeTags []string `json:"excludeTags,omitempty" jsonschema:"drop memories carrying ANY of these tags from the cluster"`
 }
 
 type ConsolidateOut struct {
@@ -739,6 +742,9 @@ func (d *deps) consolidate(ctx context.Context, _ *mcp.CallToolRequest, in Conso
 		Namespace:   in.Namespace,
 		Limit:       int32(in.Limit),
 		MaxDistance: in.MaxDistance,
+		Tags:        in.Tags,
+		AnyTags:     in.AnyTags,
+		ExcludeTags: in.ExcludeTags,
 	}))
 	if err != nil {
 		return nil, ConsolidateOut{}, err

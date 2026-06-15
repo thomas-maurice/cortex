@@ -99,6 +99,45 @@ func TestAssembleCluster(t *testing.T) {
 	})
 }
 
+// tagFilter re-applies the store's tag scope to neighbours fetched by id during
+// expansion. The behaviour that must be unambiguous is the EMPTY case: no tags
+// means "do not filter" (admit everything), NOT "only untagged memories" — a
+// regression there would silently shrink every unscoped consolidation. The
+// include/any/exclude semantics must also match the store so a tag-scoped
+// consolidation can't pull an out-of-scope memory into the supersede set.
+func TestTagFilter(t *testing.T) {
+	t.Run("no tags admits everything, including untagged and tagged", func(t *testing.T) {
+		keep := tagFilter(nil, nil, nil)
+		assert.True(t, keep(nil), "untagged memory is admitted when no filter is set")
+		assert.True(t, keep([]string{"anything"}), "tagged memory is admitted when no filter is set")
+	})
+
+	t.Run("include requires ALL listed tags", func(t *testing.T) {
+		keep := tagFilter([]string{"a", "b"}, nil, nil)
+		assert.True(t, keep([]string{"a", "b", "c"}))
+		assert.False(t, keep([]string{"a"}), "missing one required tag excludes it")
+		assert.False(t, keep(nil), "untagged is excluded once a required tag is set")
+	})
+
+	t.Run("anyOf requires at least one listed tag", func(t *testing.T) {
+		keep := tagFilter(nil, []string{"a", "b"}, nil)
+		assert.True(t, keep([]string{"b"}))
+		assert.False(t, keep([]string{"c"}))
+	})
+
+	t.Run("exclude drops a memory carrying any listed tag", func(t *testing.T) {
+		keep := tagFilter(nil, nil, []string{"secret"})
+		assert.False(t, keep([]string{"ok", "secret"}))
+		assert.True(t, keep([]string{"ok"}))
+	})
+
+	t.Run("filters combine (include AND not-exclude)", func(t *testing.T) {
+		keep := tagFilter([]string{"proj"}, nil, []string{"archived"})
+		assert.True(t, keep([]string{"proj"}))
+		assert.False(t, keep([]string{"proj", "archived"}), "exclude wins over include")
+	})
+}
+
 func clusterIDs(recs []memory.Record) []string {
 	ids := make([]string, 0, len(recs))
 	for _, r := range recs {

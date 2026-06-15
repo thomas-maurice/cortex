@@ -657,17 +657,31 @@ func (s *Service) Consolidate(ctx context.Context, req *connect.Request[cortexv1
 	if err != nil {
 		return nil, err
 	}
+	includeTags, anyTags, excludeTags := req.Msg.GetTags(), req.Msg.GetAnyTags(), req.Msg.GetExcludeTags()
 	seeds, err := s.store.Search(ctx, vec, store.SearchOpts{
 		Namespace:   resolveNamespace(req.Msg.GetNamespace(), s.cfg.DefaultNamespace),
 		Limit:       limit,
 		MaxDistance: req.Msg.GetMaxDistance(),
+		IncludeTags: includeTags,
+		AnyTags:     anyTags,
+		ExcludeTags: excludeTags,
 	})
 	if err != nil {
 		return nil, err
 	}
 
+	// Expanded neighbours (links/dup candidates) are fetched by id, so the store's
+	// tag filter never saw them — enforce the same scope here. This keeps the
+	// whole cluster (and therefore the supersede-able manifest) inside the
+	// requested tags: a tag-scoped consolidation must never pull an out-of-scope
+	// memory into the set a merge can then delete.
+	keep := tagFilter(includeTags, anyTags, excludeTags)
 	cluster := assembleCluster(seeds, limit, func(id string) (memory.Record, bool, error) {
-		return s.store.Get(ctx, id)
+		r, found, err := s.store.Get(ctx, id)
+		if err != nil || !found || !keep(r.Tags) {
+			return memory.Record{}, false, err
+		}
+		return r, true, nil
 	})
 
 	out := &cortexv1.ConsolidateResponse{
@@ -679,6 +693,45 @@ func (s *Service) Consolidate(ctx context.Context, req *connect.Request[cortexv1
 		out.Manifest = append(out.Manifest, r.ID)
 	}
 	return connect.NewResponse(out), nil
+}
+
+// tagFilter returns a predicate matching the store's tag semantics (buildWhere +
+// excludeTagged), for re-applying the same scope to records fetched by id during
+// cluster expansion: must carry every include tag, at least one anyOf tag (when
+// any are given), and none of the exclude tags. With no tags it admits everything.
+func tagFilter(include, anyOf, exclude []string) func([]string) bool {
+	if len(include) == 0 && len(anyOf) == 0 && len(exclude) == 0 {
+		return func([]string) bool { return true }
+	}
+	return func(tags []string) bool {
+		have := make(map[string]bool, len(tags))
+		for _, t := range tags {
+			have[t] = true
+		}
+		for _, t := range include {
+			if !have[t] {
+				return false
+			}
+		}
+		for _, t := range exclude {
+			if have[t] {
+				return false
+			}
+		}
+		if len(anyOf) > 0 {
+			matched := false
+			for _, t := range anyOf {
+				if have[t] {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				return false
+			}
+		}
+		return true
+	}
 }
 
 // assembleCluster builds the consolidation cluster: the seed hits (most relevant

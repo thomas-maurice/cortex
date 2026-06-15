@@ -2679,11 +2679,18 @@ func (x *DismissDuplicateResponse) GetNotDuplicateOf() []string {
 }
 
 type ConsolidateRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Topic         string                 `protobuf:"bytes,1,opt,name=topic,proto3" json:"topic,omitempty"`                                  // natural-language description of what to consolidate
-	Namespace     string                 `protobuf:"bytes,2,opt,name=namespace,proto3" json:"namespace,omitempty"`                          // "" = server default, "*" = all namespaces
-	Limit         int32                  `protobuf:"varint,3,opt,name=limit,proto3" json:"limit,omitempty"`                                 // max memories to gather into the cluster (default 25)
-	MaxDistance   float32                `protobuf:"fixed32,4,opt,name=max_distance,json=maxDistance,proto3" json:"max_distance,omitempty"` // relevance cutoff on the topic match; <=0 = server default
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	Topic       string                 `protobuf:"bytes,1,opt,name=topic,proto3" json:"topic,omitempty"`                                  // natural-language description of what to consolidate
+	Namespace   string                 `protobuf:"bytes,2,opt,name=namespace,proto3" json:"namespace,omitempty"`                          // "" = server default, "*" = all namespaces
+	Limit       int32                  `protobuf:"varint,3,opt,name=limit,proto3" json:"limit,omitempty"`                                 // max memories to gather into the cluster (default 25)
+	MaxDistance float32                `protobuf:"fixed32,4,opt,name=max_distance,json=maxDistance,proto3" json:"max_distance,omitempty"` // relevance cutoff on the topic match; <=0 = server default
+	// Tag filters scope which memories form the cluster. When ALL of tags,
+	// any_tags and exclude_tags are empty (the default) there is NO tag filtering:
+	// the whole topical cluster in the namespace is gathered, across every tag —
+	// empty does NOT mean "only untagged memories".
+	Tags          []string `protobuf:"bytes,5,rep,name=tags,proto3" json:"tags,omitempty"`                                  // cluster member must carry ALL of these
+	ExcludeTags   []string `protobuf:"bytes,6,rep,name=exclude_tags,json=excludeTags,proto3" json:"exclude_tags,omitempty"` // drop members carrying ANY of these
+	AnyTags       []string `protobuf:"bytes,7,rep,name=any_tags,json=anyTags,proto3" json:"any_tags,omitempty"`             // cluster member must carry AT LEAST ONE of these
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2744,6 +2751,27 @@ func (x *ConsolidateRequest) GetMaxDistance() float32 {
 		return x.MaxDistance
 	}
 	return 0
+}
+
+func (x *ConsolidateRequest) GetTags() []string {
+	if x != nil {
+		return x.Tags
+	}
+	return nil
+}
+
+func (x *ConsolidateRequest) GetExcludeTags() []string {
+	if x != nil {
+		return x.ExcludeTags
+	}
+	return nil
+}
+
+func (x *ConsolidateRequest) GetAnyTags() []string {
+	if x != nil {
+		return x.AnyTags
+	}
+	return nil
 }
 
 type ConsolidateResponse struct {
@@ -2996,12 +3024,15 @@ const file_cortex_v1_cortex_proto_rawDesc = "" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\ttarget_id\x18\x02 \x01(\tR\btargetId\"D\n" +
 	"\x18DismissDuplicateResponse\x12(\n" +
-	"\x10not_duplicate_of\x18\x01 \x03(\tR\x0enotDuplicateOf\"\x81\x01\n" +
+	"\x10not_duplicate_of\x18\x01 \x03(\tR\x0enotDuplicateOf\"\xd3\x01\n" +
 	"\x12ConsolidateRequest\x12\x14\n" +
 	"\x05topic\x18\x01 \x01(\tR\x05topic\x12\x1c\n" +
 	"\tnamespace\x18\x02 \x01(\tR\tnamespace\x12\x14\n" +
 	"\x05limit\x18\x03 \x01(\x05R\x05limit\x12!\n" +
-	"\fmax_distance\x18\x04 \x01(\x02R\vmaxDistance\"^\n" +
+	"\fmax_distance\x18\x04 \x01(\x02R\vmaxDistance\x12\x12\n" +
+	"\x04tags\x18\x05 \x03(\tR\x04tags\x12!\n" +
+	"\fexclude_tags\x18\x06 \x03(\tR\vexcludeTags\x12\x19\n" +
+	"\bany_tags\x18\a \x03(\tR\aanyTags\"^\n" +
 	"\x13ConsolidateResponse\x12+\n" +
 	"\acluster\x18\x01 \x03(\v2\x11.cortex.v1.MemoryR\acluster\x12\x1a\n" +
 	"\bmanifest\x18\x02 \x03(\tR\bmanifest*o\n" +

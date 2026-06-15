@@ -782,13 +782,16 @@ func consolidateCmd() *cobra.Command {
 	var namespace string
 	var limit int
 	var maxDistance float32
+	var tags, anyTags, excludeTags []string
 	cmd := &cobra.Command{
 		Use:   "consolidate <topic>",
 		Short: "Gather the cluster of memories about a topic, for review/merging",
 		Long: "Print the related memories about a topic — the vector matches plus their linked and likely-\n" +
 			"duplicate neighbours — and the manifest of their ids. This is the read-only gather step; merging is\n" +
 			"done by an LLM (the MCP cortex_consolidate tool), which saves the compiled memories with\n" +
-			"--supersedes set to the ids they replace. Nothing is written or deleted by this command.",
+			"--supersedes set to the ids they replace. Nothing is written or deleted by this command.\n\n" +
+			"Tag flags scope the cluster. With no tag flags there is NO tag filtering — the whole topic cluster\n" +
+			"in the namespace is gathered, across every tag (this does NOT mean only untagged memories).",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			topic := strings.TrimSpace(args[0])
@@ -800,6 +803,9 @@ func consolidateCmd() *cobra.Command {
 				Namespace:   namespace,
 				Limit:       int32(limit),
 				MaxDistance: maxDistance,
+				Tags:        tags,
+				AnyTags:     anyTags,
+				ExcludeTags: excludeTags,
 			}))
 			if err != nil {
 				return err
@@ -819,6 +825,9 @@ func consolidateCmd() *cobra.Command {
 	cmd.Flags().StringVarP(&namespace, "namespace", "n", "", `namespace filter; "*" for all namespaces`)
 	cmd.Flags().IntVarP(&limit, "limit", "l", 25, "max memories to gather into the cluster")
 	cmd.Flags().Float32VarP(&maxDistance, "max-distance", "d", 0, "relevance cutoff on the topic match (<=0 = server default)")
+	cmd.Flags().StringSliceVarP(&tags, "tag", "t", nil, "only consolidate memories with all of these tags (repeatable; omit = no tag filter)")
+	cmd.Flags().StringSliceVarP(&anyTags, "any-tag", "T", nil, "only consolidate memories with at least one of these tags (repeatable)")
+	cmd.Flags().StringSliceVarP(&excludeTags, "exclude-tag", "x", nil, "drop memories with this tag from the cluster (repeatable)")
 	return cmd
 }
 

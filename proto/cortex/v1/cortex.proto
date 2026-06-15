@@ -365,6 +365,13 @@ message ConsolidateRequest {
   string namespace = 2;    // "" = server default, "*" = all namespaces
   int32 limit = 3;         // max memories to gather into the cluster (default 25)
   float max_distance = 4;  // relevance cutoff on the topic match; <=0 = server default
+  // Tag filters scope which memories form the cluster. When ALL of tags,
+  // any_tags and exclude_tags are empty (the default) there is NO tag filtering:
+  // the whole topical cluster in the namespace is gathered, across every tag —
+  // empty does NOT mean "only untagged memories".
+  repeated string tags = 5;         // cluster member must carry ALL of these
+  repeated string exclude_tags = 6; // drop members carrying ANY of these
+  repeated string any_tags = 7;     // cluster member must carry AT LEAST ONE of these
 }
 
 message ConsolidateResponse {
