@@ -242,6 +242,25 @@ You have a persistent memory via the `cortex` MCP server. Use it actively:
   IDs. This builds a navigable knowledge graph; links are bidirectional and durable.
 ```
 
+### `consolidate-memories` skill (bundled)
+
+This repo ships a Claude Code skill at
+[`.claude/skills/consolidate-memories/`](.claude/skills/consolidate-memories/SKILL.md)
+that runs a one-shot **memory consolidation pass** over the current repository. It:
+
+- gathers every source of knowledge about the repo — file auto-memory
+  (`MEMORY.md`), existing Cortex memories, project docs, and the code itself;
+- reconciles it against the current state, discarding anything stale;
+- splits it into discrete, self-contained memories grouped by topic;
+- saves them to Cortex (auto-derived namespace) and **links** related ones.
+
+Invoke it with `/consolidate-memories`, or just ask Claude to "consolidate
+memories for this repo" / "rebuild my Cortex memories". The skill is committed to
+the repo, so anyone who clones it gets the same workflow. To add your own, drop a
+`SKILL.md` under `.claude/skills/<name>/` — that directory is git-versioned (see
+`.gitignore`), while the rest of `.claude/` (local settings, transcripts) stays
+untracked.
+
 ## Tools
 
 The MCP server exposes these tools to Claude:
