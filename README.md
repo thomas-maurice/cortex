@@ -240,7 +240,16 @@ every project) so Claude treats the second brain as a reflex, not an afterthough
 You have a persistent memory via the `cortex` MCP server. Use it actively:
 
 - **Recall first.** At the start of a task, or whenever I reference past work,
-  preferences, or decisions, call `cortex_memory_search` before answering.
+  preferences, or decisions, call `cortex_memory_search` before answering. This
+  applies even when the task looks like writing a doc, summary, or notes: a
+  request to "summarise", "write up", "remember", or "explain what you learned"
+  about a repo/system/decision IS a memory write — route it to cortex, and only
+  create a repo file (`SUMMARY.md`, `docs/`) when explicitly asked for a tracked
+  file. When both apply, cortex is the source of truth and the file is a copy.
+- **Transient failures get one retry, not a silent skip.** If a cortex call
+  fails on network/DNS (e.g. the VPN is down), retry once before continuing. If
+  it still fails, say so explicitly and note the memory was not saved — never let
+  a save or search silently vanish.
 - **Save proactively and often.** Whenever I state a fact, preference, decision,
   plan, or noteworthy context — or when we reach a conclusion worth keeping —
   call `cortex_memory_save` without being asked. Saving is cheap; err on the side of more.
