@@ -87,6 +87,16 @@ services:
       OLLAMA_MODEL: qwen3-embedding:0.6b
       WEAVIATE_HOST: weaviate:8080
       WEAVIATE_GRPC_HOST: weaviate:50051
+      # "Living memory": usage-aware re-ranking + hit reinforcement. RERANK_WEIGHT
+      # is the usage share vs relevance — 0 disables the whole feature (no
+      # re-ordering, no reinforcement writes); 0.3 makes it visible while relevance
+      # still leads. RERANK_HALFLIFE_DAYS is the recency half-life; REINFORCE_TOPK
+      # is how many top hits each AGENT search counts as a recall (the UI/CLI never
+      # count). The accessCount/lastAccessedAt schema fields are added automatically
+      # on server boot (additive, no rebuild, existing data preserved).
+      RERANK_WEIGHT: '0.3'
+      RERANK_HALFLIFE_DAYS: '30'
+      REINFORCE_TOPK: '1'
       DEFAULT_NAMESPACE: global
       MEMORY_SOURCE: cortex
       CORTEX_AUTH_TOKEN: changeme-generate-a-long-random-token
