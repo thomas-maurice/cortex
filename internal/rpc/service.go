@@ -193,8 +193,11 @@ func (s *Service) Search(ctx context.Context, req *connect.Request[cortexv1.Sear
 
 	// Living memory: strengthen the best match(es) this query surfaced so they
 	// rank higher next time. Fire-and-forget — reinforcement must never add
-	// latency to or fail the search — and gated on the feature being enabled.
-	if s.cfg.RerankWeight > 0 {
+	// latency to or fail the search — and gated on the feature being enabled AND
+	// the caller wanting to count (the UI and the CLI-by-default set NoReinforce
+	// so human browsing does not inflate the usage signal; the MCP agent leaves
+	// it false so genuine recalls count).
+	if s.cfg.RerankWeight > 0 && !req.Msg.GetNoReinforce() {
 		s.reinforce(hits)
 	}
 

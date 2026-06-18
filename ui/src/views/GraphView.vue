@@ -82,6 +82,14 @@
               · {{ selected.dupCandidates.length }} duplicate candidate(s)
             </span>
           </div>
+          <div v-if="selected.accessCount || selected.lastAccessedAt" class="small text-muted mb-2 d-flex flex-wrap gap-2 align-items-center">
+            <span v-if="selected.accessCount" class="badge bg-warning text-dark" title="times the agent recalled this memory (living memory)">
+              <font-awesome-icon :icon="['fas', 'fire']" class="me-1" />{{ selected.accessCount }} recall(s)
+            </span>
+            <span v-if="selected.lastAccessedAt" title="when this memory was last recalled">
+              <font-awesome-icon :icon="['fas', 'clock-rotate-left']" class="me-1" />{{ fmtDate(selected.lastAccessedAt) }}
+            </span>
+          </div>
           <button class="btn btn-outline-primary btn-sm w-100 mb-2" @click="expandSemantic('m:' + selected.id)">
             <font-awesome-icon :icon="['fas', 'magnifying-glass']" class="me-1" />Find similar
           </button>
@@ -145,6 +153,15 @@ function handleError(e) {
     return
   }
   error.value = e.message || 'Request failed'
+}
+
+// fmtDate renders a protobuf Timestamp for display, empty on any failure.
+function fmtDate(ts) {
+  try {
+    return ts.toDate().toLocaleString()
+  } catch {
+    return ''
+  }
 }
 
 function memNode(m) {

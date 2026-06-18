@@ -162,6 +162,12 @@ message SearchRequest {
   float max_distance = 6;           // relevance cutoff; <=0 = server default
   int32 autocut = 7;                // Weaviate autocut jumps; <=0 disables
   repeated string any_tags = 8;     // memory must carry AT LEAST ONE of these
+  // no_reinforce, when true, suppresses the "living memory" reinforcement this
+  // search would otherwise apply to its top hit(s). Non-agent callers (the web
+  // UI's browse/explore, the CLI by default) set it so human browsing does not
+  // inflate the usage signal ranking depends on; the agent (MCP) leaves it false
+  // so genuine recalls still count. No effect unless RERANK_WEIGHT>0 server-side.
+  bool no_reinforce = 9;
 }
 
 message SearchSimilarRequest {

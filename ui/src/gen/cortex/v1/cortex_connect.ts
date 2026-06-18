@@ -3,7 +3,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { DeadRequest, DeadResponse, DeleteRequest, DeleteResponse, DismissDuplicateRequest, DismissDuplicateResponse, DoctorRequest, DoctorResponse, IndexQueueRequest, IndexQueueResponse, LinkRequest, LinkResponse, ListDuplicateCandidatesRequest, ListDuplicateCandidatesResponse, ListRequest, ListResponse, ListSummariesRequest, ListSummariesResponse, PullModelRequest, PullModelResponse, RecallSessionRequest, RecallSessionResponse, ReindexRequest, ReindexResponse, SaveRequest, SaveResponse, SearchRequest, SearchResponse, SearchSimilarRequest, StatusRequest, StatusResponse, SummarizeSessionRequest, SummarizeSessionResponse, UnlinkRequest, UnlinkResponse, UpdateMemoryRequest, UpdateMemoryResponse } from "./cortex_pb.js";
+import { ConsolidateRequest, ConsolidateResponse, DeadRequest, DeadResponse, DeleteRequest, DeleteResponse, DismissDuplicateRequest, DismissDuplicateResponse, DoctorRequest, DoctorResponse, IndexQueueRequest, IndexQueueResponse, LinkRequest, LinkResponse, ListDuplicateCandidatesRequest, ListDuplicateCandidatesResponse, ListRequest, ListResponse, ListSummariesRequest, ListSummariesResponse, PullModelRequest, PullModelResponse, RecallSessionRequest, RecallSessionResponse, ReindexRequest, ReindexResponse, RestoreMemoriesRequest, RestoreMemoriesResponse, SaveRequest, SaveResponse, SearchRequest, SearchResponse, SearchSimilarRequest, StatusRequest, StatusResponse, SummarizeSessionRequest, SummarizeSessionResponse, UnlinkRequest, UnlinkResponse, UpdateMemoryRequest, UpdateMemoryResponse } from "./cortex_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -233,6 +233,40 @@ export const MemoryService = {
       name: "DismissDuplicate",
       I: DismissDuplicateRequest,
       O: DismissDuplicateResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * Consolidate gathers the cluster of memories about a topic — the vector
+     * matches plus their linked and duplicate-candidate neighbours — so a client
+     * (the LLM) can merge them into fewer, richer memories. It is READ-ONLY: it
+     * never writes or deletes. The merge is committed by saving the compiled
+     * memories with SaveRequest.supersedes set to the obsolete ids from the
+     * returned manifest; the worker then deletes those sources once the
+     * replacement is durably indexed.
+     *
+     * @generated from rpc cortex.v1.MemoryService.Consolidate
+     */
+    consolidate: {
+      name: "Consolidate",
+      I: ConsolidateRequest,
+      O: ConsolidateResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * RestoreMemories re-ingests memories from a dump (e.g. `cortex export`) by
+     * republishing each onto the SAME NATS index queue a normal save uses — the
+     * worker then re-embeds and upserts them. It is the import half of dump/restore
+     * (move a store between deployments). Vectors are NOT carried; they are
+     * recomputed by the target worker's current model, so a restore is safe across
+     * model changes. Ids, namespace, tags, createdAt, links and not-duplicate
+     * decisions are preserved; an existing id is overwritten (upsert).
+     *
+     * @generated from rpc cortex.v1.MemoryService.RestoreMemories
+     */
+    restoreMemories: {
+      name: "RestoreMemories",
+      I: RestoreMemoriesRequest,
+      O: RestoreMemoriesResponse,
       kind: MethodKind.Unary,
     },
   }

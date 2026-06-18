@@ -87,6 +87,12 @@
           </span>
           <span v-if="m.createdAt">{{ formatDate(m.createdAt) }}</span>
           <span v-if="m._distance !== undefined">dist: {{ m._distance.toFixed(3) }}</span>
+          <span v-if="m.accessCount" class="badge bg-warning text-dark" title="times the agent recalled this memory (living memory)">
+            <font-awesome-icon :icon="['fas', 'fire']" class="me-1" />{{ m.accessCount }}
+          </span>
+          <span v-if="m.lastAccessedAt" title="when this memory was last recalled">
+            <font-awesome-icon :icon="['fas', 'clock-rotate-left']" class="me-1" />{{ formatDate(m.lastAccessedAt) }}
+          </span>
         </div>
       </div>
     </div>
@@ -141,7 +147,9 @@ async function reload() {
   error.value = ''
   try {
     if (query.value.trim()) {
-      const res = await memoryClient.search({ query: query.value, namespace: namespace.value, limit: 50 })
+      // noReinforce: browsing in the UI must not count as a recall — only the
+      // agent's (MCP) searches feed the living-memory usage signal.
+      const res = await memoryClient.search({ query: query.value, namespace: namespace.value, limit: 50, noReinforce: true })
       memories.value = res.hits.map((h) => ({ ...h.memory, _distance: h.distance }))
     } else {
       const res = await memoryClient.list({ namespace: namespace.value, limit: 50 })

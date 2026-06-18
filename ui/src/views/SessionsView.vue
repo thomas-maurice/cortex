@@ -41,10 +41,12 @@
             </button>
           </div>
         </template>
-        <div class="small text-muted d-flex flex-wrap gap-2 mt-1">
+        <div class="small text-muted d-flex flex-wrap gap-2 mt-1 align-items-center">
           <span class="badge bg-secondary"><font-awesome-icon :icon="['fas', 'layer-group']" class="me-1" />{{ s.namespace }}</span>
-          <span class="font-monospace">{{ s.conversationId }}</span>
-          <span v-if="s.updatedAt">updated {{ formatTimestamp(s.updatedAt) }}</span>
+          <span class="font-monospace"><font-awesome-icon :icon="['fas', 'comments']" class="me-1" />{{ s.conversationId }}</span>
+          <span v-if="s.source">src: {{ s.source }}</span>
+          <span v-if="s.createdAt">created {{ formatTimestamp(s.createdAt) }}</span>
+          <span v-if="s.updatedAt"><font-awesome-icon :icon="['fas', 'clock-rotate-left']" class="me-1" />updated {{ formatTimestamp(s.updatedAt) }}</span>
         </div>
       </div>
     </div>

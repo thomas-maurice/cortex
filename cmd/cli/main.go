@@ -372,6 +372,7 @@ func searchCmd() *cobra.Command {
 	var maxDistance float32
 	var autocut int
 	var tags, anyTags, excludeTags []string
+	var reinforce bool
 	cmd := &cobra.Command{
 		Use:   "search <query>",
 		Short: "Semantic search over stored memories",
@@ -390,6 +391,10 @@ func searchCmd() *cobra.Command {
 				Tags:        tags,
 				AnyTags:     anyTags,
 				ExcludeTags: excludeTags,
+				// A CLI search is an ops/inspection action, not the agent recalling
+				// a memory to use it, so by default it does NOT reinforce (count as a
+				// recall); --reinforce opts in. No effect unless RERANK_WEIGHT>0.
+				NoReinforce: !reinforce,
 			}))
 			if err != nil {
 				return err
@@ -413,6 +418,7 @@ func searchCmd() *cobra.Command {
 	cmd.Flags().StringSliceVarP(&tags, "tag", "t", nil, "require this tag (repeatable; memory must have all)")
 	cmd.Flags().StringSliceVarP(&anyTags, "any-tag", "T", nil, "require at least one of these tags (repeatable)")
 	cmd.Flags().StringSliceVarP(&excludeTags, "exclude-tag", "x", nil, "drop memories with this tag (repeatable)")
+	cmd.Flags().BoolVar(&reinforce, "reinforce", false, `count this search as a recall (reinforces top hits when "living memory" is on); off by default for CLI`)
 	return cmd
 }
 

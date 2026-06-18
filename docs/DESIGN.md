@@ -151,7 +151,12 @@ never. "Living memory" makes recall *usage-aware*, modelled on spaced repetition
   `lastAccessedAt`. When a search returns hits, the server asynchronously bumps
   the top `REINFORCE_TOPK` (default 1) — fire-and-forget, off the search path,
   best-effort (a failed bump only weakens a ranking signal, never loses data),
-  and serialised so concurrent searches can't lose an increment.
+  and serialised so concurrent searches can't lose an increment. Only the
+  **agent's recalls count**: the `SearchRequest.no_reinforce` flag suppresses the
+  bump, and the web UI (browse/explore) and the CLI (`cortex search`, unless
+  `--reinforce`) set it, so human browsing doesn't inflate the usage signal. The
+  MCP client leaves it false. `accessCount`/`lastAccessedAt` are exposed
+  read-only in the UI (Memories list + graph node panel).
 - **Decay + re-rank (read side).** When `RERANK_WEIGHT`>0, `Search` over-fetches a
   wider candidate pool, applies the relevance cutoff **first** (so `maxDistance`
   semantics and each hit's `Distance` are untouched), then re-orders the

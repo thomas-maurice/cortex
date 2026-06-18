@@ -58,8 +58,26 @@
             <button class="btn-close btn-sm" @click="deselect"></button>
           </div>
           <div class="small mb-2 markdown-body" v-html="renderMarkdown(selected.text)"></div>
-          <div class="small text-muted">
+          <div v-if="(selected.tags || []).length" class="small text-muted mb-2">
             <span v-for="t in selected.tags" :key="t" class="badge bg-info text-dark me-1">#{{ t }}</span>
+          </div>
+          <div v-if="selected.conversationId" class="small text-muted mb-2">
+            <font-awesome-icon :icon="['fas', 'comments']" class="me-1" />
+            <span class="font-monospace">{{ selected.conversationId }}</span>
+          </div>
+          <div class="small text-muted mb-2">
+            {{ (selected.linkedIds || []).length }} explicit link(s)
+            <span v-if="(selected.dupCandidates || []).length" style="color: #fd7e14">
+              · {{ selected.dupCandidates.length }} duplicate candidate(s)
+            </span>
+          </div>
+          <div v-if="selected.accessCount || selected.lastAccessedAt" class="small text-muted d-flex flex-wrap gap-2 align-items-center">
+            <span v-if="selected.accessCount" class="badge bg-warning text-dark" title="times the agent recalled this memory (living memory)">
+              <font-awesome-icon :icon="['fas', 'fire']" class="me-1" />{{ selected.accessCount }} recall(s)
+            </span>
+            <span v-if="selected.lastAccessedAt" title="when this memory was last recalled">
+              <font-awesome-icon :icon="['fas', 'clock-rotate-left']" class="me-1" />{{ fmtDate(selected.lastAccessedAt) }}
+            </span>
           </div>
         </div>
       </div>
@@ -114,6 +132,15 @@ function handleError(e) {
   error.value = e.message || 'Request failed'
 }
 
+// fmtDate renders a protobuf Timestamp for display, empty on any failure.
+function fmtDate(ts) {
+  try {
+    return ts.toDate().toLocaleString()
+  } catch {
+    return ''
+  }
+}
+
 // Map a 0..~1 distance to a node size (closer = bigger) and edge length
 // (closer = shorter, so it sits nearer the centre).
 function sizeFor(distance) {
@@ -132,7 +159,8 @@ async function run() {
   notice.value = ''
   selected.value = null
   try {
-    const res = await memoryClient.search({ query: q, namespace: namespace.value, limit: limit.value, maxDistance: cutoff.value })
+    // noReinforce: exploring is not a recall — never inflate the usage signal.
+    const res = await memoryClient.search({ query: q, namespace: namespace.value, limit: limit.value, maxDistance: cutoff.value, noReinforce: true })
     if (my !== reqId) return // a newer query superseded this one
     searched.value = true
     resultCount.value = res.hits.length

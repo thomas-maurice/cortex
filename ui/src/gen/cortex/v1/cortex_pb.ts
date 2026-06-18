@@ -122,6 +122,25 @@ export class Memory extends Message<Memory> {
    */
   notDuplicateOf: string[] = [];
 
+  /**
+   * access_count is how many times this memory has surfaced as a top search hit
+   * and been reinforced (the "living memory" usage signal). It only accrues when
+   * reranking is enabled (RERANK_WEIGHT>0); 0 otherwise. Metadata, never embedded.
+   *
+   * @generated from field: int32 access_count = 13;
+   */
+  accessCount = 0;
+
+  /**
+   * last_accessed_at is when this memory was last reinforced by a search hit.
+   * Together with access_count it drives the decay/reinforcement re-ranking:
+   * recently-used memories float up, untouched ones fade. Unset until first
+   * reinforced (recency then falls back to created_at).
+   *
+   * @generated from field: google.protobuf.Timestamp last_accessed_at = 14;
+   */
+  lastAccessedAt?: Timestamp;
+
   constructor(data?: PartialMessage<Memory>) {
     super();
     proto3.util.initPartial(data, this);
@@ -142,6 +161,8 @@ export class Memory extends Message<Memory> {
     { no: 10, name: "linked_ids", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
     { no: 11, name: "dup_candidates", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
     { no: 12, name: "not_duplicate_of", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
+    { no: 13, name: "access_count", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 14, name: "last_accessed_at", kind: "message", T: Timestamp },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): Memory {
@@ -207,6 +228,18 @@ export class SaveRequest extends Message<SaveRequest> {
    */
   linkTo: string[] = [];
 
+  /**
+   * supersedes carries IDs of EXISTING memories this new memory replaces (e.g.
+   * the sources gathered by Consolidate). The worker deletes each of them ONLY
+   * after this memory is durably upserted, so consolidation never opens a window
+   * where the merged content is lost if indexing fails. Best-effort, like
+   * link_to: a missing/already-deleted source is skipped (logged), never fatal.
+   * One-shot, not persisted as a property.
+   *
+   * @generated from field: repeated string supersedes = 7;
+   */
+  supersedes: string[] = [];
+
   constructor(data?: PartialMessage<SaveRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -221,6 +254,7 @@ export class SaveRequest extends Message<SaveRequest> {
     { no: 4, name: "source", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 5, name: "conversation_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 6, name: "link_to", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
+    { no: 7, name: "supersedes", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): SaveRequest {
@@ -460,6 +494,17 @@ export class SearchRequest extends Message<SearchRequest> {
    */
   anyTags: string[] = [];
 
+  /**
+   * no_reinforce, when true, suppresses the "living memory" reinforcement this
+   * search would otherwise apply to its top hit(s). Non-agent callers (the web
+   * UI's browse/explore, the CLI by default) set it so human browsing does not
+   * inflate the usage signal ranking depends on; the agent (MCP) leaves it false
+   * so genuine recalls still count. No effect unless RERANK_WEIGHT>0 server-side.
+   *
+   * @generated from field: bool no_reinforce = 9;
+   */
+  noReinforce = false;
+
   constructor(data?: PartialMessage<SearchRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -476,6 +521,7 @@ export class SearchRequest extends Message<SearchRequest> {
     { no: 6, name: "max_distance", kind: "scalar", T: 2 /* ScalarType.FLOAT */ },
     { no: 7, name: "autocut", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
     { no: 8, name: "any_tags", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
+    { no: 9, name: "no_reinforce", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): SearchRequest {
@@ -2317,6 +2363,230 @@ export class DismissDuplicateResponse extends Message<DismissDuplicateResponse> 
 
   static equals(a: DismissDuplicateResponse | PlainMessage<DismissDuplicateResponse> | undefined, b: DismissDuplicateResponse | PlainMessage<DismissDuplicateResponse> | undefined): boolean {
     return proto3.util.equals(DismissDuplicateResponse, a, b);
+  }
+}
+
+/**
+ * @generated from message cortex.v1.ConsolidateRequest
+ */
+export class ConsolidateRequest extends Message<ConsolidateRequest> {
+  /**
+   * natural-language description of what to consolidate
+   *
+   * @generated from field: string topic = 1;
+   */
+  topic = "";
+
+  /**
+   * "" = server default, "*" = all namespaces
+   *
+   * @generated from field: string namespace = 2;
+   */
+  namespace = "";
+
+  /**
+   * max memories to gather into the cluster (default 25)
+   *
+   * @generated from field: int32 limit = 3;
+   */
+  limit = 0;
+
+  /**
+   * relevance cutoff on the topic match; <=0 = server default
+   *
+   * @generated from field: float max_distance = 4;
+   */
+  maxDistance = 0;
+
+  /**
+   * Tag filters scope which memories form the cluster. When ALL of tags,
+   * any_tags and exclude_tags are empty (the default) there is NO tag filtering:
+   * the whole topical cluster in the namespace is gathered, across every tag —
+   * empty does NOT mean "only untagged memories".
+   *
+   * cluster member must carry ALL of these
+   *
+   * @generated from field: repeated string tags = 5;
+   */
+  tags: string[] = [];
+
+  /**
+   * drop members carrying ANY of these
+   *
+   * @generated from field: repeated string exclude_tags = 6;
+   */
+  excludeTags: string[] = [];
+
+  /**
+   * cluster member must carry AT LEAST ONE of these
+   *
+   * @generated from field: repeated string any_tags = 7;
+   */
+  anyTags: string[] = [];
+
+  constructor(data?: PartialMessage<ConsolidateRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "cortex.v1.ConsolidateRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "topic", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "namespace", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "limit", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 4, name: "max_distance", kind: "scalar", T: 2 /* ScalarType.FLOAT */ },
+    { no: 5, name: "tags", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
+    { no: 6, name: "exclude_tags", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
+    { no: 7, name: "any_tags", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ConsolidateRequest {
+    return new ConsolidateRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ConsolidateRequest {
+    return new ConsolidateRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ConsolidateRequest {
+    return new ConsolidateRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ConsolidateRequest | PlainMessage<ConsolidateRequest> | undefined, b: ConsolidateRequest | PlainMessage<ConsolidateRequest> | undefined): boolean {
+    return proto3.util.equals(ConsolidateRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message cortex.v1.RestoreMemoriesRequest
+ */
+export class RestoreMemoriesRequest extends Message<RestoreMemoriesRequest> {
+  /**
+   * memories to (re)ingest. Each is published to the same NATS index queue a
+   * save uses, so the worker re-embeds and upserts it. Vectors on these objects
+   * (if any) are ignored — recomputed by the worker. A record with empty text is
+   * skipped (nothing to embed); a missing id is assigned one.
+   *
+   * @generated from field: repeated cortex.v1.Memory memories = 1;
+   */
+  memories: Memory[] = [];
+
+  constructor(data?: PartialMessage<RestoreMemoriesRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "cortex.v1.RestoreMemoriesRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "memories", kind: "message", T: Memory, repeated: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): RestoreMemoriesRequest {
+    return new RestoreMemoriesRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): RestoreMemoriesRequest {
+    return new RestoreMemoriesRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): RestoreMemoriesRequest {
+    return new RestoreMemoriesRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: RestoreMemoriesRequest | PlainMessage<RestoreMemoriesRequest> | undefined, b: RestoreMemoriesRequest | PlainMessage<RestoreMemoriesRequest> | undefined): boolean {
+    return proto3.util.equals(RestoreMemoriesRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message cortex.v1.RestoreMemoriesResponse
+ */
+export class RestoreMemoriesResponse extends Message<RestoreMemoriesResponse> {
+  /**
+   * how many memories were accepted onto the index queue
+   *
+   * @generated from field: int32 queued = 1;
+   */
+  queued = 0;
+
+  constructor(data?: PartialMessage<RestoreMemoriesResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "cortex.v1.RestoreMemoriesResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "queued", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): RestoreMemoriesResponse {
+    return new RestoreMemoriesResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): RestoreMemoriesResponse {
+    return new RestoreMemoriesResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): RestoreMemoriesResponse {
+    return new RestoreMemoriesResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: RestoreMemoriesResponse | PlainMessage<RestoreMemoriesResponse> | undefined, b: RestoreMemoriesResponse | PlainMessage<RestoreMemoriesResponse> | undefined): boolean {
+    return proto3.util.equals(RestoreMemoriesResponse, a, b);
+  }
+}
+
+/**
+ * @generated from message cortex.v1.ConsolidateResponse
+ */
+export class ConsolidateResponse extends Message<ConsolidateResponse> {
+  /**
+   * cluster is the gathered memories: the topic's vector matches first (most
+   * relevant), then their linked and duplicate-candidate neighbours, deduped and
+   * capped at limit. Full memories (text included) so the client can merge them
+   * without a second lookup.
+   *
+   * @generated from field: repeated cortex.v1.Memory cluster = 1;
+   */
+  cluster: Memory[] = [];
+
+  /**
+   * manifest is the ids in cluster, the exact set eligible to be superseded. A
+   * compiled memory's SaveRequest.supersedes should only reference ids from here.
+   *
+   * @generated from field: repeated string manifest = 2;
+   */
+  manifest: string[] = [];
+
+  constructor(data?: PartialMessage<ConsolidateResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "cortex.v1.ConsolidateResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "cluster", kind: "message", T: Memory, repeated: true },
+    { no: 2, name: "manifest", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ConsolidateResponse {
+    return new ConsolidateResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ConsolidateResponse {
+    return new ConsolidateResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ConsolidateResponse {
+    return new ConsolidateResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ConsolidateResponse | PlainMessage<ConsolidateResponse> | undefined, b: ConsolidateResponse | PlainMessage<ConsolidateResponse> | undefined): boolean {
+    return proto3.util.equals(ConsolidateResponse, a, b);
   }
 }
 

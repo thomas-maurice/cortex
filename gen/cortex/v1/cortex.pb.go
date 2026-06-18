@@ -527,15 +527,21 @@ func (x *UpdateMemoryResponse) GetStatus() string {
 }
 
 type SearchRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Query         string                 `protobuf:"bytes,1,opt,name=query,proto3" json:"query,omitempty"`
-	Namespace     string                 `protobuf:"bytes,2,opt,name=namespace,proto3" json:"namespace,omitempty"`                          // "" = server default, "*" = all namespaces
-	Limit         int32                  `protobuf:"varint,3,opt,name=limit,proto3" json:"limit,omitempty"`                                 // default 5
-	Tags          []string               `protobuf:"bytes,4,rep,name=tags,proto3" json:"tags,omitempty"`                                    // memory must carry ALL of these
-	ExcludeTags   []string               `protobuf:"bytes,5,rep,name=exclude_tags,json=excludeTags,proto3" json:"exclude_tags,omitempty"`   // drop memories carrying ANY of these
-	MaxDistance   float32                `protobuf:"fixed32,6,opt,name=max_distance,json=maxDistance,proto3" json:"max_distance,omitempty"` // relevance cutoff; <=0 = server default
-	Autocut       int32                  `protobuf:"varint,7,opt,name=autocut,proto3" json:"autocut,omitempty"`                             // Weaviate autocut jumps; <=0 disables
-	AnyTags       []string               `protobuf:"bytes,8,rep,name=any_tags,json=anyTags,proto3" json:"any_tags,omitempty"`               // memory must carry AT LEAST ONE of these
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	Query       string                 `protobuf:"bytes,1,opt,name=query,proto3" json:"query,omitempty"`
+	Namespace   string                 `protobuf:"bytes,2,opt,name=namespace,proto3" json:"namespace,omitempty"`                          // "" = server default, "*" = all namespaces
+	Limit       int32                  `protobuf:"varint,3,opt,name=limit,proto3" json:"limit,omitempty"`                                 // default 5
+	Tags        []string               `protobuf:"bytes,4,rep,name=tags,proto3" json:"tags,omitempty"`                                    // memory must carry ALL of these
+	ExcludeTags []string               `protobuf:"bytes,5,rep,name=exclude_tags,json=excludeTags,proto3" json:"exclude_tags,omitempty"`   // drop memories carrying ANY of these
+	MaxDistance float32                `protobuf:"fixed32,6,opt,name=max_distance,json=maxDistance,proto3" json:"max_distance,omitempty"` // relevance cutoff; <=0 = server default
+	Autocut     int32                  `protobuf:"varint,7,opt,name=autocut,proto3" json:"autocut,omitempty"`                             // Weaviate autocut jumps; <=0 disables
+	AnyTags     []string               `protobuf:"bytes,8,rep,name=any_tags,json=anyTags,proto3" json:"any_tags,omitempty"`               // memory must carry AT LEAST ONE of these
+	// no_reinforce, when true, suppresses the "living memory" reinforcement this
+	// search would otherwise apply to its top hit(s). Non-agent callers (the web
+	// UI's browse/explore, the CLI by default) set it so human browsing does not
+	// inflate the usage signal ranking depends on; the agent (MCP) leaves it false
+	// so genuine recalls still count. No effect unless RERANK_WEIGHT>0 server-side.
+	NoReinforce   bool `protobuf:"varint,9,opt,name=no_reinforce,json=noReinforce,proto3" json:"no_reinforce,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -624,6 +630,13 @@ func (x *SearchRequest) GetAnyTags() []string {
 		return x.AnyTags
 	}
 	return nil
+}
+
+func (x *SearchRequest) GetNoReinforce() bool {
+	if x != nil {
+		return x.NoReinforce
+	}
+	return false
 }
 
 type SearchSimilarRequest struct {
@@ -2991,7 +3004,7 @@ const file_cortex_v1_cortex_proto_rawDesc = "" +
 	"\tnamespace\x18\x05 \x01(\tR\tnamespace\">\n" +
 	"\x14UpdateMemoryResponse\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x16\n" +
-	"\x06status\x18\x02 \x01(\tR\x06status\"\xe8\x01\n" +
+	"\x06status\x18\x02 \x01(\tR\x06status\"\x8b\x02\n" +
 	"\rSearchRequest\x12\x14\n" +
 	"\x05query\x18\x01 \x01(\tR\x05query\x12\x1c\n" +
 	"\tnamespace\x18\x02 \x01(\tR\tnamespace\x12\x14\n" +
@@ -3000,7 +3013,8 @@ const file_cortex_v1_cortex_proto_rawDesc = "" +
 	"\fexclude_tags\x18\x05 \x03(\tR\vexcludeTags\x12!\n" +
 	"\fmax_distance\x18\x06 \x01(\x02R\vmaxDistance\x12\x18\n" +
 	"\aautocut\x18\a \x01(\x05R\aautocut\x12\x19\n" +
-	"\bany_tags\x18\b \x03(\tR\aanyTags\"\xe9\x01\n" +
+	"\bany_tags\x18\b \x03(\tR\aanyTags\x12!\n" +
+	"\fno_reinforce\x18\t \x01(\bR\vnoReinforce\"\xe9\x01\n" +
 	"\x14SearchSimilarRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1c\n" +
 	"\tnamespace\x18\x02 \x01(\tR\tnamespace\x12\x14\n" +

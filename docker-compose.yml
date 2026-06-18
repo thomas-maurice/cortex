@@ -77,6 +77,14 @@ services:
       # so exact tokens — hostnames, codenames, IDs — surface, not just semantic
       # matches. Tune per your data; <=0 falls back to the built-in default.
       SEARCH_ALPHA: ${SEARCH_ALPHA:-0.5}
+      # "Living memory": usage-aware re-ranking + hit reinforcement. RERANK_WEIGHT
+      # is the usage share vs relevance (0 = OFF, the safe default; the whole
+      # feature, including reinforcement writes, is disabled at 0). RERANK_HALFLIFE_DAYS
+      # is the recency half-life; REINFORCE_TOPK is how many top hits a search counts
+      # as a recall. Only the agent (MCP) reinforces — the UI/CLI pass no_reinforce.
+      RERANK_WEIGHT: ${RERANK_WEIGHT:-0}
+      RERANK_HALFLIFE_DAYS: ${RERANK_HALFLIFE_DAYS:-30}
+      REINFORCE_TOPK: ${REINFORCE_TOPK:-1}
       DEFAULT_NAMESPACE: global
       MEMORY_SOURCE: cortex
       CORTEX_AUTH_TOKEN: ${CORTEX_AUTH_TOKEN:-}
