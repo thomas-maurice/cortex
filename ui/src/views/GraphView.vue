@@ -68,34 +68,51 @@
             </span>
             <button class="btn-close btn-sm" @click="deselect"></button>
           </div>
-          <div class="small mb-2 markdown-body" v-html="renderMarkdown(selected.text)"></div>
-          <div class="small text-muted mb-2">
-            <span v-for="t in selected.tags" :key="t" class="badge bg-info text-dark me-1">#{{ t }}</span>
+          <!-- Edit mode: textarea + tags, replaces the read view in place. -->
+          <div v-if="editing">
+            <textarea v-model="editText" class="form-control form-control-sm mb-2" rows="8" placeholder="Memory text (Markdown)…"></textarea>
+            <input v-model="editTags" class="form-control form-control-sm mb-2" placeholder="tags, comma separated" />
+            <div class="d-flex gap-2">
+              <button class="btn btn-primary btn-sm flex-fill" :disabled="!editText.trim() || savingEdit" @click="saveEdit">
+                <font-awesome-icon :icon="['fas', 'pen']" class="me-1" />Save
+              </button>
+              <button class="btn btn-outline-secondary btn-sm flex-fill" :disabled="savingEdit" @click="editing = false">Cancel</button>
+            </div>
+            <div v-if="savingEdit" class="small text-muted mt-1">Queued for re-indexing…</div>
           </div>
-          <div v-if="selected.conversationId" class="small text-muted mb-2">
-            <font-awesome-icon :icon="['fas', 'comments']" class="me-1" />
-            <span class="font-monospace">{{ selected.conversationId }}</span>
-          </div>
-          <div class="small text-muted mb-2">
-            {{ (selected.linkedIds || []).length }} explicit link(s)
-            <span v-if="(selected.dupCandidates || []).length" style="color: #fd7e14">
-              · {{ selected.dupCandidates.length }} duplicate candidate(s)
-            </span>
-          </div>
-          <div v-if="selected.accessCount || selected.lastAccessedAt" class="small text-muted mb-2 d-flex flex-wrap gap-2 align-items-center">
-            <span v-if="selected.accessCount" class="badge bg-warning text-dark" title="times the agent recalled this memory (living memory)">
-              <font-awesome-icon :icon="['fas', 'fire']" class="me-1" />{{ selected.accessCount }} recall(s)
-            </span>
-            <span v-if="selected.lastAccessedAt" title="when this memory was last recalled">
-              <font-awesome-icon :icon="['fas', 'clock-rotate-left']" class="me-1" />{{ fmtDate(selected.lastAccessedAt) }}
-            </span>
-          </div>
-          <button class="btn btn-outline-primary btn-sm w-100 mb-2" @click="expandSemantic('m:' + selected.id)">
-            <font-awesome-icon :icon="['fas', 'magnifying-glass']" class="me-1" />Find similar
-          </button>
-          <button class="btn btn-outline-danger btn-sm w-100" @click="deleteSelected">
-            <font-awesome-icon :icon="['fas', 'trash']" class="me-1" />Delete memory
-          </button>
+          <template v-else>
+            <div class="small mb-2 markdown-body" v-html="renderMarkdown(selected.text)"></div>
+            <div class="small text-muted mb-2">
+              <span v-for="t in selected.tags" :key="t" class="badge bg-info text-dark me-1">#{{ t }}</span>
+            </div>
+            <div v-if="selected.conversationId" class="small text-muted mb-2">
+              <font-awesome-icon :icon="['fas', 'comments']" class="me-1" />
+              <span class="font-monospace">{{ selected.conversationId }}</span>
+            </div>
+            <div class="small text-muted mb-2">
+              {{ (selected.linkedIds || []).length }} explicit link(s)
+              <span v-if="(selected.dupCandidates || []).length" style="color: #fd7e14">
+                · {{ selected.dupCandidates.length }} duplicate candidate(s)
+              </span>
+            </div>
+            <div v-if="selected.accessCount || selected.lastAccessedAt" class="small text-muted mb-2 d-flex flex-wrap gap-2 align-items-center">
+              <span v-if="selected.accessCount" class="badge bg-warning text-dark" title="times the agent recalled this memory (living memory)">
+                <font-awesome-icon :icon="['fas', 'fire']" class="me-1" />{{ selected.accessCount }} recall(s)
+              </span>
+              <span v-if="selected.lastAccessedAt" title="when this memory was last recalled">
+                <font-awesome-icon :icon="['fas', 'clock-rotate-left']" class="me-1" />{{ fmtDate(selected.lastAccessedAt) }}
+              </span>
+            </div>
+            <button class="btn btn-outline-primary btn-sm w-100 mb-2" @click="expandSemantic('m:' + selected.id)">
+              <font-awesome-icon :icon="['fas', 'magnifying-glass']" class="me-1" />Find similar
+            </button>
+            <button class="btn btn-outline-secondary btn-sm w-100 mb-2" @click="startEdit">
+              <font-awesome-icon :icon="['fas', 'pen']" class="me-1" />Edit memory
+            </button>
+            <button class="btn btn-outline-danger btn-sm w-100" @click="deleteSelected">
+              <font-awesome-icon :icon="['fas', 'trash']" class="me-1" />Delete memory
+            </button>
+          </template>
         </div>
       </div>
     </div>
@@ -110,7 +127,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onBeforeUnmount } from 'vue'
+import { ref, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import { Network, DataSet } from 'vis-network/standalone'
 import { Code, ConnectError } from '@connectrpc/connect'
@@ -135,6 +152,14 @@ const pendingLink = ref(null)
 const selected = ref(null)
 const hasNeighbours = ref(false)
 const memoryCount = ref(0)
+
+// Inline edit state for the selected memory's card.
+const editing = ref(false)
+const editText = ref('')
+const editTags = ref('')
+const savingEdit = ref(false)
+// Changing/closing the selection always drops out of edit mode.
+watch(selected, () => { editing.value = false })
 
 let network = null
 let nodes = null
@@ -369,6 +394,35 @@ async function maybeUnlink(eid) {
 // Delete the selected memory (e.g. the redundant half of a duplicate pair). Also
 // prunes the node and any edges touching it from the graph so the view stays
 // consistent without a full reload.
+// startEdit seeds the edit form from the selected memory. saveEdit calls
+// UpdateMemory (text + tags; namespace is left untouched so the memory does not
+// move) and patches the node in place so the graph reflects the change without a
+// full reload — the worker re-embeds asynchronously.
+function startEdit() {
+  if (!selected.value) return
+  editText.value = selected.value.text
+  editTags.value = (selected.value.tags || []).join(', ')
+  editing.value = true
+}
+
+async function saveEdit() {
+  const mem = selected.value
+  if (!mem) return
+  savingEdit.value = true
+  error.value = ''
+  try {
+    const tags = editTags.value.split(',').map((t) => t.trim()).filter(Boolean)
+    await memoryClient.updateMemory({ id: mem.id, text: editText.value, tags, replaceTags: true })
+    const updated = { ...mem, text: editText.value, tags }
+    nodes.update({ id: 'm:' + mem.id, label: truncate(editText.value, 30), title: editText.value, mem: updated })
+    selected.value = updated // resets editing via the watch
+  } catch (e) {
+    handleError(e)
+  } finally {
+    savingEdit.value = false
+  }
+}
+
 async function deleteSelected() {
   const mem = selected.value
   if (!mem) return

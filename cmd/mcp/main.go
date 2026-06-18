@@ -50,6 +50,18 @@ func resolveDefaultNamespace() string {
 	return "global"
 }
 
+// nsOrDefault applies the per-project default namespace when the caller omitted
+// one. "*" (all namespaces) and any explicit value pass through unchanged. This
+// makes an omitted namespace consistently mean "this project" across every tool
+// (Save always did); without it the server would fall back to its own global
+// default, scattering a tool's reads/writes away from the project's namespace.
+func (d *deps) nsOrDefault(ns string) string {
+	if ns == "" {
+		return d.defaultNamespace
+	}
+	return ns
+}
+
 // resolveConversationID picks the ID that ties this session's saves and summary
 // together, in priority order:
 //
@@ -303,7 +315,7 @@ func main() {
 
 type SaveIn struct {
 	Text       string   `json:"text" jsonschema:"the memory content to store; a self-contained note that captures the fact AND enough context to be understood on its own later. Can be as long as needed; strongly prefer Markdown formatting (headings, bullets, code fences) as the UI renders it as Markdown"`
-	Namespace  string   `json:"namespace,omitempty" jsonschema:"optional namespace to scope the memory (e.g. a project name); defaults to the server's configured namespace"`
+	Namespace  string   `json:"namespace,omitempty" jsonschema:"optional namespace to scope the memory (e.g. a project name); defaults to the current project's namespace (the MCP-derived default)"`
 	Tags       []string `json:"tags,omitempty" jsonschema:"optional free-form tags for later filtering"`
 	LinkTo     []string `json:"linkTo,omitempty" jsonschema:"optional IDs of related memories to bidirectionally link this new memory to (e.g. from a prior memory_search). Linking is queued and applied once both memories are indexed, so the targets do not need to be indexed yet — they just need to be real memory IDs that exist or are being saved"`
 	Supersedes []string `json:"supersedes,omitempty" jsonschema:"optional IDs of EXISTING memories this new memory replaces (e.g. the sources from a cortex_consolidate manifest that this merged memory absorbs); the server deletes them automatically once this memory is durably indexed, so do not also call cortex_memory_delete on them. Only pass IDs you actually merged into this text"`
@@ -319,10 +331,7 @@ func (d *deps) save(ctx context.Context, _ *mcp.CallToolRequest, in SaveIn) (*mc
 	if text == "" {
 		return nil, SaveOut{}, fmt.Errorf("text must not be empty")
 	}
-	ns := in.Namespace
-	if ns == "" {
-		ns = d.defaultNamespace
-	}
+	ns := d.nsOrDefault(in.Namespace)
 
 	resp, err := d.client.Save(ctx, connect.NewRequest(&cortexv1.SaveRequest{
 		Text:           text,
@@ -346,7 +355,7 @@ func (d *deps) save(ctx context.Context, _ *mcp.CallToolRequest, in SaveIn) (*mc
 
 type SearchIn struct {
 	Query       string   `json:"query" jsonschema:"natural-language query to semantically match against stored memories"`
-	Namespace   string   `json:"namespace,omitempty" jsonschema:"optional namespace filter; omit to search the default namespace, pass \"*\" to search across all namespaces"`
+	Namespace   string   `json:"namespace,omitempty" jsonschema:"optional namespace filter; omit to search the current project, pass \"*\" to search across all namespaces"`
 	Limit       int      `json:"limit,omitempty" jsonschema:"max results to return (default 5)"`
 	Tags        []string `json:"tags,omitempty" jsonschema:"only return memories carrying ALL of these tags"`
 	AnyTags     []string `json:"anyTags,omitempty" jsonschema:"only return memories carrying AT LEAST ONE of these tags"`
@@ -387,7 +396,7 @@ func (d *deps) search(ctx context.Context, _ *mcp.CallToolRequest, in SearchIn) 
 
 	resp, err := d.client.Search(ctx, connect.NewRequest(&cortexv1.SearchRequest{
 		Query:       query,
-		Namespace:   in.Namespace, // server resolves "" -> default, "*" -> all
+		Namespace:   d.nsOrDefault(in.Namespace), // "" -> this project, "*" -> all namespaces
 		Limit:       int32(limit),
 		Tags:        in.Tags,
 		AnyTags:     in.AnyTags,
@@ -540,7 +549,7 @@ func (d *deps) unlink(ctx context.Context, _ *mcp.CallToolRequest, in UnlinkIn) 
 
 type SummarizeIn struct {
 	Text      string `json:"text" jsonschema:"the full, current summary of THIS conversation (what it's about, what was done, key outcomes); replaces any prior summary for the session. Strongly prefer Markdown formatting (headings, bullets, code fences) as the UI renders it as Markdown"`
-	Namespace string `json:"namespace,omitempty" jsonschema:"optional namespace to scope the summary; defaults to the server's configured namespace"`
+	Namespace string `json:"namespace,omitempty" jsonschema:"optional namespace to scope the summary; defaults to the current project's namespace (the MCP-derived default)"`
 }
 
 type SummarizeOut struct {
@@ -556,10 +565,14 @@ func (d *deps) summarize(ctx context.Context, _ *mcp.CallToolRequest, in Summari
 	if d.conversationID == "" {
 		return nil, SummarizeOut{}, fmt.Errorf("no conversation ID available (CLAUDE_CODE_SESSION_ID is unset), cannot summarize the session")
 	}
+	// Like Save, an omitted namespace means "this project" (nsOrDefault), so a
+	// session summary lands in the same namespace as the facts saved during it
+	// rather than the server's global fallback.
+	ns := d.nsOrDefault(in.Namespace)
 	resp, err := d.client.SummarizeSession(ctx, connect.NewRequest(&cortexv1.SummarizeSessionRequest{
 		ConversationId: d.conversationID,
 		Text:           text,
-		Namespace:      in.Namespace,
+		Namespace:      ns,
 	}))
 	if err != nil {
 		return nil, SummarizeOut{}, err
@@ -595,7 +608,7 @@ func (d *deps) recall(ctx context.Context, _ *mcp.CallToolRequest, in RecallIn) 
 
 	resp, err := d.client.RecallSession(ctx, connect.NewRequest(&cortexv1.RecallSessionRequest{
 		Query:       query,
-		Namespace:   in.Namespace,
+		Namespace:   d.nsOrDefault(in.Namespace), // "" -> this project, "*" -> all namespaces
 		FactLimit:   int32(factLimit),
 		MaxDistance: in.MaxDistance,
 	}))
@@ -659,7 +672,7 @@ func memToHit(m *cortexv1.Memory) SearchHit {
 
 func (d *deps) reviewCandidates(ctx context.Context, _ *mcp.CallToolRequest, in ReviewIn) (*mcp.CallToolResult, ReviewOut, error) {
 	resp, err := d.client.ListDuplicateCandidates(ctx, connect.NewRequest(&cortexv1.ListDuplicateCandidatesRequest{
-		Namespace: in.Namespace,
+		Namespace: d.nsOrDefault(in.Namespace), // "" -> this project, "*" -> all namespaces
 		Limit:     int32(in.Limit),
 	}))
 	if err != nil {
@@ -746,7 +759,7 @@ func (d *deps) consolidate(ctx context.Context, _ *mcp.CallToolRequest, in Conso
 	}
 	resp, err := d.client.Consolidate(ctx, connect.NewRequest(&cortexv1.ConsolidateRequest{
 		Topic:       topic,
-		Namespace:   in.Namespace,
+		Namespace:   d.nsOrDefault(in.Namespace), // "" -> this project, "*" -> all namespaces
 		Limit:       int32(in.Limit),
 		MaxDistance: in.MaxDistance,
 		Tags:        in.Tags,
