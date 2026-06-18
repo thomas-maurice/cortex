@@ -264,12 +264,17 @@ You have a persistent memory via the `cortex` MCP server. Use it actively:
 - **Make cortex the single memory store.** If you also use Claude Code's built-in
   file memory (`MEMORY.md`), don't duplicate the same fact into both — route new
   memories to cortex so recall isn't split across two stores.
-- **Summarise the session frequently.** Call `cortex_session_summarize` proactively
-  and often — after each meaningful step or topic shift, and again before the
-  session ends — passing the *full current* summary (it replaces, never appends).
-  This is what lets me later recall "the session where we did X". A stale summary
-  means that session is remembered wrong, so keep it current; don't save it just
-  once.
+- **Maintain a session summary — REQUIRED, not optional, and separate from
+  `cortex_memory_save`.** There is exactly ONE summary per conversation; each
+  `cortex_session_summarize` call REPLACES it, so always pass the *full current*
+  digest (what the session is about, what was done, key outcomes) — never a delta.
+  Call it **after every meaningful milestone or topic shift** (a feature landed, a
+  bug root-caused, a decision made) **and again before the session ends** — do NOT
+  defer it to a single call at the end, and do NOT wait to be asked. `cortex_memory_save`
+  captures atomic facts; `cortex_session_summarize` captures the running narrative —
+  both are expected on any non-trivial session. A stale or missing summary means the
+  session is recalled wrong. Self-check: if I've done substantive work this session
+  and not yet called `cortex_session_summarize`, do it now.
 - **Recall past sessions.** When I refer to a previous session ("remember when
   we…"), call `cortex_recall_session` to pull that conversation's summary and the
   facts saved during it, before answering.
