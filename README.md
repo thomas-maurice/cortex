@@ -176,6 +176,10 @@ port as the Connect API; open the server's address in a browser. Views:
   touching namespace or tags (both are managed for you). These are what the
   [standing-preferences SessionStart hook](#standing-preferences-sessionstart-hook)
   injects into every session.
+- **Backup** — export memories (text + metadata, no vectors) to a JSON file, and
+  import such a dump back. The format is identical to the `cortex export` /
+  `cortex import` CLI, so dumps are interchangeable; import re-ingests through the
+  normal queue (worker re-embeds), batched, and reports how many were queued.
 - **Status** — backing-service health and memory count.
 
 Sign in with `CORTEX_UI_USER` / `CORTEX_UI_PASSWORD`. Login mints a short-lived

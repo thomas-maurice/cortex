@@ -36,6 +36,8 @@ import {
   faFire,
   faClockRotateLeft,
   faSliders,
+  faUpload,
+  faBoxArchive,
 } from '@fortawesome/free-solid-svg-icons'
 
 library.add(
@@ -63,7 +65,9 @@ library.add(
   faPen,
   faFire,
   faClockRotateLeft,
-  faSliders
+  faSliders,
+  faUpload,
+  faBoxArchive
 )
 
 const pinia = createPinia()

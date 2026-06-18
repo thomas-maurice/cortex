@@ -41,6 +41,12 @@ const router = createRouter({
       meta: { requiresAuth: true },
     },
     {
+      path: '/backup',
+      name: 'backup',
+      component: () => import('@/views/BackupView.vue'),
+      meta: { requiresAuth: true },
+    },
+    {
       path: '/queue',
       name: 'queue',
       component: () => import('@/views/QueueView.vue'),

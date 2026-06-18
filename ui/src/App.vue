@@ -21,6 +21,9 @@
           <router-link class="nav-link" :to="{ name: 'preferences' }">Preferences</router-link>
         </li>
         <li class="nav-item">
+          <router-link class="nav-link" :to="{ name: 'backup' }">Backup</router-link>
+        </li>
+        <li class="nav-item">
           <router-link class="nav-link" :to="{ name: 'queue' }">Indexing</router-link>
         </li>
         <li class="nav-item">
