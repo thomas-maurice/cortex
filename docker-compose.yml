@@ -88,6 +88,10 @@ services:
       DEFAULT_NAMESPACE: global
       MEMORY_SOURCE: cortex
       CORTEX_AUTH_TOKEN: ${CORTEX_AUTH_TOKEN:-}
+      # Stable JWT signing key so UI login sessions survive a server restart.
+      # Unset -> the server generates a random per-process secret and all sessions
+      # are invalidated on every restart. Keep this out of git (it lives in .env).
+      CORTEX_JWT_SECRET: ${CORTEX_JWT_SECRET:-}
       CORTEX_UI_USER: ${CORTEX_UI_USER:-admin}
       CORTEX_UI_PASSWORD: ${CORTEX_UI_PASSWORD:-admin}
     depends_on:
