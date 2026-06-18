@@ -230,7 +230,7 @@ func (s *Store) DeleteClass(ctx context.Context) error {
 
 // Upsert writes a record with its precomputed vector into the Memory class.
 func (s *Store) Upsert(ctx context.Context, rec memory.Record, vector []float32) error {
-	return s.upsertObject(ctx, memory.ClassName, rec.ID, map[string]interface{}{
+	props := map[string]interface{}{
 		"text":           rec.Text,
 		"namespace":      rec.Namespace,
 		"tags":           rec.Tags,
@@ -243,8 +243,14 @@ func (s *Store) Upsert(ctx context.Context, rec memory.Record, vector []float32)
 		"dupCandidates":  rec.DupCandidates,
 		"notDuplicateOf": rec.NotDuplicateOf,
 		"accessCount":    rec.AccessCount,
-		"lastAccessedAt": formatDate(rec.LastAccessedAt),
-	}, vector)
+	}
+	// A Weaviate `date` property rejects an empty string — it must be a valid
+	// RFC3339 date or absent. A never-reinforced memory has a zero lastAccessedAt,
+	// so omit the key entirely (the property stays null) rather than send "".
+	if !rec.LastAccessedAt.IsZero() {
+		props["lastAccessedAt"] = formatDate(rec.LastAccessedAt)
+	}
+	return s.upsertObject(ctx, memory.ClassName, rec.ID, props, vector)
 }
 
 // formatDate renders a time for a Weaviate date property, returning "" for the

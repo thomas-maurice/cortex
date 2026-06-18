@@ -171,6 +171,11 @@ port as the Connect API; open the server's address in a browser. Views:
   your memories, rendered as a cloud radiating from a central query node (closer
   + bigger = more relevant, edge label = vector distance).
 - **Sessions** — conversation summaries (`ListSummaries`).
+- **Preferences** — standing, cross-project preferences: the memories in the
+  `global` namespace tagged `preference`. Add / edit / delete them here without
+  touching namespace or tags (both are managed for you). These are what the
+  [standing-preferences SessionStart hook](#standing-preferences-sessionstart-hook)
+  injects into every session.
 - **Status** — backing-service health and memory count.
 
 Sign in with `CORTEX_UI_USER` / `CORTEX_UI_PASSWORD`. Login mints a short-lived
@@ -285,7 +290,51 @@ You have a persistent memory via the `cortex` MCP server. Use it actively:
   Linking is queued and applied asynchronously once both endpoints are indexed, so
   you can link an ID you just saved this turn (still indexing) — or skip the extra
   call entirely and pass `linkTo` when you `cortex_memory_save` the new memory.
+- **Storing preferences (the one namespace exception).** A durable, cross-project
+  preference or standing rule about how I should work (conventions, do/don't, tooling
+  choices, communication style) is the ONE case to override the default namespace:
+  save it with `namespace: "global"` **and** `tags: ["preference"]` (plus any topical
+  tags). A project-specific preference instead stays in the project's namespace with
+  `tags: ["preference"]`. These are surfaced every session by the standing-preferences
+  SessionStart hook (below), so they actually apply *before* I act — unlike an ordinary
+  memory, which only resurfaces if a later search happens to match it. A hard guardrail
+  that must NEVER be violated still belongs in this CLAUDE.md itself (the harness loads
+  it deterministically every session); the `global`+`preference` store is for
+  maintainable, UI-editable preferences.
 ```
+
+### Standing preferences (SessionStart hook)
+
+A `global`+`preference` memory is only a *filing convention* until something
+actually pulls it into context. By default nothing does — Cortex is consulted only
+when the agent chooses to call `cortex_memory_search`, and that is relevance-ranked,
+so a standing rule like "never force-push" may never surface during an unrelated
+task. The bundled hook closes that gap: it lists those memories **by tag** (a
+deterministic `List`, no vector query) and injects them into **every** session, so
+they are in front of the agent before it acts.
+
+Install (user scope, applies in every project):
+
+```bash
+# 1. Drop the hook in place (from a checkout of this repo)
+cp scripts/cortex-prefs-session-start.sh ~/.claude/hooks/
+chmod +x ~/.claude/hooks/cortex-prefs-session-start.sh
+
+# 2. Register it in ~/.claude/settings.json under hooks.SessionStart, e.g.:
+#   {
+#     "matcher": "startup|resume|clear|compact",
+#     "hooks": [
+#       { "type": "command", "command": "$HOME/.claude/hooks/cortex-prefs-session-start.sh" }
+#     ]
+#   }
+```
+
+It needs the `cortex` CLI installed (`scripts/install.sh`) and configured
+(`~/.config/cortex/cortex.yaml` with `server` + `token`); it reuses that config. It
+is **best-effort and non-blocking** — if the CLI is missing, the server is
+unreachable (VPN down), or no preferences are stored, it prints nothing and exits 0,
+so it can never delay or break session start (it caps the lookup at 8s). To change a
+preference, edit the memory in the web UI or re-save it; the next session picks it up.
 
 ### `consolidate-memories` skill (bundled)
 
