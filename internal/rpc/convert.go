@@ -18,6 +18,10 @@ func protoToRecord(m *cortexv1.Memory) memory.Record {
 	if ts := m.GetCreatedAt(); ts != nil {
 		created = ts.AsTime()
 	}
+	var lastAccessed time.Time
+	if ts := m.GetLastAccessedAt(); ts != nil {
+		lastAccessed = ts.AsTime()
+	}
 	return memory.Record{
 		ID:             m.GetId(),
 		Text:           m.GetText(),
@@ -30,6 +34,10 @@ func protoToRecord(m *cortexv1.Memory) memory.Record {
 		ConversationID: m.GetConversationId(),
 		LinkedIDs:      m.GetLinkedIds(),
 		NotDuplicateOf: m.GetNotDuplicateOf(),
+		// Usage stats are preserved across a dump/restore so a memory's "living"
+		// history survives a move; the worker re-stamps Model/Dims but leaves these.
+		AccessCount:    int(m.GetAccessCount()),
+		LastAccessedAt: lastAccessed,
 	}
 }
 
@@ -48,7 +56,20 @@ func recordToProto(r memory.Record) *cortexv1.Memory {
 		LinkedIds:      r.LinkedIDs,
 		DupCandidates:  r.DupCandidates,
 		NotDuplicateOf: r.NotDuplicateOf,
+		AccessCount:    int32(r.AccessCount),
+		LastAccessedAt: lastAccessedProto(r.LastAccessedAt),
 	}
+}
+
+// lastAccessedProto renders a last-accessed time for the wire, returning nil for
+// the zero time so a never-reinforced memory carries no timestamp (rather than
+// the year-0001 sentinel) — clients can then tell "never accessed" from "accessed
+// at epoch".
+func lastAccessedProto(t time.Time) *timestamppb.Timestamp {
+	if t.IsZero() {
+		return nil
+	}
+	return timestamppb.New(t)
 }
 
 // hitToProto maps a search hit (record + distance) to its wire form.

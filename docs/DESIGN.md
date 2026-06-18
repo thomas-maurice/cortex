@@ -132,12 +132,39 @@ automatically without per-call bookkeeping.
 | `OLLAMA_MODEL` | `qwen3-embedding:0.6b` | both |
 | `WEAVIATE_HOST` | `localhost:8080` | both |
 | `SEARCH_ALPHA` | `0.5` | server (hybrid blend: 1=pure vector, 0=pure keyword/BM25) |
+| `RERANK_WEIGHT` | `0` (off) | server ("living memory": >0 re-ranks survivors by usage and reinforces hits; value = usage share vs relevance) |
+| `RERANK_HALFLIFE_DAYS` | `30` | server (recency half-life for the usage term; only when `RERANK_WEIGHT`>0) |
+| `REINFORCE_TOPK` | `1` | server (how many top hits a search reinforces; only when `RERANK_WEIGHT`>0) |
 | `DEFAULT_NAMESPACE` | auto (git remote / dir basename) | mcp |
 | `MEMORY_SOURCE` | `claude-code` | mcp |
 | `CORTEX_AUTH_TOKEN` | _(empty = open)_ | server/clients (static bearer token) |
 | `CORTEX_UI_USER` | `admin` | server (web UI login) |
 | `CORTEX_UI_PASSWORD` | _(empty = UI login disabled)_ | server |
 | `CORTEX_JWT_SECRET` | derived from `CORTEX_AUTH_TOKEN`, else random | server (signs UI JWTs) |
+
+## Living memory — decay + reinforcement (opt-in)
+
+A flat vector store ranks a fact the same forever, whether it is recalled daily or
+never. "Living memory" makes recall *usage-aware*, modelled on spaced repetition:
+
+- **Reinforcement (write side).** Every memory carries `accessCount` +
+  `lastAccessedAt`. When a search returns hits, the server asynchronously bumps
+  the top `REINFORCE_TOPK` (default 1) — fire-and-forget, off the search path,
+  best-effort (a failed bump only weakens a ranking signal, never loses data),
+  and serialised so concurrent searches can't lose an increment.
+- **Decay + re-rank (read side).** When `RERANK_WEIGHT`>0, `Search` over-fetches a
+  wider candidate pool, applies the relevance cutoff **first** (so `maxDistance`
+  semantics and each hit's `Distance` are untouched), then re-orders the
+  survivors by `score = (1-w)·relevance + w·usage`, where
+  `usage = min(1, recency + 0.1·ln(1+accessCount))` and
+  `recency = 2^(-ageDays / RERANK_HALFLIFE_DAYS)` measured from `lastAccessedAt`
+  (falling back to `createdAt`). Frequently/recently used facts float up; stale
+  ones sink — without ever corrupting the relevance distance clients filter on.
+
+It is **off by default** (`RERANK_WEIGHT=0`, like `DEDUP_DISTANCE`): zero
+re-ordering and zero reinforcement writes, behaviour identical to before. The
+`accessCount`/`lastAccessedAt` properties are additive (no rebuild) and survive
+`reindex` (republished on the index payload) and dump/restore.
 
 ## Deliberately deferred (extension points, not missing pieces)
 

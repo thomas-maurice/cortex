@@ -37,6 +37,20 @@ type Config struct {
 	Version          string  // reported by Status
 	BackupDir        string  // where Reindex writes its safety snapshot
 	SearchAlpha      float32 // hybrid blend for text searches: 1=pure vector, 0=pure keyword; <=0 = Weaviate default
+	// RerankWeight enables "living memory": when >0, Search re-orders relevance
+	// survivors by a blend of relevance and recency-decayed usage (weight is the
+	// usage share), and each search reinforces its top hits. 0 disables the whole
+	// feature — no re-ordering and no reinforcement writes — so behaviour is
+	// identical to before, opt-in like DEDUP_DISTANCE.
+	RerankWeight float32
+	// RerankHalfLifeDays is the recency half-life for the usage term; <=0 uses the
+	// store default. Only meaningful when RerankWeight>0.
+	RerankHalfLifeDays float32
+	// ReinforceTopK is how many of a search's top hits get reinforced
+	// (accessCount++ / lastAccessedAt=now). Only applied when RerankWeight>0;
+	// defaults to 1 so a query strengthens its single best match, not the whole
+	// returned page (which would be a noisy signal).
+	ReinforceTopK int
 }
 
 // Service implements the MemoryService Connect handler. It is the single owner
@@ -54,6 +68,10 @@ type Service struct {
 	// (Link/Unlink no longer mutate the store directly — they publish to
 	// SubjectLink and the worker's link consumer serialises the apply.)
 	linkMu sync.Mutex
+	// reinforceMu serializes the read-modify-write of a memory's accessCount when
+	// search hits are reinforced, so two concurrent searches reinforcing the same
+	// memory cannot both read the old count and lose an increment.
+	reinforceMu sync.Mutex
 }
 
 // NewService wires the handler with its backing clients.
@@ -157,18 +175,27 @@ func (s *Service) Search(ctx context.Context, req *connect.Request[cortexv1.Sear
 		return nil, err
 	}
 	hits, err := s.store.Search(ctx, vec, store.SearchOpts{
-		Namespace:   resolveNamespace(req.Msg.GetNamespace(), s.cfg.DefaultNamespace),
-		Limit:       int(req.Msg.GetLimit()),
-		MaxDistance: req.Msg.GetMaxDistance(),
-		Autocut:     int(req.Msg.GetAutocut()),
-		IncludeTags: req.Msg.GetTags(),
-		AnyTags:     req.Msg.GetAnyTags(),
-		ExcludeTags: req.Msg.GetExcludeTags(),
-		Query:       query, // enables hybrid (BM25 + vector) so exact tokens resolve
-		Alpha:       s.cfg.SearchAlpha,
+		Namespace:          resolveNamespace(req.Msg.GetNamespace(), s.cfg.DefaultNamespace),
+		Limit:              int(req.Msg.GetLimit()),
+		MaxDistance:        req.Msg.GetMaxDistance(),
+		Autocut:            int(req.Msg.GetAutocut()),
+		IncludeTags:        req.Msg.GetTags(),
+		AnyTags:            req.Msg.GetAnyTags(),
+		ExcludeTags:        req.Msg.GetExcludeTags(),
+		Query:              query, // enables hybrid (BM25 + vector) so exact tokens resolve
+		Alpha:              s.cfg.SearchAlpha,
+		RerankWeight:       s.cfg.RerankWeight,
+		RerankHalfLifeDays: s.cfg.RerankHalfLifeDays,
 	})
 	if err != nil {
 		return nil, err
+	}
+
+	// Living memory: strengthen the best match(es) this query surfaced so they
+	// rank higher next time. Fire-and-forget — reinforcement must never add
+	// latency to or fail the search — and gated on the feature being enabled.
+	if s.cfg.RerankWeight > 0 {
+		s.reinforce(hits)
 	}
 
 	out := &cortexv1.SearchResponse{Hits: make([]*cortexv1.Hit, 0, len(hits))}
@@ -176,6 +203,51 @@ func (s *Service) Search(ctx context.Context, req *connect.Request[cortexv1.Sear
 		out.Hits = append(out.Hits, hitToProto(h))
 	}
 	return connect.NewResponse(out), nil
+}
+
+// reinforce asynchronously bumps the accessCount / lastAccessedAt of the top
+// ReinforceTopK hits a search returned — the write side of "living memory". It
+// runs in its own goroutine with a background context (the request context is
+// cancelled once Search returns) and is strictly best-effort: any failure is
+// logged, never surfaced, since a missed reinforcement only weakens a ranking
+// signal, it does not lose data. reinforceMu serialises the per-id read-modify-
+// write so concurrent searches can't both read the same count and lose a bump.
+func (s *Service) reinforce(hits []memory.Hit) {
+	topK := s.cfg.ReinforceTopK
+	if topK <= 0 {
+		topK = 1
+	}
+	if topK > len(hits) {
+		topK = len(hits)
+	}
+	ids := make([]string, 0, topK)
+	for _, h := range hits[:topK] {
+		if h.ID != "" {
+			ids = append(ids, h.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		s.reinforceMu.Lock()
+		defer s.reinforceMu.Unlock()
+		for _, id := range ids {
+			rec, ok, err := s.store.Get(ctx, id)
+			if err != nil {
+				s.log.Warn("reinforce: get failed, skipping", "id", id, "err", err)
+				continue
+			}
+			if !ok {
+				continue // raced with a delete; nothing to reinforce
+			}
+			if err := s.store.Reinforce(ctx, id, rec.AccessCount+1, time.Now().UTC()); err != nil {
+				s.log.Warn("reinforce: write failed, skipping", "id", id, "err", err)
+			}
+		}
+	}()
 }
 
 // SearchSimilar finds neighbours of an existing memory by reusing its stored

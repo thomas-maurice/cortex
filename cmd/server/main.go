@@ -54,6 +54,19 @@ func envFloat(key string, def float32) float32 {
 	return float32(f)
 }
 
+// envInt reads an int env var, returning def when unset or unparseable.
+func envInt(key string, def int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return def
+	}
+	return n
+}
+
 func main() {
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
@@ -68,10 +81,15 @@ func main() {
 		source       = env("MEMORY_SOURCE", "cortex")
 		backupDir    = env("CORTEX_BACKUP_DIR", ".")
 		searchAlpha  = envFloat("SEARCH_ALPHA", 0.5) // hybrid blend: 1=pure vector, 0=pure keyword
-		authToken    = os.Getenv("CORTEX_AUTH_TOKEN")
-		uiUser       = env("CORTEX_UI_USER", "admin")
-		uiPass       = os.Getenv("CORTEX_UI_PASSWORD")
-		jwtSecret    = os.Getenv("CORTEX_JWT_SECRET")
+		// "Living memory": rerankWeight>0 enables usage-aware re-ranking + hit
+		// reinforcement (opt-in, like DEDUP_DISTANCE — 0 keeps the old behaviour).
+		rerankWeight   = envFloat("RERANK_WEIGHT", 0)
+		rerankHalfLife = envFloat("RERANK_HALFLIFE_DAYS", 30)
+		reinforceTopK  = envInt("REINFORCE_TOPK", 1)
+		authToken      = os.Getenv("CORTEX_AUTH_TOKEN")
+		uiUser         = env("CORTEX_UI_USER", "admin")
+		uiPass         = os.Getenv("CORTEX_UI_PASSWORD")
+		jwtSecret      = os.Getenv("CORTEX_JWT_SECRET")
 	)
 
 	// The UI logs in for a JWT signed with this secret.
@@ -125,11 +143,14 @@ func main() {
 	}
 
 	svc := rpc.NewService(nc, js, st, embed.New(ollamaURL, ollamaModel), rpc.Config{
-		DefaultNamespace: defaultNS,
-		Source:           source,
-		Version:          version,
-		BackupDir:        backupDir,
-		SearchAlpha:      searchAlpha,
+		DefaultNamespace:   defaultNS,
+		Source:             source,
+		Version:            version,
+		BackupDir:          backupDir,
+		SearchAlpha:        searchAlpha,
+		RerankWeight:       rerankWeight,
+		RerankHalfLifeDays: rerankHalfLife,
+		ReinforceTopK:      reinforceTopK,
 	}, log)
 
 	// When the API token is set, accept either it (MCP/CLI) or a UI-issued JWT

@@ -117,6 +117,19 @@ type Record struct {
 	// on both records, like LinkedIDs) so neither side re-flags the other, and
 	// persisted as a Weaviate property so it survives reindex/redelivery.
 	NotDuplicateOf []string `json:"notDuplicateOf,omitempty"`
+
+	// AccessCount is the "living memory" usage signal: how many times this record
+	// has surfaced as a top search hit and been reinforced. It only accrues when
+	// re-ranking is enabled server-side (RERANK_WEIGHT>0). Stored as a Weaviate
+	// property and carried on the index payload so it survives reindex (the worker
+	// re-stamps Model/Dims but leaves this untouched). Metadata only, never embedded.
+	AccessCount int `json:"accessCount,omitempty"`
+
+	// LastAccessedAt is when this record was last reinforced by a search hit.
+	// Together with AccessCount it feeds the decay/reinforcement re-rank: recency
+	// is measured from here (falling back to CreatedAt when never accessed).
+	// Stored as a Weaviate property, carried on the index payload like AccessCount.
+	LastAccessedAt time.Time `json:"lastAccessedAt"`
 }
 
 // Hit is a search result: a record plus its vector distance to the query.

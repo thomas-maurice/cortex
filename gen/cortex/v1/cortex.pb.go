@@ -97,6 +97,15 @@ type Memory struct {
 	// memory (bidirectional). The worker excludes these when recomputing
 	// dup_candidates, so a dismissed pair is never re-flagged.
 	NotDuplicateOf []string `protobuf:"bytes,12,rep,name=not_duplicate_of,json=notDuplicateOf,proto3" json:"not_duplicate_of,omitempty"`
+	// access_count is how many times this memory has surfaced as a top search hit
+	// and been reinforced (the "living memory" usage signal). It only accrues when
+	// reranking is enabled (RERANK_WEIGHT>0); 0 otherwise. Metadata, never embedded.
+	AccessCount int32 `protobuf:"varint,13,opt,name=access_count,json=accessCount,proto3" json:"access_count,omitempty"`
+	// last_accessed_at is when this memory was last reinforced by a search hit.
+	// Together with access_count it drives the decay/reinforcement re-ranking:
+	// recently-used memories float up, untouched ones fade. Unset until first
+	// reinforced (recency then falls back to created_at).
+	LastAccessedAt *timestamppb.Timestamp `protobuf:"bytes,14,opt,name=last_accessed_at,json=lastAccessedAt,proto3" json:"last_accessed_at,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -211,6 +220,20 @@ func (x *Memory) GetDupCandidates() []string {
 func (x *Memory) GetNotDuplicateOf() []string {
 	if x != nil {
 		return x.NotDuplicateOf
+	}
+	return nil
+}
+
+func (x *Memory) GetAccessCount() int32 {
+	if x != nil {
+		return x.AccessCount
+	}
+	return 0
+}
+
+func (x *Memory) GetLastAccessedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.LastAccessedAt
 	}
 	return nil
 }
@@ -2928,7 +2951,7 @@ var File_cortex_v1_cortex_proto protoreflect.FileDescriptor
 
 const file_cortex_v1_cortex_proto_rawDesc = "" +
 	"\n" +
-	"\x16cortex/v1/cortex.proto\x12\tcortex.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xf4\x02\n" +
+	"\x16cortex/v1/cortex.proto\x12\tcortex.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xdd\x03\n" +
 	"\x06Memory\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04text\x18\x02 \x01(\tR\x04text\x12\x1c\n" +
@@ -2944,7 +2967,9 @@ const file_cortex_v1_cortex_proto_rawDesc = "" +
 	"linked_ids\x18\n" +
 	" \x03(\tR\tlinkedIds\x12%\n" +
 	"\x0edup_candidates\x18\v \x03(\tR\rdupCandidates\x12(\n" +
-	"\x10not_duplicate_of\x18\f \x03(\tR\x0enotDuplicateOf\"\xcd\x01\n" +
+	"\x10not_duplicate_of\x18\f \x03(\tR\x0enotDuplicateOf\x12!\n" +
+	"\faccess_count\x18\r \x01(\x05R\vaccessCount\x12D\n" +
+	"\x10last_accessed_at\x18\x0e \x01(\v2\x1a.google.protobuf.TimestampR\x0elastAccessedAt\"\xcd\x01\n" +
 	"\vSaveRequest\x12\x12\n" +
 	"\x04text\x18\x01 \x01(\tR\x04text\x12\x1c\n" +
 	"\tnamespace\x18\x02 \x01(\tR\tnamespace\x12\x12\n" +
@@ -3229,71 +3254,72 @@ var file_cortex_v1_cortex_proto_goTypes = []any{
 }
 var file_cortex_v1_cortex_proto_depIdxs = []int32{
 	48, // 0: cortex.v1.Memory.created_at:type_name -> google.protobuf.Timestamp
-	1,  // 1: cortex.v1.Hit.memory:type_name -> cortex.v1.Memory
-	8,  // 2: cortex.v1.SearchResponse.hits:type_name -> cortex.v1.Hit
-	1,  // 3: cortex.v1.ListResponse.memories:type_name -> cortex.v1.Memory
-	17, // 4: cortex.v1.DoctorResponse.checks:type_name -> cortex.v1.Check
-	1,  // 5: cortex.v1.DeadLetter.record:type_name -> cortex.v1.Memory
-	48, // 6: cortex.v1.DeadLetter.failed_at:type_name -> google.protobuf.Timestamp
-	0,  // 7: cortex.v1.DeadRequest.action:type_name -> cortex.v1.DeadAction
-	21, // 8: cortex.v1.DeadResponse.dead_letters:type_name -> cortex.v1.DeadLetter
-	48, // 9: cortex.v1.ConversationSummary.created_at:type_name -> google.protobuf.Timestamp
-	48, // 10: cortex.v1.ConversationSummary.updated_at:type_name -> google.protobuf.Timestamp
-	28, // 11: cortex.v1.RecallSessionResponse.summary:type_name -> cortex.v1.ConversationSummary
-	1,  // 12: cortex.v1.RecallSessionResponse.facts:type_name -> cortex.v1.Memory
-	28, // 13: cortex.v1.ListSummariesResponse.summaries:type_name -> cortex.v1.ConversationSummary
-	1,  // 14: cortex.v1.DuplicateGroup.memory:type_name -> cortex.v1.Memory
-	1,  // 15: cortex.v1.DuplicateGroup.candidates:type_name -> cortex.v1.Memory
-	40, // 16: cortex.v1.ListDuplicateCandidatesResponse.groups:type_name -> cortex.v1.DuplicateGroup
-	1,  // 17: cortex.v1.RestoreMemoriesRequest.memories:type_name -> cortex.v1.Memory
-	1,  // 18: cortex.v1.ConsolidateResponse.cluster:type_name -> cortex.v1.Memory
-	2,  // 19: cortex.v1.MemoryService.Save:input_type -> cortex.v1.SaveRequest
-	4,  // 20: cortex.v1.MemoryService.UpdateMemory:input_type -> cortex.v1.UpdateMemoryRequest
-	6,  // 21: cortex.v1.MemoryService.Search:input_type -> cortex.v1.SearchRequest
-	7,  // 22: cortex.v1.MemoryService.SearchSimilar:input_type -> cortex.v1.SearchSimilarRequest
-	10, // 23: cortex.v1.MemoryService.List:input_type -> cortex.v1.ListRequest
-	12, // 24: cortex.v1.MemoryService.Delete:input_type -> cortex.v1.DeleteRequest
-	14, // 25: cortex.v1.MemoryService.Status:input_type -> cortex.v1.StatusRequest
-	16, // 26: cortex.v1.MemoryService.Doctor:input_type -> cortex.v1.DoctorRequest
-	19, // 27: cortex.v1.MemoryService.Reindex:input_type -> cortex.v1.ReindexRequest
-	22, // 28: cortex.v1.MemoryService.Dead:input_type -> cortex.v1.DeadRequest
-	24, // 29: cortex.v1.MemoryService.IndexQueue:input_type -> cortex.v1.IndexQueueRequest
-	26, // 30: cortex.v1.MemoryService.PullModel:input_type -> cortex.v1.PullModelRequest
-	29, // 31: cortex.v1.MemoryService.SummarizeSession:input_type -> cortex.v1.SummarizeSessionRequest
-	31, // 32: cortex.v1.MemoryService.RecallSession:input_type -> cortex.v1.RecallSessionRequest
-	33, // 33: cortex.v1.MemoryService.ListSummaries:input_type -> cortex.v1.ListSummariesRequest
-	35, // 34: cortex.v1.MemoryService.Link:input_type -> cortex.v1.LinkRequest
-	37, // 35: cortex.v1.MemoryService.Unlink:input_type -> cortex.v1.UnlinkRequest
-	39, // 36: cortex.v1.MemoryService.ListDuplicateCandidates:input_type -> cortex.v1.ListDuplicateCandidatesRequest
-	42, // 37: cortex.v1.MemoryService.DismissDuplicate:input_type -> cortex.v1.DismissDuplicateRequest
-	44, // 38: cortex.v1.MemoryService.Consolidate:input_type -> cortex.v1.ConsolidateRequest
-	45, // 39: cortex.v1.MemoryService.RestoreMemories:input_type -> cortex.v1.RestoreMemoriesRequest
-	3,  // 40: cortex.v1.MemoryService.Save:output_type -> cortex.v1.SaveResponse
-	5,  // 41: cortex.v1.MemoryService.UpdateMemory:output_type -> cortex.v1.UpdateMemoryResponse
-	9,  // 42: cortex.v1.MemoryService.Search:output_type -> cortex.v1.SearchResponse
-	9,  // 43: cortex.v1.MemoryService.SearchSimilar:output_type -> cortex.v1.SearchResponse
-	11, // 44: cortex.v1.MemoryService.List:output_type -> cortex.v1.ListResponse
-	13, // 45: cortex.v1.MemoryService.Delete:output_type -> cortex.v1.DeleteResponse
-	15, // 46: cortex.v1.MemoryService.Status:output_type -> cortex.v1.StatusResponse
-	18, // 47: cortex.v1.MemoryService.Doctor:output_type -> cortex.v1.DoctorResponse
-	20, // 48: cortex.v1.MemoryService.Reindex:output_type -> cortex.v1.ReindexResponse
-	23, // 49: cortex.v1.MemoryService.Dead:output_type -> cortex.v1.DeadResponse
-	25, // 50: cortex.v1.MemoryService.IndexQueue:output_type -> cortex.v1.IndexQueueResponse
-	27, // 51: cortex.v1.MemoryService.PullModel:output_type -> cortex.v1.PullModelResponse
-	30, // 52: cortex.v1.MemoryService.SummarizeSession:output_type -> cortex.v1.SummarizeSessionResponse
-	32, // 53: cortex.v1.MemoryService.RecallSession:output_type -> cortex.v1.RecallSessionResponse
-	34, // 54: cortex.v1.MemoryService.ListSummaries:output_type -> cortex.v1.ListSummariesResponse
-	36, // 55: cortex.v1.MemoryService.Link:output_type -> cortex.v1.LinkResponse
-	38, // 56: cortex.v1.MemoryService.Unlink:output_type -> cortex.v1.UnlinkResponse
-	41, // 57: cortex.v1.MemoryService.ListDuplicateCandidates:output_type -> cortex.v1.ListDuplicateCandidatesResponse
-	43, // 58: cortex.v1.MemoryService.DismissDuplicate:output_type -> cortex.v1.DismissDuplicateResponse
-	47, // 59: cortex.v1.MemoryService.Consolidate:output_type -> cortex.v1.ConsolidateResponse
-	46, // 60: cortex.v1.MemoryService.RestoreMemories:output_type -> cortex.v1.RestoreMemoriesResponse
-	40, // [40:61] is the sub-list for method output_type
-	19, // [19:40] is the sub-list for method input_type
-	19, // [19:19] is the sub-list for extension type_name
-	19, // [19:19] is the sub-list for extension extendee
-	0,  // [0:19] is the sub-list for field type_name
+	48, // 1: cortex.v1.Memory.last_accessed_at:type_name -> google.protobuf.Timestamp
+	1,  // 2: cortex.v1.Hit.memory:type_name -> cortex.v1.Memory
+	8,  // 3: cortex.v1.SearchResponse.hits:type_name -> cortex.v1.Hit
+	1,  // 4: cortex.v1.ListResponse.memories:type_name -> cortex.v1.Memory
+	17, // 5: cortex.v1.DoctorResponse.checks:type_name -> cortex.v1.Check
+	1,  // 6: cortex.v1.DeadLetter.record:type_name -> cortex.v1.Memory
+	48, // 7: cortex.v1.DeadLetter.failed_at:type_name -> google.protobuf.Timestamp
+	0,  // 8: cortex.v1.DeadRequest.action:type_name -> cortex.v1.DeadAction
+	21, // 9: cortex.v1.DeadResponse.dead_letters:type_name -> cortex.v1.DeadLetter
+	48, // 10: cortex.v1.ConversationSummary.created_at:type_name -> google.protobuf.Timestamp
+	48, // 11: cortex.v1.ConversationSummary.updated_at:type_name -> google.protobuf.Timestamp
+	28, // 12: cortex.v1.RecallSessionResponse.summary:type_name -> cortex.v1.ConversationSummary
+	1,  // 13: cortex.v1.RecallSessionResponse.facts:type_name -> cortex.v1.Memory
+	28, // 14: cortex.v1.ListSummariesResponse.summaries:type_name -> cortex.v1.ConversationSummary
+	1,  // 15: cortex.v1.DuplicateGroup.memory:type_name -> cortex.v1.Memory
+	1,  // 16: cortex.v1.DuplicateGroup.candidates:type_name -> cortex.v1.Memory
+	40, // 17: cortex.v1.ListDuplicateCandidatesResponse.groups:type_name -> cortex.v1.DuplicateGroup
+	1,  // 18: cortex.v1.RestoreMemoriesRequest.memories:type_name -> cortex.v1.Memory
+	1,  // 19: cortex.v1.ConsolidateResponse.cluster:type_name -> cortex.v1.Memory
+	2,  // 20: cortex.v1.MemoryService.Save:input_type -> cortex.v1.SaveRequest
+	4,  // 21: cortex.v1.MemoryService.UpdateMemory:input_type -> cortex.v1.UpdateMemoryRequest
+	6,  // 22: cortex.v1.MemoryService.Search:input_type -> cortex.v1.SearchRequest
+	7,  // 23: cortex.v1.MemoryService.SearchSimilar:input_type -> cortex.v1.SearchSimilarRequest
+	10, // 24: cortex.v1.MemoryService.List:input_type -> cortex.v1.ListRequest
+	12, // 25: cortex.v1.MemoryService.Delete:input_type -> cortex.v1.DeleteRequest
+	14, // 26: cortex.v1.MemoryService.Status:input_type -> cortex.v1.StatusRequest
+	16, // 27: cortex.v1.MemoryService.Doctor:input_type -> cortex.v1.DoctorRequest
+	19, // 28: cortex.v1.MemoryService.Reindex:input_type -> cortex.v1.ReindexRequest
+	22, // 29: cortex.v1.MemoryService.Dead:input_type -> cortex.v1.DeadRequest
+	24, // 30: cortex.v1.MemoryService.IndexQueue:input_type -> cortex.v1.IndexQueueRequest
+	26, // 31: cortex.v1.MemoryService.PullModel:input_type -> cortex.v1.PullModelRequest
+	29, // 32: cortex.v1.MemoryService.SummarizeSession:input_type -> cortex.v1.SummarizeSessionRequest
+	31, // 33: cortex.v1.MemoryService.RecallSession:input_type -> cortex.v1.RecallSessionRequest
+	33, // 34: cortex.v1.MemoryService.ListSummaries:input_type -> cortex.v1.ListSummariesRequest
+	35, // 35: cortex.v1.MemoryService.Link:input_type -> cortex.v1.LinkRequest
+	37, // 36: cortex.v1.MemoryService.Unlink:input_type -> cortex.v1.UnlinkRequest
+	39, // 37: cortex.v1.MemoryService.ListDuplicateCandidates:input_type -> cortex.v1.ListDuplicateCandidatesRequest
+	42, // 38: cortex.v1.MemoryService.DismissDuplicate:input_type -> cortex.v1.DismissDuplicateRequest
+	44, // 39: cortex.v1.MemoryService.Consolidate:input_type -> cortex.v1.ConsolidateRequest
+	45, // 40: cortex.v1.MemoryService.RestoreMemories:input_type -> cortex.v1.RestoreMemoriesRequest
+	3,  // 41: cortex.v1.MemoryService.Save:output_type -> cortex.v1.SaveResponse
+	5,  // 42: cortex.v1.MemoryService.UpdateMemory:output_type -> cortex.v1.UpdateMemoryResponse
+	9,  // 43: cortex.v1.MemoryService.Search:output_type -> cortex.v1.SearchResponse
+	9,  // 44: cortex.v1.MemoryService.SearchSimilar:output_type -> cortex.v1.SearchResponse
+	11, // 45: cortex.v1.MemoryService.List:output_type -> cortex.v1.ListResponse
+	13, // 46: cortex.v1.MemoryService.Delete:output_type -> cortex.v1.DeleteResponse
+	15, // 47: cortex.v1.MemoryService.Status:output_type -> cortex.v1.StatusResponse
+	18, // 48: cortex.v1.MemoryService.Doctor:output_type -> cortex.v1.DoctorResponse
+	20, // 49: cortex.v1.MemoryService.Reindex:output_type -> cortex.v1.ReindexResponse
+	23, // 50: cortex.v1.MemoryService.Dead:output_type -> cortex.v1.DeadResponse
+	25, // 51: cortex.v1.MemoryService.IndexQueue:output_type -> cortex.v1.IndexQueueResponse
+	27, // 52: cortex.v1.MemoryService.PullModel:output_type -> cortex.v1.PullModelResponse
+	30, // 53: cortex.v1.MemoryService.SummarizeSession:output_type -> cortex.v1.SummarizeSessionResponse
+	32, // 54: cortex.v1.MemoryService.RecallSession:output_type -> cortex.v1.RecallSessionResponse
+	34, // 55: cortex.v1.MemoryService.ListSummaries:output_type -> cortex.v1.ListSummariesResponse
+	36, // 56: cortex.v1.MemoryService.Link:output_type -> cortex.v1.LinkResponse
+	38, // 57: cortex.v1.MemoryService.Unlink:output_type -> cortex.v1.UnlinkResponse
+	41, // 58: cortex.v1.MemoryService.ListDuplicateCandidates:output_type -> cortex.v1.ListDuplicateCandidatesResponse
+	43, // 59: cortex.v1.MemoryService.DismissDuplicate:output_type -> cortex.v1.DismissDuplicateResponse
+	47, // 60: cortex.v1.MemoryService.Consolidate:output_type -> cortex.v1.ConsolidateResponse
+	46, // 61: cortex.v1.MemoryService.RestoreMemories:output_type -> cortex.v1.RestoreMemoriesResponse
+	41, // [41:62] is the sub-list for method output_type
+	20, // [20:41] is the sub-list for method input_type
+	20, // [20:20] is the sub-list for extension type_name
+	20, // [20:20] is the sub-list for extension extendee
+	0,  // [0:20] is the sub-list for field type_name
 }
 
 func init() { file_cortex_v1_cortex_proto_init() }

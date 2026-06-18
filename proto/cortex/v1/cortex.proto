@@ -98,6 +98,15 @@ message Memory {
   // memory (bidirectional). The worker excludes these when recomputing
   // dup_candidates, so a dismissed pair is never re-flagged.
   repeated string not_duplicate_of = 12;
+  // access_count is how many times this memory has surfaced as a top search hit
+  // and been reinforced (the "living memory" usage signal). It only accrues when
+  // reranking is enabled (RERANK_WEIGHT>0); 0 otherwise. Metadata, never embedded.
+  int32 access_count = 13;
+  // last_accessed_at is when this memory was last reinforced by a search hit.
+  // Together with access_count it drives the decay/reinforcement re-ranking:
+  // recently-used memories float up, untouched ones fade. Unset until first
+  // reinforced (recency then falls back to created_at).
+  google.protobuf.Timestamp last_accessed_at = 14;
 }
 
 message SaveRequest {

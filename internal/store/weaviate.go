@@ -5,6 +5,8 @@ package store
 import (
 	"context"
 	"fmt"
+	"math"
+	"sort"
 	"strings"
 	"time"
 
@@ -44,6 +46,18 @@ type SearchOpts struct {
 	// Alpha is the hybrid blend: 1=pure vector, 0=pure keyword. Only used when
 	// Query is set; <=0 leaves Weaviate's default.
 	Alpha float32
+	// RerankWeight enables "living memory" re-ranking: after the relevance query
+	// and the maxDistance cutoff, the surviving hits are RE-ORDERED by a blend of
+	// relevance and usage (recency-decayed access). 0 disables it entirely (the
+	// hits keep pure relevance order and the cutoff/distance are untouched); a
+	// value in (0,1] is how much weight usage gets vs relevance. The Distance
+	// field of each hit is NEVER modified — only the order changes — so cutoffs,
+	// the UI, and clients see the same distance metric as before.
+	RerankWeight float32
+	// RerankHalfLifeDays is the recency half-life: a memory last accessed this many
+	// days ago contributes half the recency it would if accessed just now. Only
+	// used when RerankWeight>0; <=0 falls back to a sane default in rerankHits.
+	RerankHalfLifeDays float32
 }
 
 // ListOpts configures a non-vector listing.
@@ -147,6 +161,8 @@ func memoryProperties() []*models.Property {
 		{Name: "linkedIds", DataType: []string{"text[]"}},
 		{Name: "dupCandidates", DataType: []string{"text[]"}},
 		{Name: "notDuplicateOf", DataType: []string{"text[]"}},
+		{Name: "accessCount", DataType: []string{"int"}},
+		{Name: "lastAccessedAt", DataType: []string{"date"}},
 	}
 }
 
@@ -226,7 +242,19 @@ func (s *Store) Upsert(ctx context.Context, rec memory.Record, vector []float32)
 		"linkedIds":      rec.LinkedIDs,
 		"dupCandidates":  rec.DupCandidates,
 		"notDuplicateOf": rec.NotDuplicateOf,
+		"accessCount":    rec.AccessCount,
+		"lastAccessedAt": formatDate(rec.LastAccessedAt),
 	}, vector)
+}
+
+// formatDate renders a time for a Weaviate date property, returning "" for the
+// zero time so the property stays null rather than serialising the year-0001
+// sentinel (which would make a never-accessed memory look "accessed long ago").
+func formatDate(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339)
 }
 
 // UpsertSummary writes a conversation summary into the ConversationSummary
@@ -367,6 +395,29 @@ func (s *Store) SetDupCandidates(ctx context.Context, id string, ids []string) e
 	return nil
 }
 
+// Reinforce records that a memory surfaced as a top search hit: it bumps
+// accessCount and stamps lastAccessedAt via a Weaviate merge (PATCH), leaving the
+// vector and every other property untouched — reinforcement never re-embeds. This
+// is the write side of "living memory"; the read side (rerankHits) lets the
+// freshened recency/frequency float the memory up in future searches. count is
+// the NEW absolute access count (caller computes prev+1); the caller serialises
+// concurrent reinforcements of the same id so the increment is not lost.
+func (s *Store) Reinforce(ctx context.Context, id string, count int, at time.Time) error {
+	err := s.client.Data().Updater().
+		WithMerge().
+		WithClassName(memory.ClassName).
+		WithID(id).
+		WithProperties(map[string]interface{}{
+			"accessCount":    count,
+			"lastAccessedAt": formatDate(at),
+		}).
+		Do(ctx)
+	if err != nil {
+		return fmt.Errorf("reinforce: %w", err)
+	}
+	return nil
+}
+
 // Ready reports whether Weaviate is up and serving. Used by Status/Doctor.
 func (s *Store) Ready(ctx context.Context) error {
 	ok, err := s.client.Misc().ReadyChecker().Do(ctx)
@@ -403,7 +454,7 @@ func (s *Store) Count(ctx context.Context, namespace string) (int, error) {
 }
 
 // memoryProps is the property set fetched for both search and list.
-var memoryProps = []string{"text", "namespace", "tags", "source", "createdAt", "model", "dims", "conversationId", "linkedIds", "dupCandidates", "notDuplicateOf"}
+var memoryProps = []string{"text", "namespace", "tags", "source", "createdAt", "model", "dims", "conversationId", "linkedIds", "dupCandidates", "notDuplicateOf", "accessCount", "lastAccessedAt"}
 
 // buildWhere combines exact namespace + conversationId filters with tag
 // filters: includeTags ("has ALL of these", ContainsAll) and anyTags ("has at
@@ -481,10 +532,20 @@ func (s *Store) Search(ctx context.Context, vector []float32, opts SearchOpts) (
 		limit = 5
 	}
 
+	// Living-memory re-ranking re-orders the relevance survivors by usage, so a
+	// frequently/recently used memory just outside the top `limit` by pure
+	// relevance can still float in. Overfetch a wider candidate pool to give it
+	// that chance; the cutoff and per-hit Distance are unaffected.
+	fetchLimit := limit
+	rerank := opts.RerankWeight > 0
+	if rerank {
+		fetchLimit = limit * rerankOverfetch
+	}
+
 	query := s.client.Experimental().Search().
 		WithCollection(memory.ClassName).
 		WithProperties(memoryProps...).
-		WithLimit(limit)
+		WithLimit(fetchLimit)
 
 	hybrid := strings.TrimSpace(opts.Query) != ""
 	if hybrid {
@@ -535,7 +596,101 @@ func (s *Store) Search(ctx context.Context, vector []float32, opts SearchOpts) (
 		}
 		hits = append(hits, memory.Hit{Record: resultToRecord(r), Distance: dist})
 	}
-	return excludeTagged(hits, func(h memory.Hit) []string { return h.Tags }, opts.ExcludeTags), nil
+	hits = excludeTagged(hits, func(h memory.Hit) []string { return h.Tags }, opts.ExcludeTags)
+	if rerank {
+		hits = rerankHits(hits, opts.RerankWeight, opts.RerankHalfLifeDays, time.Now())
+		if len(hits) > limit {
+			hits = hits[:limit]
+		}
+	}
+	return hits, nil
+}
+
+// rerankOverfetch is how many times `limit` candidates Search pulls when
+// re-ranking is on, so a high-usage memory ranked just outside the top `limit`
+// by relevance still gets a chance to surface. A personal store is small, so a
+// wide pool is cheap.
+const rerankOverfetch = 5
+
+// defaultHalfLifeDays is the recency half-life used when SearchOpts leaves it
+// unset (<=0): a memory not accessed for this many days contributes half the
+// recency of one accessed just now.
+const defaultHalfLifeDays = 30.0
+
+// freqWeight scales the (logarithmic) access-count bonus added to a memory's
+// recency when computing its usage term. Kept small and internal: frequency
+// nudges ordering, recency dominates, so a memory that was useful once long ago
+// does not permanently outrank fresh relevant matches.
+const freqWeight = 0.1
+
+// rerankHits re-orders relevance survivors by a blend of relevance and usage.
+// It is the heart of "living memory" and is a PURE function (now is injected) so
+// the decay/frequency behaviour is unit-testable without a live store. It never
+// mutates a hit's Distance — only the slice order changes — so every downstream
+// consumer still sees the original relevance distance and its cutoff semantics.
+//
+//	score = (1-w)*relevance + w*usage
+//	relevance = clamp(1 - distance, 0, 1)              // higher = closer match
+//	usage     = min(1, recency + freqWeight*ln(1+accessCount))
+//	recency   = 2^(-ageDays / halfLifeDays)            // 1 just-now → 0.5 at one half-life
+//
+// Age is measured from LastAccessedAt, falling back to CreatedAt when the memory
+// was never reinforced; a memory with neither timestamp gets recency 0 (no usage
+// signal), so it ranks purely on relevance.
+func rerankHits(hits []memory.Hit, weight, halfLifeDays float32, now time.Time) []memory.Hit {
+	if weight <= 0 || len(hits) < 2 {
+		return hits
+	}
+	w := weight
+	if w > 1 {
+		w = 1
+	}
+	half := float64(halfLifeDays)
+	if half <= 0 {
+		half = defaultHalfLifeDays
+	}
+
+	scored := make([]struct {
+		hit   memory.Hit
+		score float64
+	}, len(hits))
+	for i, h := range hits {
+		relevance := 1 - float64(h.Distance)
+		if relevance < 0 {
+			relevance = 0
+		} else if relevance > 1 {
+			relevance = 1
+		}
+		usage := math.Min(1, recencyScore(h, half, now)+freqWeight*math.Log1p(float64(h.AccessCount)))
+		scored[i].hit = h
+		scored[i].score = (1-float64(w))*relevance + float64(w)*usage
+	}
+	sort.SliceStable(scored, func(i, j int) bool { return scored[i].score > scored[j].score })
+
+	out := make([]memory.Hit, len(scored))
+	for i := range scored {
+		out[i] = scored[i].hit
+	}
+	return out
+}
+
+// recencyScore is the time-decayed usage component of a hit: 2^(-ageDays/half),
+// measured from the last access (or creation if never accessed). It is 0 when the
+// memory carries neither timestamp (no usage signal at all) and 1 for a memory
+// touched now or in the (clock-skew) future.
+func recencyScore(h memory.Hit, halfLifeDays float64, now time.Time) float64 {
+	ref := h.LastAccessedAt
+	if ref.IsZero() {
+		ref = h.CreatedAt
+	}
+	if ref.IsZero() {
+		return 0
+	}
+	ageDays := now.Sub(ref).Hours() / 24
+	if ageDays < 0 {
+		ageDays = 0
+	}
+	return math.Pow(2, -ageDays/halfLifeDays)
 }
 
 // hybridDistance maps a relativeScoreFusion score (0..1, higher = more relevant)
@@ -775,9 +930,13 @@ func resultToRecord(r graphql.SearchResult) memory.Record {
 		LinkedIDs:      propStrings(p, "linkedIds"),
 		DupCandidates:  propStrings(p, "dupCandidates"),
 		NotDuplicateOf: propStrings(p, "notDuplicateOf"),
+		AccessCount:    propInt(p, "accessCount"),
 	}
 	if ca := propString(p, "createdAt"); ca != "" {
 		rec.CreatedAt, _ = time.Parse(time.RFC3339, ca)
+	}
+	if la := propString(p, "lastAccessedAt"); la != "" {
+		rec.LastAccessedAt, _ = time.Parse(time.RFC3339, la)
 	}
 	return rec
 }
@@ -819,9 +978,13 @@ func objectToRecord(id string, raw models.PropertySchema) memory.Record {
 		LinkedIDs:      restStrings(p, "linkedIds"),
 		DupCandidates:  restStrings(p, "dupCandidates"),
 		NotDuplicateOf: restStrings(p, "notDuplicateOf"),
+		AccessCount:    restInt(p, "accessCount"),
 	}
 	if ca := restString(p, "createdAt"); ca != "" {
 		rec.CreatedAt, _ = time.Parse(time.RFC3339, ca)
+	}
+	if la := restString(p, "lastAccessedAt"); la != "" {
+		rec.LastAccessedAt, _ = time.Parse(time.RFC3339, la)
 	}
 	return rec
 }
