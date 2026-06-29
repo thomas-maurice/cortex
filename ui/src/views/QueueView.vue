@@ -32,7 +32,7 @@
     </div>
 
     <div class="d-flex align-items-center gap-2 mb-3">
-      <button class="btn btn-primary btn-sm" :disabled="loading" @click="reload">
+      <button class="btn btn-primary btn-sm" :disabled="loading" @click="reload()">
         <font-awesome-icon :icon="['fas', 'rotate']" class="me-1" />Refresh
       </button>
       <button class="btn btn-outline-warning btn-sm" :disabled="busy || counts.dead === 0" @click="requeue">
@@ -66,7 +66,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { Code, ConnectError } from '@connectrpc/connect'
 import { memoryClient } from '@/utils/connect'
@@ -83,6 +83,14 @@ const dead = ref([])
 const loading = ref(false)
 const busy = ref(false)
 const error = ref('')
+
+// Indexing is fast and bursty (and usually driven in the background by the agent
+// or a bulk import), so a one-shot snapshot almost always reads 0/0/0 and looks
+// like "nothing is ever indexed". Poll while the view is mounted so live queue
+// activity actually shows. Background polls skip the spinner and don't stack.
+const POLL_MS = 1000
+let pollTimer = null
+let polling = false
 
 function formatDate(ts) {
   try {
@@ -102,9 +110,11 @@ function handleError(e) {
   return false
 }
 
-async function reload() {
-  loading.value = true
-  error.value = ''
+async function reload(background = false) {
+  // A slow poll must not stack on top of the previous one.
+  if (background && polling) return
+  polling = true
+  if (!background) loading.value = true
   try {
     const q = await memoryClient.indexQueue({})
     counts.pending = Number(q.pending)
@@ -113,10 +123,23 @@ async function reload() {
     consumerPresent.value = q.consumerPresent
     const d = await memoryClient.dead({ action: DeadAction.LIST })
     dead.value = d.deadLetters
+    // A successful poll clears a previous transient error.
+    error.value = ''
   } catch (e) {
-    if (handleError(e)) return
+    if (handleError(e)) {
+      stopPolling()
+      return
+    }
   } finally {
-    loading.value = false
+    polling = false
+    if (!background) loading.value = false
+  }
+}
+
+function stopPolling() {
+  if (pollTimer) {
+    clearInterval(pollTimer)
+    pollTimer = null
   }
 }
 
@@ -146,5 +169,10 @@ async function purge() {
   }
 }
 
-onMounted(reload)
+onMounted(() => {
+  reload()
+  pollTimer = setInterval(() => reload(true), POLL_MS)
+})
+
+onUnmounted(stopPolling)
 </script>
