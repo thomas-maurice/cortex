@@ -74,6 +74,18 @@ service MemoryService {
   // model changes. Ids, namespace, tags, createdAt, links and not-duplicate
   // decisions are preserved; an existing id is overwritten (upsert).
   rpc RestoreMemories(RestoreMemoriesRequest) returns (RestoreMemoriesResponse) {}
+  // ListNamespaces aggregates the stored namespaces with per-namespace counts
+  // (memories + conversation summaries) and the most recent activity, for the
+  // UI's namespace admin view.
+  rpc ListNamespaces(ListNamespacesRequest) returns (ListNamespacesResponse) {}
+  // RenameNamespace moves every memory AND conversation summary from one
+  // namespace to another. It is a metadata-only change (namespace is never
+  // embedded), so nothing is re-embedded; renaming into an existing namespace
+  // merges the two.
+  rpc RenameNamespace(RenameNamespaceRequest) returns (RenameNamespaceResponse) {}
+  // DeleteNamespace permanently deletes every memory AND conversation summary in
+  // a namespace.
+  rpc DeleteNamespace(DeleteNamespaceRequest) returns (DeleteNamespaceResponse) {}
 }
 
 // Memory is one stored memory. Only `text` is ever embedded; every other field
@@ -407,6 +419,41 @@ message RestoreMemoriesRequest {
 
 message RestoreMemoriesResponse {
   int32 queued = 1; // how many memories were accepted onto the index queue
+}
+
+// NamespaceInfo aggregates one namespace's contents for the admin view.
+message NamespaceInfo {
+  string name = 1;
+  int64 memory_count = 2;  // memories stored under this namespace
+  int64 summary_count = 3; // conversation summaries stored under this namespace
+  // last_updated is the most recent activity in the namespace: the newest memory
+  // createdAt or summary updatedAt. Unset when the namespace has no timestamps.
+  google.protobuf.Timestamp last_updated = 4;
+}
+
+message ListNamespacesRequest {}
+
+message ListNamespacesResponse {
+  repeated NamespaceInfo namespaces = 1; // most memories first
+}
+
+message RenameNamespaceRequest {
+  string from = 1; // existing namespace to move away from
+  string to = 2;   // destination namespace (created if absent, merged if present)
+}
+
+message RenameNamespaceResponse {
+  int32 memories_updated = 1;
+  int32 summaries_updated = 2;
+}
+
+message DeleteNamespaceRequest {
+  string namespace = 1; // the namespace whose memories and summaries to delete
+}
+
+message DeleteNamespaceResponse {
+  int32 memories_deleted = 1;
+  int32 summaries_deleted = 2;
 }
 
 message ConsolidateResponse {

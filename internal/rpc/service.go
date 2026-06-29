@@ -915,6 +915,59 @@ func (s *Service) RestoreMemories(ctx context.Context, req *connect.Request[cort
 	return connect.NewResponse(&cortexv1.RestoreMemoriesResponse{Queued: int32(queued)}), nil
 }
 
+// ListNamespaces aggregates the stored namespaces with per-namespace memory and
+// summary counts and the most recent activity, for the UI's namespace admin view.
+func (s *Service) ListNamespaces(ctx context.Context, _ *connect.Request[cortexv1.ListNamespacesRequest]) (*connect.Response[cortexv1.ListNamespacesResponse], error) {
+	stats, err := s.store.ListNamespaces(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := &cortexv1.ListNamespacesResponse{Namespaces: make([]*cortexv1.NamespaceInfo, 0, len(stats))}
+	for _, st := range stats {
+		out.Namespaces = append(out.Namespaces, namespaceStatToProto(st))
+	}
+	return connect.NewResponse(out), nil
+}
+
+// RenameNamespace moves every memory and conversation summary from one namespace
+// to another. It is metadata-only (namespace is never embedded) so nothing is
+// re-embedded; renaming into an existing namespace merges the two.
+func (s *Service) RenameNamespace(ctx context.Context, req *connect.Request[cortexv1.RenameNamespaceRequest]) (*connect.Response[cortexv1.RenameNamespaceResponse], error) {
+	from := strings.TrimSpace(req.Msg.GetFrom())
+	to := strings.TrimSpace(req.Msg.GetTo())
+	if from == "" || to == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("from and to must not be empty"))
+	}
+	if from == to {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("from and to must differ"))
+	}
+	mem, sum, err := s.store.RenameNamespace(ctx, from, to)
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(&cortexv1.RenameNamespaceResponse{
+		MemoriesUpdated:  int32(mem),
+		SummariesUpdated: int32(sum),
+	}), nil
+}
+
+// DeleteNamespace permanently deletes every memory and conversation summary in a
+// namespace.
+func (s *Service) DeleteNamespace(ctx context.Context, req *connect.Request[cortexv1.DeleteNamespaceRequest]) (*connect.Response[cortexv1.DeleteNamespaceResponse], error) {
+	ns := strings.TrimSpace(req.Msg.GetNamespace())
+	if ns == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("namespace must not be empty"))
+	}
+	mem, sum, err := s.store.DeleteNamespace(ctx, ns)
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(&cortexv1.DeleteNamespaceResponse{
+		MemoriesDeleted:  int32(mem),
+		SummariesDeleted: int32(sum),
+	}), nil
+}
+
 // linkEndpoints validates two distinct, existing memory ids and returns both
 // records (with their current link sets). Shared by Link and Unlink.
 func (s *Service) linkEndpoints(ctx context.Context, idA, idB string) (memory.Record, memory.Record, error) {

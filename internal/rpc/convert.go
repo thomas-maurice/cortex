@@ -7,6 +7,7 @@ import (
 
 	cortexv1 "github.com/thomas-maurice/cortex/gen/cortex/v1"
 	"github.com/thomas-maurice/cortex/internal/memory"
+	"github.com/thomas-maurice/cortex/internal/store"
 )
 
 // protoToRecord maps a wire memory back to an internal record. It is the inverse
@@ -103,6 +104,21 @@ func summaryToProto(h memory.SummaryHit) *cortexv1.ConversationSummary {
 		Dims:           int32(h.Dims),
 		Distance:       h.Distance,
 	}
+}
+
+// namespaceStatToProto maps an aggregated namespace stat to its wire form. The
+// last-updated timestamp is left nil for a namespace with no timestamps so the
+// UI can tell "no activity" from "the epoch".
+func namespaceStatToProto(st store.NamespaceStat) *cortexv1.NamespaceInfo {
+	ni := &cortexv1.NamespaceInfo{
+		Name:         st.Name,
+		MemoryCount:  int64(st.MemoryCount),
+		SummaryCount: int64(st.SummaryCount),
+	}
+	if !st.LastUpdated.IsZero() {
+		ni.LastUpdated = timestamppb.New(st.LastUpdated)
+	}
+	return ni
 }
 
 // resolveNamespace maps a request namespace to a store filter: "" -> the

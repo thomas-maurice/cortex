@@ -5,8 +5,10 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/thomas-maurice/cortex/internal/memory"
+	"github.com/thomas-maurice/cortex/internal/store"
 )
 
 // protoToRecord is the import half of dump/restore, so it must faithfully carry
@@ -45,4 +47,25 @@ func memRecordForTest(created time.Time) memory.Record {
 		DupCandidates:  []string{"dup-x"}, // present on the source, must NOT survive import
 		NotDuplicateOf: []string{"notdup-b"},
 	}
+}
+
+// namespaceStatToProto must carry the counts AND map a zero LastUpdated to a nil
+// timestamp — the UI relies on nil to render "no activity" (—) rather than the
+// year-0001 epoch, the same convention lastAccessedProto follows for memories.
+func TestNamespaceStatToProto(t *testing.T) {
+	updated := time.Date(2026, 6, 20, 9, 30, 0, 0, time.UTC)
+	got := namespaceStatToProto(store.NamespaceStat{
+		Name:         "homelab",
+		MemoryCount:  7,
+		SummaryCount: 2,
+		LastUpdated:  updated,
+	})
+	assert.Equal(t, "homelab", got.GetName())
+	assert.Equal(t, int64(7), got.GetMemoryCount())
+	assert.Equal(t, int64(2), got.GetSummaryCount())
+	require.NotNil(t, got.GetLastUpdated())
+	assert.True(t, updated.Equal(got.GetLastUpdated().AsTime()))
+
+	zero := namespaceStatToProto(store.NamespaceStat{Name: "empty"})
+	assert.Nil(t, zero.GetLastUpdated(), "a namespace with no timestamps must carry nil last_updated, not the epoch")
 }

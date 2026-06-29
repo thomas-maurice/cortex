@@ -35,6 +35,12 @@ const router = createRouter({
       meta: { requiresAuth: true },
     },
     {
+      path: '/namespaces',
+      name: 'namespaces',
+      component: () => import('@/views/NamespacesView.vue'),
+      meta: { requiresAuth: true },
+    },
+    {
       path: '/preferences',
       name: 'preferences',
       component: () => import('@/views/PreferencesView.vue'),

@@ -85,6 +85,15 @@ const (
 	// MemoryServiceRestoreMemoriesProcedure is the fully-qualified name of the MemoryService's
 	// RestoreMemories RPC.
 	MemoryServiceRestoreMemoriesProcedure = "/cortex.v1.MemoryService/RestoreMemories"
+	// MemoryServiceListNamespacesProcedure is the fully-qualified name of the MemoryService's
+	// ListNamespaces RPC.
+	MemoryServiceListNamespacesProcedure = "/cortex.v1.MemoryService/ListNamespaces"
+	// MemoryServiceRenameNamespaceProcedure is the fully-qualified name of the MemoryService's
+	// RenameNamespace RPC.
+	MemoryServiceRenameNamespaceProcedure = "/cortex.v1.MemoryService/RenameNamespace"
+	// MemoryServiceDeleteNamespaceProcedure is the fully-qualified name of the MemoryService's
+	// DeleteNamespace RPC.
+	MemoryServiceDeleteNamespaceProcedure = "/cortex.v1.MemoryService/DeleteNamespace"
 )
 
 // MemoryServiceClient is a client for the cortex.v1.MemoryService service.
@@ -152,6 +161,18 @@ type MemoryServiceClient interface {
 	// model changes. Ids, namespace, tags, createdAt, links and not-duplicate
 	// decisions are preserved; an existing id is overwritten (upsert).
 	RestoreMemories(context.Context, *connect.Request[v1.RestoreMemoriesRequest]) (*connect.Response[v1.RestoreMemoriesResponse], error)
+	// ListNamespaces aggregates the stored namespaces with per-namespace counts
+	// (memories + conversation summaries) and the most recent activity, for the
+	// UI's namespace admin view.
+	ListNamespaces(context.Context, *connect.Request[v1.ListNamespacesRequest]) (*connect.Response[v1.ListNamespacesResponse], error)
+	// RenameNamespace moves every memory AND conversation summary from one
+	// namespace to another. It is a metadata-only change (namespace is never
+	// embedded), so nothing is re-embedded; renaming into an existing namespace
+	// merges the two.
+	RenameNamespace(context.Context, *connect.Request[v1.RenameNamespaceRequest]) (*connect.Response[v1.RenameNamespaceResponse], error)
+	// DeleteNamespace permanently deletes every memory AND conversation summary in
+	// a namespace.
+	DeleteNamespace(context.Context, *connect.Request[v1.DeleteNamespaceRequest]) (*connect.Response[v1.DeleteNamespaceResponse], error)
 }
 
 // NewMemoryServiceClient constructs a client for the cortex.v1.MemoryService service. By default,
@@ -291,6 +312,24 @@ func NewMemoryServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(memoryServiceMethods.ByName("RestoreMemories")),
 			connect.WithClientOptions(opts...),
 		),
+		listNamespaces: connect.NewClient[v1.ListNamespacesRequest, v1.ListNamespacesResponse](
+			httpClient,
+			baseURL+MemoryServiceListNamespacesProcedure,
+			connect.WithSchema(memoryServiceMethods.ByName("ListNamespaces")),
+			connect.WithClientOptions(opts...),
+		),
+		renameNamespace: connect.NewClient[v1.RenameNamespaceRequest, v1.RenameNamespaceResponse](
+			httpClient,
+			baseURL+MemoryServiceRenameNamespaceProcedure,
+			connect.WithSchema(memoryServiceMethods.ByName("RenameNamespace")),
+			connect.WithClientOptions(opts...),
+		),
+		deleteNamespace: connect.NewClient[v1.DeleteNamespaceRequest, v1.DeleteNamespaceResponse](
+			httpClient,
+			baseURL+MemoryServiceDeleteNamespaceProcedure,
+			connect.WithSchema(memoryServiceMethods.ByName("DeleteNamespace")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -317,6 +356,9 @@ type memoryServiceClient struct {
 	dismissDuplicate        *connect.Client[v1.DismissDuplicateRequest, v1.DismissDuplicateResponse]
 	consolidate             *connect.Client[v1.ConsolidateRequest, v1.ConsolidateResponse]
 	restoreMemories         *connect.Client[v1.RestoreMemoriesRequest, v1.RestoreMemoriesResponse]
+	listNamespaces          *connect.Client[v1.ListNamespacesRequest, v1.ListNamespacesResponse]
+	renameNamespace         *connect.Client[v1.RenameNamespaceRequest, v1.RenameNamespaceResponse]
+	deleteNamespace         *connect.Client[v1.DeleteNamespaceRequest, v1.DeleteNamespaceResponse]
 }
 
 // Save calls cortex.v1.MemoryService.Save.
@@ -424,6 +466,21 @@ func (c *memoryServiceClient) RestoreMemories(ctx context.Context, req *connect.
 	return c.restoreMemories.CallUnary(ctx, req)
 }
 
+// ListNamespaces calls cortex.v1.MemoryService.ListNamespaces.
+func (c *memoryServiceClient) ListNamespaces(ctx context.Context, req *connect.Request[v1.ListNamespacesRequest]) (*connect.Response[v1.ListNamespacesResponse], error) {
+	return c.listNamespaces.CallUnary(ctx, req)
+}
+
+// RenameNamespace calls cortex.v1.MemoryService.RenameNamespace.
+func (c *memoryServiceClient) RenameNamespace(ctx context.Context, req *connect.Request[v1.RenameNamespaceRequest]) (*connect.Response[v1.RenameNamespaceResponse], error) {
+	return c.renameNamespace.CallUnary(ctx, req)
+}
+
+// DeleteNamespace calls cortex.v1.MemoryService.DeleteNamespace.
+func (c *memoryServiceClient) DeleteNamespace(ctx context.Context, req *connect.Request[v1.DeleteNamespaceRequest]) (*connect.Response[v1.DeleteNamespaceResponse], error) {
+	return c.deleteNamespace.CallUnary(ctx, req)
+}
+
 // MemoryServiceHandler is an implementation of the cortex.v1.MemoryService service.
 type MemoryServiceHandler interface {
 	// Save queues a memory for asynchronous, durable indexing (NATS JetStream).
@@ -489,6 +546,18 @@ type MemoryServiceHandler interface {
 	// model changes. Ids, namespace, tags, createdAt, links and not-duplicate
 	// decisions are preserved; an existing id is overwritten (upsert).
 	RestoreMemories(context.Context, *connect.Request[v1.RestoreMemoriesRequest]) (*connect.Response[v1.RestoreMemoriesResponse], error)
+	// ListNamespaces aggregates the stored namespaces with per-namespace counts
+	// (memories + conversation summaries) and the most recent activity, for the
+	// UI's namespace admin view.
+	ListNamespaces(context.Context, *connect.Request[v1.ListNamespacesRequest]) (*connect.Response[v1.ListNamespacesResponse], error)
+	// RenameNamespace moves every memory AND conversation summary from one
+	// namespace to another. It is a metadata-only change (namespace is never
+	// embedded), so nothing is re-embedded; renaming into an existing namespace
+	// merges the two.
+	RenameNamespace(context.Context, *connect.Request[v1.RenameNamespaceRequest]) (*connect.Response[v1.RenameNamespaceResponse], error)
+	// DeleteNamespace permanently deletes every memory AND conversation summary in
+	// a namespace.
+	DeleteNamespace(context.Context, *connect.Request[v1.DeleteNamespaceRequest]) (*connect.Response[v1.DeleteNamespaceResponse], error)
 }
 
 // NewMemoryServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -624,6 +693,24 @@ func NewMemoryServiceHandler(svc MemoryServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(memoryServiceMethods.ByName("RestoreMemories")),
 		connect.WithHandlerOptions(opts...),
 	)
+	memoryServiceListNamespacesHandler := connect.NewUnaryHandler(
+		MemoryServiceListNamespacesProcedure,
+		svc.ListNamespaces,
+		connect.WithSchema(memoryServiceMethods.ByName("ListNamespaces")),
+		connect.WithHandlerOptions(opts...),
+	)
+	memoryServiceRenameNamespaceHandler := connect.NewUnaryHandler(
+		MemoryServiceRenameNamespaceProcedure,
+		svc.RenameNamespace,
+		connect.WithSchema(memoryServiceMethods.ByName("RenameNamespace")),
+		connect.WithHandlerOptions(opts...),
+	)
+	memoryServiceDeleteNamespaceHandler := connect.NewUnaryHandler(
+		MemoryServiceDeleteNamespaceProcedure,
+		svc.DeleteNamespace,
+		connect.WithSchema(memoryServiceMethods.ByName("DeleteNamespace")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/cortex.v1.MemoryService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case MemoryServiceSaveProcedure:
@@ -668,6 +755,12 @@ func NewMemoryServiceHandler(svc MemoryServiceHandler, opts ...connect.HandlerOp
 			memoryServiceConsolidateHandler.ServeHTTP(w, r)
 		case MemoryServiceRestoreMemoriesProcedure:
 			memoryServiceRestoreMemoriesHandler.ServeHTTP(w, r)
+		case MemoryServiceListNamespacesProcedure:
+			memoryServiceListNamespacesHandler.ServeHTTP(w, r)
+		case MemoryServiceRenameNamespaceProcedure:
+			memoryServiceRenameNamespaceHandler.ServeHTTP(w, r)
+		case MemoryServiceDeleteNamespaceProcedure:
+			memoryServiceDeleteNamespaceHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -759,4 +852,16 @@ func (UnimplementedMemoryServiceHandler) Consolidate(context.Context, *connect.R
 
 func (UnimplementedMemoryServiceHandler) RestoreMemories(context.Context, *connect.Request[v1.RestoreMemoriesRequest]) (*connect.Response[v1.RestoreMemoriesResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cortex.v1.MemoryService.RestoreMemories is not implemented"))
+}
+
+func (UnimplementedMemoryServiceHandler) ListNamespaces(context.Context, *connect.Request[v1.ListNamespacesRequest]) (*connect.Response[v1.ListNamespacesResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cortex.v1.MemoryService.ListNamespaces is not implemented"))
+}
+
+func (UnimplementedMemoryServiceHandler) RenameNamespace(context.Context, *connect.Request[v1.RenameNamespaceRequest]) (*connect.Response[v1.RenameNamespaceResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cortex.v1.MemoryService.RenameNamespace is not implemented"))
+}
+
+func (UnimplementedMemoryServiceHandler) DeleteNamespace(context.Context, *connect.Request[v1.DeleteNamespaceRequest]) (*connect.Response[v1.DeleteNamespaceResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cortex.v1.MemoryService.DeleteNamespace is not implemented"))
 }

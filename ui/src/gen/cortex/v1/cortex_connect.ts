@@ -3,7 +3,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { ConsolidateRequest, ConsolidateResponse, DeadRequest, DeadResponse, DeleteRequest, DeleteResponse, DismissDuplicateRequest, DismissDuplicateResponse, DoctorRequest, DoctorResponse, IndexQueueRequest, IndexQueueResponse, LinkRequest, LinkResponse, ListDuplicateCandidatesRequest, ListDuplicateCandidatesResponse, ListRequest, ListResponse, ListSummariesRequest, ListSummariesResponse, PullModelRequest, PullModelResponse, RecallSessionRequest, RecallSessionResponse, ReindexRequest, ReindexResponse, RestoreMemoriesRequest, RestoreMemoriesResponse, SaveRequest, SaveResponse, SearchRequest, SearchResponse, SearchSimilarRequest, StatusRequest, StatusResponse, SummarizeSessionRequest, SummarizeSessionResponse, UnlinkRequest, UnlinkResponse, UpdateMemoryRequest, UpdateMemoryResponse } from "./cortex_pb.js";
+import { ConsolidateRequest, ConsolidateResponse, DeadRequest, DeadResponse, DeleteNamespaceRequest, DeleteNamespaceResponse, DeleteRequest, DeleteResponse, DismissDuplicateRequest, DismissDuplicateResponse, DoctorRequest, DoctorResponse, IndexQueueRequest, IndexQueueResponse, LinkRequest, LinkResponse, ListDuplicateCandidatesRequest, ListDuplicateCandidatesResponse, ListNamespacesRequest, ListNamespacesResponse, ListRequest, ListResponse, ListSummariesRequest, ListSummariesResponse, PullModelRequest, PullModelResponse, RecallSessionRequest, RecallSessionResponse, ReindexRequest, ReindexResponse, RenameNamespaceRequest, RenameNamespaceResponse, RestoreMemoriesRequest, RestoreMemoriesResponse, SaveRequest, SaveResponse, SearchRequest, SearchResponse, SearchSimilarRequest, StatusRequest, StatusResponse, SummarizeSessionRequest, SummarizeSessionResponse, UnlinkRequest, UnlinkResponse, UpdateMemoryRequest, UpdateMemoryResponse } from "./cortex_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -267,6 +267,45 @@ export const MemoryService = {
       name: "RestoreMemories",
       I: RestoreMemoriesRequest,
       O: RestoreMemoriesResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * ListNamespaces aggregates the stored namespaces with per-namespace counts
+     * (memories + conversation summaries) and the most recent activity, for the
+     * UI's namespace admin view.
+     *
+     * @generated from rpc cortex.v1.MemoryService.ListNamespaces
+     */
+    listNamespaces: {
+      name: "ListNamespaces",
+      I: ListNamespacesRequest,
+      O: ListNamespacesResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * RenameNamespace moves every memory AND conversation summary from one
+     * namespace to another. It is a metadata-only change (namespace is never
+     * embedded), so nothing is re-embedded; renaming into an existing namespace
+     * merges the two.
+     *
+     * @generated from rpc cortex.v1.MemoryService.RenameNamespace
+     */
+    renameNamespace: {
+      name: "RenameNamespace",
+      I: RenameNamespaceRequest,
+      O: RenameNamespaceResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * DeleteNamespace permanently deletes every memory AND conversation summary in
+     * a namespace.
+     *
+     * @generated from rpc cortex.v1.MemoryService.DeleteNamespace
+     */
+    deleteNamespace: {
+      name: "DeleteNamespace",
+      I: DeleteNamespaceRequest,
+      O: DeleteNamespaceResponse,
       kind: MethodKind.Unary,
     },
   }

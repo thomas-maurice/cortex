@@ -2902,6 +2902,357 @@ func (x *RestoreMemoriesResponse) GetQueued() int32 {
 	return 0
 }
 
+// NamespaceInfo aggregates one namespace's contents for the admin view.
+type NamespaceInfo struct {
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	Name         string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	MemoryCount  int64                  `protobuf:"varint,2,opt,name=memory_count,json=memoryCount,proto3" json:"memory_count,omitempty"`    // memories stored under this namespace
+	SummaryCount int64                  `protobuf:"varint,3,opt,name=summary_count,json=summaryCount,proto3" json:"summary_count,omitempty"` // conversation summaries stored under this namespace
+	// last_updated is the most recent activity in the namespace: the newest memory
+	// createdAt or summary updatedAt. Unset when the namespace has no timestamps.
+	LastUpdated   *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=last_updated,json=lastUpdated,proto3" json:"last_updated,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *NamespaceInfo) Reset() {
+	*x = NamespaceInfo{}
+	mi := &file_cortex_v1_cortex_proto_msgTypes[46]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *NamespaceInfo) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*NamespaceInfo) ProtoMessage() {}
+
+func (x *NamespaceInfo) ProtoReflect() protoreflect.Message {
+	mi := &file_cortex_v1_cortex_proto_msgTypes[46]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use NamespaceInfo.ProtoReflect.Descriptor instead.
+func (*NamespaceInfo) Descriptor() ([]byte, []int) {
+	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{46}
+}
+
+func (x *NamespaceInfo) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *NamespaceInfo) GetMemoryCount() int64 {
+	if x != nil {
+		return x.MemoryCount
+	}
+	return 0
+}
+
+func (x *NamespaceInfo) GetSummaryCount() int64 {
+	if x != nil {
+		return x.SummaryCount
+	}
+	return 0
+}
+
+func (x *NamespaceInfo) GetLastUpdated() *timestamppb.Timestamp {
+	if x != nil {
+		return x.LastUpdated
+	}
+	return nil
+}
+
+type ListNamespacesRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListNamespacesRequest) Reset() {
+	*x = ListNamespacesRequest{}
+	mi := &file_cortex_v1_cortex_proto_msgTypes[47]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListNamespacesRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListNamespacesRequest) ProtoMessage() {}
+
+func (x *ListNamespacesRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_cortex_v1_cortex_proto_msgTypes[47]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListNamespacesRequest.ProtoReflect.Descriptor instead.
+func (*ListNamespacesRequest) Descriptor() ([]byte, []int) {
+	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{47}
+}
+
+type ListNamespacesResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Namespaces    []*NamespaceInfo       `protobuf:"bytes,1,rep,name=namespaces,proto3" json:"namespaces,omitempty"` // most memories first
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListNamespacesResponse) Reset() {
+	*x = ListNamespacesResponse{}
+	mi := &file_cortex_v1_cortex_proto_msgTypes[48]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListNamespacesResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListNamespacesResponse) ProtoMessage() {}
+
+func (x *ListNamespacesResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_cortex_v1_cortex_proto_msgTypes[48]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListNamespacesResponse.ProtoReflect.Descriptor instead.
+func (*ListNamespacesResponse) Descriptor() ([]byte, []int) {
+	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{48}
+}
+
+func (x *ListNamespacesResponse) GetNamespaces() []*NamespaceInfo {
+	if x != nil {
+		return x.Namespaces
+	}
+	return nil
+}
+
+type RenameNamespaceRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	From          string                 `protobuf:"bytes,1,opt,name=from,proto3" json:"from,omitempty"` // existing namespace to move away from
+	To            string                 `protobuf:"bytes,2,opt,name=to,proto3" json:"to,omitempty"`     // destination namespace (created if absent, merged if present)
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RenameNamespaceRequest) Reset() {
+	*x = RenameNamespaceRequest{}
+	mi := &file_cortex_v1_cortex_proto_msgTypes[49]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RenameNamespaceRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RenameNamespaceRequest) ProtoMessage() {}
+
+func (x *RenameNamespaceRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_cortex_v1_cortex_proto_msgTypes[49]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RenameNamespaceRequest.ProtoReflect.Descriptor instead.
+func (*RenameNamespaceRequest) Descriptor() ([]byte, []int) {
+	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{49}
+}
+
+func (x *RenameNamespaceRequest) GetFrom() string {
+	if x != nil {
+		return x.From
+	}
+	return ""
+}
+
+func (x *RenameNamespaceRequest) GetTo() string {
+	if x != nil {
+		return x.To
+	}
+	return ""
+}
+
+type RenameNamespaceResponse struct {
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	MemoriesUpdated  int32                  `protobuf:"varint,1,opt,name=memories_updated,json=memoriesUpdated,proto3" json:"memories_updated,omitempty"`
+	SummariesUpdated int32                  `protobuf:"varint,2,opt,name=summaries_updated,json=summariesUpdated,proto3" json:"summaries_updated,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *RenameNamespaceResponse) Reset() {
+	*x = RenameNamespaceResponse{}
+	mi := &file_cortex_v1_cortex_proto_msgTypes[50]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RenameNamespaceResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RenameNamespaceResponse) ProtoMessage() {}
+
+func (x *RenameNamespaceResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_cortex_v1_cortex_proto_msgTypes[50]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RenameNamespaceResponse.ProtoReflect.Descriptor instead.
+func (*RenameNamespaceResponse) Descriptor() ([]byte, []int) {
+	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{50}
+}
+
+func (x *RenameNamespaceResponse) GetMemoriesUpdated() int32 {
+	if x != nil {
+		return x.MemoriesUpdated
+	}
+	return 0
+}
+
+func (x *RenameNamespaceResponse) GetSummariesUpdated() int32 {
+	if x != nil {
+		return x.SummariesUpdated
+	}
+	return 0
+}
+
+type DeleteNamespaceRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Namespace     string                 `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"` // the namespace whose memories and summaries to delete
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteNamespaceRequest) Reset() {
+	*x = DeleteNamespaceRequest{}
+	mi := &file_cortex_v1_cortex_proto_msgTypes[51]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteNamespaceRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteNamespaceRequest) ProtoMessage() {}
+
+func (x *DeleteNamespaceRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_cortex_v1_cortex_proto_msgTypes[51]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteNamespaceRequest.ProtoReflect.Descriptor instead.
+func (*DeleteNamespaceRequest) Descriptor() ([]byte, []int) {
+	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{51}
+}
+
+func (x *DeleteNamespaceRequest) GetNamespace() string {
+	if x != nil {
+		return x.Namespace
+	}
+	return ""
+}
+
+type DeleteNamespaceResponse struct {
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	MemoriesDeleted  int32                  `protobuf:"varint,1,opt,name=memories_deleted,json=memoriesDeleted,proto3" json:"memories_deleted,omitempty"`
+	SummariesDeleted int32                  `protobuf:"varint,2,opt,name=summaries_deleted,json=summariesDeleted,proto3" json:"summaries_deleted,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *DeleteNamespaceResponse) Reset() {
+	*x = DeleteNamespaceResponse{}
+	mi := &file_cortex_v1_cortex_proto_msgTypes[52]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteNamespaceResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteNamespaceResponse) ProtoMessage() {}
+
+func (x *DeleteNamespaceResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_cortex_v1_cortex_proto_msgTypes[52]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteNamespaceResponse.ProtoReflect.Descriptor instead.
+func (*DeleteNamespaceResponse) Descriptor() ([]byte, []int) {
+	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{52}
+}
+
+func (x *DeleteNamespaceResponse) GetMemoriesDeleted() int32 {
+	if x != nil {
+		return x.MemoriesDeleted
+	}
+	return 0
+}
+
+func (x *DeleteNamespaceResponse) GetSummariesDeleted() int32 {
+	if x != nil {
+		return x.SummariesDeleted
+	}
+	return 0
+}
+
 type ConsolidateResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// cluster is the gathered memories: the topic's vector matches first (most
@@ -2918,7 +3269,7 @@ type ConsolidateResponse struct {
 
 func (x *ConsolidateResponse) Reset() {
 	*x = ConsolidateResponse{}
-	mi := &file_cortex_v1_cortex_proto_msgTypes[46]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[53]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2930,7 +3281,7 @@ func (x *ConsolidateResponse) String() string {
 func (*ConsolidateResponse) ProtoMessage() {}
 
 func (x *ConsolidateResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_cortex_v1_cortex_proto_msgTypes[46]
+	mi := &file_cortex_v1_cortex_proto_msgTypes[53]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2943,7 +3294,7 @@ func (x *ConsolidateResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConsolidateResponse.ProtoReflect.Descriptor instead.
 func (*ConsolidateResponse) Descriptor() ([]byte, []int) {
-	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{46}
+	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{53}
 }
 
 func (x *ConsolidateResponse) GetCluster() []*Memory {
@@ -3167,7 +3518,28 @@ const file_cortex_v1_cortex_proto_rawDesc = "" +
 	"\x16RestoreMemoriesRequest\x12-\n" +
 	"\bmemories\x18\x01 \x03(\v2\x11.cortex.v1.MemoryR\bmemories\"1\n" +
 	"\x17RestoreMemoriesResponse\x12\x16\n" +
-	"\x06queued\x18\x01 \x01(\x05R\x06queued\"^\n" +
+	"\x06queued\x18\x01 \x01(\x05R\x06queued\"\xaa\x01\n" +
+	"\rNamespaceInfo\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12!\n" +
+	"\fmemory_count\x18\x02 \x01(\x03R\vmemoryCount\x12#\n" +
+	"\rsummary_count\x18\x03 \x01(\x03R\fsummaryCount\x12=\n" +
+	"\flast_updated\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\vlastUpdated\"\x17\n" +
+	"\x15ListNamespacesRequest\"R\n" +
+	"\x16ListNamespacesResponse\x128\n" +
+	"\n" +
+	"namespaces\x18\x01 \x03(\v2\x18.cortex.v1.NamespaceInfoR\n" +
+	"namespaces\"<\n" +
+	"\x16RenameNamespaceRequest\x12\x12\n" +
+	"\x04from\x18\x01 \x01(\tR\x04from\x12\x0e\n" +
+	"\x02to\x18\x02 \x01(\tR\x02to\"q\n" +
+	"\x17RenameNamespaceResponse\x12)\n" +
+	"\x10memories_updated\x18\x01 \x01(\x05R\x0fmemoriesUpdated\x12+\n" +
+	"\x11summaries_updated\x18\x02 \x01(\x05R\x10summariesUpdated\"6\n" +
+	"\x16DeleteNamespaceRequest\x12\x1c\n" +
+	"\tnamespace\x18\x01 \x01(\tR\tnamespace\"q\n" +
+	"\x17DeleteNamespaceResponse\x12)\n" +
+	"\x10memories_deleted\x18\x01 \x01(\x05R\x0fmemoriesDeleted\x12+\n" +
+	"\x11summaries_deleted\x18\x02 \x01(\x05R\x10summariesDeleted\"^\n" +
 	"\x13ConsolidateResponse\x12+\n" +
 	"\acluster\x18\x01 \x03(\v2\x11.cortex.v1.MemoryR\acluster\x12\x1a\n" +
 	"\bmanifest\x18\x02 \x03(\tR\bmanifest*o\n" +
@@ -3176,7 +3548,7 @@ const file_cortex_v1_cortex_proto_rawDesc = "" +
 	"\x17DEAD_ACTION_UNSPECIFIED\x10\x00\x12\x14\n" +
 	"\x10DEAD_ACTION_LIST\x10\x01\x12\x17\n" +
 	"\x13DEAD_ACTION_REQUEUE\x10\x02\x12\x15\n" +
-	"\x11DEAD_ACTION_PURGE\x10\x032\xc7\f\n" +
+	"\x11DEAD_ACTION_PURGE\x10\x032\xd8\x0e\n" +
 	"\rMemoryService\x129\n" +
 	"\x04Save\x12\x16.cortex.v1.SaveRequest\x1a\x17.cortex.v1.SaveResponse\"\x00\x12Q\n" +
 	"\fUpdateMemory\x12\x1e.cortex.v1.UpdateMemoryRequest\x1a\x1f.cortex.v1.UpdateMemoryResponse\"\x00\x12?\n" +
@@ -3199,7 +3571,10 @@ const file_cortex_v1_cortex_proto_rawDesc = "" +
 	"\x17ListDuplicateCandidates\x12).cortex.v1.ListDuplicateCandidatesRequest\x1a*.cortex.v1.ListDuplicateCandidatesResponse\"\x00\x12]\n" +
 	"\x10DismissDuplicate\x12\".cortex.v1.DismissDuplicateRequest\x1a#.cortex.v1.DismissDuplicateResponse\"\x00\x12N\n" +
 	"\vConsolidate\x12\x1d.cortex.v1.ConsolidateRequest\x1a\x1e.cortex.v1.ConsolidateResponse\"\x00\x12Z\n" +
-	"\x0fRestoreMemories\x12!.cortex.v1.RestoreMemoriesRequest\x1a\".cortex.v1.RestoreMemoriesResponse\"\x00B9Z7github.com/thomas-maurice/cortex/gen/cortex/v1;cortexv1b\x06proto3"
+	"\x0fRestoreMemories\x12!.cortex.v1.RestoreMemoriesRequest\x1a\".cortex.v1.RestoreMemoriesResponse\"\x00\x12W\n" +
+	"\x0eListNamespaces\x12 .cortex.v1.ListNamespacesRequest\x1a!.cortex.v1.ListNamespacesResponse\"\x00\x12Z\n" +
+	"\x0fRenameNamespace\x12!.cortex.v1.RenameNamespaceRequest\x1a\".cortex.v1.RenameNamespaceResponse\"\x00\x12Z\n" +
+	"\x0fDeleteNamespace\x12!.cortex.v1.DeleteNamespaceRequest\x1a\".cortex.v1.DeleteNamespaceResponse\"\x00B9Z7github.com/thomas-maurice/cortex/gen/cortex/v1;cortexv1b\x06proto3"
 
 var (
 	file_cortex_v1_cortex_proto_rawDescOnce sync.Once
@@ -3214,7 +3589,7 @@ func file_cortex_v1_cortex_proto_rawDescGZIP() []byte {
 }
 
 var file_cortex_v1_cortex_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_cortex_v1_cortex_proto_msgTypes = make([]protoimpl.MessageInfo, 47)
+var file_cortex_v1_cortex_proto_msgTypes = make([]protoimpl.MessageInfo, 54)
 var file_cortex_v1_cortex_proto_goTypes = []any{
 	(DeadAction)(0),                         // 0: cortex.v1.DeadAction
 	(*Memory)(nil),                          // 1: cortex.v1.Memory
@@ -3263,22 +3638,29 @@ var file_cortex_v1_cortex_proto_goTypes = []any{
 	(*ConsolidateRequest)(nil),              // 44: cortex.v1.ConsolidateRequest
 	(*RestoreMemoriesRequest)(nil),          // 45: cortex.v1.RestoreMemoriesRequest
 	(*RestoreMemoriesResponse)(nil),         // 46: cortex.v1.RestoreMemoriesResponse
-	(*ConsolidateResponse)(nil),             // 47: cortex.v1.ConsolidateResponse
-	(*timestamppb.Timestamp)(nil),           // 48: google.protobuf.Timestamp
+	(*NamespaceInfo)(nil),                   // 47: cortex.v1.NamespaceInfo
+	(*ListNamespacesRequest)(nil),           // 48: cortex.v1.ListNamespacesRequest
+	(*ListNamespacesResponse)(nil),          // 49: cortex.v1.ListNamespacesResponse
+	(*RenameNamespaceRequest)(nil),          // 50: cortex.v1.RenameNamespaceRequest
+	(*RenameNamespaceResponse)(nil),         // 51: cortex.v1.RenameNamespaceResponse
+	(*DeleteNamespaceRequest)(nil),          // 52: cortex.v1.DeleteNamespaceRequest
+	(*DeleteNamespaceResponse)(nil),         // 53: cortex.v1.DeleteNamespaceResponse
+	(*ConsolidateResponse)(nil),             // 54: cortex.v1.ConsolidateResponse
+	(*timestamppb.Timestamp)(nil),           // 55: google.protobuf.Timestamp
 }
 var file_cortex_v1_cortex_proto_depIdxs = []int32{
-	48, // 0: cortex.v1.Memory.created_at:type_name -> google.protobuf.Timestamp
-	48, // 1: cortex.v1.Memory.last_accessed_at:type_name -> google.protobuf.Timestamp
+	55, // 0: cortex.v1.Memory.created_at:type_name -> google.protobuf.Timestamp
+	55, // 1: cortex.v1.Memory.last_accessed_at:type_name -> google.protobuf.Timestamp
 	1,  // 2: cortex.v1.Hit.memory:type_name -> cortex.v1.Memory
 	8,  // 3: cortex.v1.SearchResponse.hits:type_name -> cortex.v1.Hit
 	1,  // 4: cortex.v1.ListResponse.memories:type_name -> cortex.v1.Memory
 	17, // 5: cortex.v1.DoctorResponse.checks:type_name -> cortex.v1.Check
 	1,  // 6: cortex.v1.DeadLetter.record:type_name -> cortex.v1.Memory
-	48, // 7: cortex.v1.DeadLetter.failed_at:type_name -> google.protobuf.Timestamp
+	55, // 7: cortex.v1.DeadLetter.failed_at:type_name -> google.protobuf.Timestamp
 	0,  // 8: cortex.v1.DeadRequest.action:type_name -> cortex.v1.DeadAction
 	21, // 9: cortex.v1.DeadResponse.dead_letters:type_name -> cortex.v1.DeadLetter
-	48, // 10: cortex.v1.ConversationSummary.created_at:type_name -> google.protobuf.Timestamp
-	48, // 11: cortex.v1.ConversationSummary.updated_at:type_name -> google.protobuf.Timestamp
+	55, // 10: cortex.v1.ConversationSummary.created_at:type_name -> google.protobuf.Timestamp
+	55, // 11: cortex.v1.ConversationSummary.updated_at:type_name -> google.protobuf.Timestamp
 	28, // 12: cortex.v1.RecallSessionResponse.summary:type_name -> cortex.v1.ConversationSummary
 	1,  // 13: cortex.v1.RecallSessionResponse.facts:type_name -> cortex.v1.Memory
 	28, // 14: cortex.v1.ListSummariesResponse.summaries:type_name -> cortex.v1.ConversationSummary
@@ -3286,54 +3668,62 @@ var file_cortex_v1_cortex_proto_depIdxs = []int32{
 	1,  // 16: cortex.v1.DuplicateGroup.candidates:type_name -> cortex.v1.Memory
 	40, // 17: cortex.v1.ListDuplicateCandidatesResponse.groups:type_name -> cortex.v1.DuplicateGroup
 	1,  // 18: cortex.v1.RestoreMemoriesRequest.memories:type_name -> cortex.v1.Memory
-	1,  // 19: cortex.v1.ConsolidateResponse.cluster:type_name -> cortex.v1.Memory
-	2,  // 20: cortex.v1.MemoryService.Save:input_type -> cortex.v1.SaveRequest
-	4,  // 21: cortex.v1.MemoryService.UpdateMemory:input_type -> cortex.v1.UpdateMemoryRequest
-	6,  // 22: cortex.v1.MemoryService.Search:input_type -> cortex.v1.SearchRequest
-	7,  // 23: cortex.v1.MemoryService.SearchSimilar:input_type -> cortex.v1.SearchSimilarRequest
-	10, // 24: cortex.v1.MemoryService.List:input_type -> cortex.v1.ListRequest
-	12, // 25: cortex.v1.MemoryService.Delete:input_type -> cortex.v1.DeleteRequest
-	14, // 26: cortex.v1.MemoryService.Status:input_type -> cortex.v1.StatusRequest
-	16, // 27: cortex.v1.MemoryService.Doctor:input_type -> cortex.v1.DoctorRequest
-	19, // 28: cortex.v1.MemoryService.Reindex:input_type -> cortex.v1.ReindexRequest
-	22, // 29: cortex.v1.MemoryService.Dead:input_type -> cortex.v1.DeadRequest
-	24, // 30: cortex.v1.MemoryService.IndexQueue:input_type -> cortex.v1.IndexQueueRequest
-	26, // 31: cortex.v1.MemoryService.PullModel:input_type -> cortex.v1.PullModelRequest
-	29, // 32: cortex.v1.MemoryService.SummarizeSession:input_type -> cortex.v1.SummarizeSessionRequest
-	31, // 33: cortex.v1.MemoryService.RecallSession:input_type -> cortex.v1.RecallSessionRequest
-	33, // 34: cortex.v1.MemoryService.ListSummaries:input_type -> cortex.v1.ListSummariesRequest
-	35, // 35: cortex.v1.MemoryService.Link:input_type -> cortex.v1.LinkRequest
-	37, // 36: cortex.v1.MemoryService.Unlink:input_type -> cortex.v1.UnlinkRequest
-	39, // 37: cortex.v1.MemoryService.ListDuplicateCandidates:input_type -> cortex.v1.ListDuplicateCandidatesRequest
-	42, // 38: cortex.v1.MemoryService.DismissDuplicate:input_type -> cortex.v1.DismissDuplicateRequest
-	44, // 39: cortex.v1.MemoryService.Consolidate:input_type -> cortex.v1.ConsolidateRequest
-	45, // 40: cortex.v1.MemoryService.RestoreMemories:input_type -> cortex.v1.RestoreMemoriesRequest
-	3,  // 41: cortex.v1.MemoryService.Save:output_type -> cortex.v1.SaveResponse
-	5,  // 42: cortex.v1.MemoryService.UpdateMemory:output_type -> cortex.v1.UpdateMemoryResponse
-	9,  // 43: cortex.v1.MemoryService.Search:output_type -> cortex.v1.SearchResponse
-	9,  // 44: cortex.v1.MemoryService.SearchSimilar:output_type -> cortex.v1.SearchResponse
-	11, // 45: cortex.v1.MemoryService.List:output_type -> cortex.v1.ListResponse
-	13, // 46: cortex.v1.MemoryService.Delete:output_type -> cortex.v1.DeleteResponse
-	15, // 47: cortex.v1.MemoryService.Status:output_type -> cortex.v1.StatusResponse
-	18, // 48: cortex.v1.MemoryService.Doctor:output_type -> cortex.v1.DoctorResponse
-	20, // 49: cortex.v1.MemoryService.Reindex:output_type -> cortex.v1.ReindexResponse
-	23, // 50: cortex.v1.MemoryService.Dead:output_type -> cortex.v1.DeadResponse
-	25, // 51: cortex.v1.MemoryService.IndexQueue:output_type -> cortex.v1.IndexQueueResponse
-	27, // 52: cortex.v1.MemoryService.PullModel:output_type -> cortex.v1.PullModelResponse
-	30, // 53: cortex.v1.MemoryService.SummarizeSession:output_type -> cortex.v1.SummarizeSessionResponse
-	32, // 54: cortex.v1.MemoryService.RecallSession:output_type -> cortex.v1.RecallSessionResponse
-	34, // 55: cortex.v1.MemoryService.ListSummaries:output_type -> cortex.v1.ListSummariesResponse
-	36, // 56: cortex.v1.MemoryService.Link:output_type -> cortex.v1.LinkResponse
-	38, // 57: cortex.v1.MemoryService.Unlink:output_type -> cortex.v1.UnlinkResponse
-	41, // 58: cortex.v1.MemoryService.ListDuplicateCandidates:output_type -> cortex.v1.ListDuplicateCandidatesResponse
-	43, // 59: cortex.v1.MemoryService.DismissDuplicate:output_type -> cortex.v1.DismissDuplicateResponse
-	47, // 60: cortex.v1.MemoryService.Consolidate:output_type -> cortex.v1.ConsolidateResponse
-	46, // 61: cortex.v1.MemoryService.RestoreMemories:output_type -> cortex.v1.RestoreMemoriesResponse
-	41, // [41:62] is the sub-list for method output_type
-	20, // [20:41] is the sub-list for method input_type
-	20, // [20:20] is the sub-list for extension type_name
-	20, // [20:20] is the sub-list for extension extendee
-	0,  // [0:20] is the sub-list for field type_name
+	55, // 19: cortex.v1.NamespaceInfo.last_updated:type_name -> google.protobuf.Timestamp
+	47, // 20: cortex.v1.ListNamespacesResponse.namespaces:type_name -> cortex.v1.NamespaceInfo
+	1,  // 21: cortex.v1.ConsolidateResponse.cluster:type_name -> cortex.v1.Memory
+	2,  // 22: cortex.v1.MemoryService.Save:input_type -> cortex.v1.SaveRequest
+	4,  // 23: cortex.v1.MemoryService.UpdateMemory:input_type -> cortex.v1.UpdateMemoryRequest
+	6,  // 24: cortex.v1.MemoryService.Search:input_type -> cortex.v1.SearchRequest
+	7,  // 25: cortex.v1.MemoryService.SearchSimilar:input_type -> cortex.v1.SearchSimilarRequest
+	10, // 26: cortex.v1.MemoryService.List:input_type -> cortex.v1.ListRequest
+	12, // 27: cortex.v1.MemoryService.Delete:input_type -> cortex.v1.DeleteRequest
+	14, // 28: cortex.v1.MemoryService.Status:input_type -> cortex.v1.StatusRequest
+	16, // 29: cortex.v1.MemoryService.Doctor:input_type -> cortex.v1.DoctorRequest
+	19, // 30: cortex.v1.MemoryService.Reindex:input_type -> cortex.v1.ReindexRequest
+	22, // 31: cortex.v1.MemoryService.Dead:input_type -> cortex.v1.DeadRequest
+	24, // 32: cortex.v1.MemoryService.IndexQueue:input_type -> cortex.v1.IndexQueueRequest
+	26, // 33: cortex.v1.MemoryService.PullModel:input_type -> cortex.v1.PullModelRequest
+	29, // 34: cortex.v1.MemoryService.SummarizeSession:input_type -> cortex.v1.SummarizeSessionRequest
+	31, // 35: cortex.v1.MemoryService.RecallSession:input_type -> cortex.v1.RecallSessionRequest
+	33, // 36: cortex.v1.MemoryService.ListSummaries:input_type -> cortex.v1.ListSummariesRequest
+	35, // 37: cortex.v1.MemoryService.Link:input_type -> cortex.v1.LinkRequest
+	37, // 38: cortex.v1.MemoryService.Unlink:input_type -> cortex.v1.UnlinkRequest
+	39, // 39: cortex.v1.MemoryService.ListDuplicateCandidates:input_type -> cortex.v1.ListDuplicateCandidatesRequest
+	42, // 40: cortex.v1.MemoryService.DismissDuplicate:input_type -> cortex.v1.DismissDuplicateRequest
+	44, // 41: cortex.v1.MemoryService.Consolidate:input_type -> cortex.v1.ConsolidateRequest
+	45, // 42: cortex.v1.MemoryService.RestoreMemories:input_type -> cortex.v1.RestoreMemoriesRequest
+	48, // 43: cortex.v1.MemoryService.ListNamespaces:input_type -> cortex.v1.ListNamespacesRequest
+	50, // 44: cortex.v1.MemoryService.RenameNamespace:input_type -> cortex.v1.RenameNamespaceRequest
+	52, // 45: cortex.v1.MemoryService.DeleteNamespace:input_type -> cortex.v1.DeleteNamespaceRequest
+	3,  // 46: cortex.v1.MemoryService.Save:output_type -> cortex.v1.SaveResponse
+	5,  // 47: cortex.v1.MemoryService.UpdateMemory:output_type -> cortex.v1.UpdateMemoryResponse
+	9,  // 48: cortex.v1.MemoryService.Search:output_type -> cortex.v1.SearchResponse
+	9,  // 49: cortex.v1.MemoryService.SearchSimilar:output_type -> cortex.v1.SearchResponse
+	11, // 50: cortex.v1.MemoryService.List:output_type -> cortex.v1.ListResponse
+	13, // 51: cortex.v1.MemoryService.Delete:output_type -> cortex.v1.DeleteResponse
+	15, // 52: cortex.v1.MemoryService.Status:output_type -> cortex.v1.StatusResponse
+	18, // 53: cortex.v1.MemoryService.Doctor:output_type -> cortex.v1.DoctorResponse
+	20, // 54: cortex.v1.MemoryService.Reindex:output_type -> cortex.v1.ReindexResponse
+	23, // 55: cortex.v1.MemoryService.Dead:output_type -> cortex.v1.DeadResponse
+	25, // 56: cortex.v1.MemoryService.IndexQueue:output_type -> cortex.v1.IndexQueueResponse
+	27, // 57: cortex.v1.MemoryService.PullModel:output_type -> cortex.v1.PullModelResponse
+	30, // 58: cortex.v1.MemoryService.SummarizeSession:output_type -> cortex.v1.SummarizeSessionResponse
+	32, // 59: cortex.v1.MemoryService.RecallSession:output_type -> cortex.v1.RecallSessionResponse
+	34, // 60: cortex.v1.MemoryService.ListSummaries:output_type -> cortex.v1.ListSummariesResponse
+	36, // 61: cortex.v1.MemoryService.Link:output_type -> cortex.v1.LinkResponse
+	38, // 62: cortex.v1.MemoryService.Unlink:output_type -> cortex.v1.UnlinkResponse
+	41, // 63: cortex.v1.MemoryService.ListDuplicateCandidates:output_type -> cortex.v1.ListDuplicateCandidatesResponse
+	43, // 64: cortex.v1.MemoryService.DismissDuplicate:output_type -> cortex.v1.DismissDuplicateResponse
+	54, // 65: cortex.v1.MemoryService.Consolidate:output_type -> cortex.v1.ConsolidateResponse
+	46, // 66: cortex.v1.MemoryService.RestoreMemories:output_type -> cortex.v1.RestoreMemoriesResponse
+	49, // 67: cortex.v1.MemoryService.ListNamespaces:output_type -> cortex.v1.ListNamespacesResponse
+	51, // 68: cortex.v1.MemoryService.RenameNamespace:output_type -> cortex.v1.RenameNamespaceResponse
+	53, // 69: cortex.v1.MemoryService.DeleteNamespace:output_type -> cortex.v1.DeleteNamespaceResponse
+	46, // [46:70] is the sub-list for method output_type
+	22, // [22:46] is the sub-list for method input_type
+	22, // [22:22] is the sub-list for extension type_name
+	22, // [22:22] is the sub-list for extension extendee
+	0,  // [0:22] is the sub-list for field type_name
 }
 
 func init() { file_cortex_v1_cortex_proto_init() }
@@ -3347,7 +3737,7 @@ func file_cortex_v1_cortex_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_cortex_v1_cortex_proto_rawDesc), len(file_cortex_v1_cortex_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   47,
+			NumMessages:   54,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

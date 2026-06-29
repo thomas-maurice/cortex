@@ -2540,6 +2540,312 @@ export class RestoreMemoriesResponse extends Message<RestoreMemoriesResponse> {
 }
 
 /**
+ * NamespaceInfo aggregates one namespace's contents for the admin view.
+ *
+ * @generated from message cortex.v1.NamespaceInfo
+ */
+export class NamespaceInfo extends Message<NamespaceInfo> {
+  /**
+   * @generated from field: string name = 1;
+   */
+  name = "";
+
+  /**
+   * memories stored under this namespace
+   *
+   * @generated from field: int64 memory_count = 2;
+   */
+  memoryCount = protoInt64.zero;
+
+  /**
+   * conversation summaries stored under this namespace
+   *
+   * @generated from field: int64 summary_count = 3;
+   */
+  summaryCount = protoInt64.zero;
+
+  /**
+   * last_updated is the most recent activity in the namespace: the newest memory
+   * createdAt or summary updatedAt. Unset when the namespace has no timestamps.
+   *
+   * @generated from field: google.protobuf.Timestamp last_updated = 4;
+   */
+  lastUpdated?: Timestamp;
+
+  constructor(data?: PartialMessage<NamespaceInfo>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "cortex.v1.NamespaceInfo";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "name", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "memory_count", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 3, name: "summary_count", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 4, name: "last_updated", kind: "message", T: Timestamp },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): NamespaceInfo {
+    return new NamespaceInfo().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): NamespaceInfo {
+    return new NamespaceInfo().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): NamespaceInfo {
+    return new NamespaceInfo().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: NamespaceInfo | PlainMessage<NamespaceInfo> | undefined, b: NamespaceInfo | PlainMessage<NamespaceInfo> | undefined): boolean {
+    return proto3.util.equals(NamespaceInfo, a, b);
+  }
+}
+
+/**
+ * @generated from message cortex.v1.ListNamespacesRequest
+ */
+export class ListNamespacesRequest extends Message<ListNamespacesRequest> {
+  constructor(data?: PartialMessage<ListNamespacesRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "cortex.v1.ListNamespacesRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListNamespacesRequest {
+    return new ListNamespacesRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ListNamespacesRequest {
+    return new ListNamespacesRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ListNamespacesRequest {
+    return new ListNamespacesRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ListNamespacesRequest | PlainMessage<ListNamespacesRequest> | undefined, b: ListNamespacesRequest | PlainMessage<ListNamespacesRequest> | undefined): boolean {
+    return proto3.util.equals(ListNamespacesRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message cortex.v1.ListNamespacesResponse
+ */
+export class ListNamespacesResponse extends Message<ListNamespacesResponse> {
+  /**
+   * most memories first
+   *
+   * @generated from field: repeated cortex.v1.NamespaceInfo namespaces = 1;
+   */
+  namespaces: NamespaceInfo[] = [];
+
+  constructor(data?: PartialMessage<ListNamespacesResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "cortex.v1.ListNamespacesResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "namespaces", kind: "message", T: NamespaceInfo, repeated: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListNamespacesResponse {
+    return new ListNamespacesResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ListNamespacesResponse {
+    return new ListNamespacesResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ListNamespacesResponse {
+    return new ListNamespacesResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ListNamespacesResponse | PlainMessage<ListNamespacesResponse> | undefined, b: ListNamespacesResponse | PlainMessage<ListNamespacesResponse> | undefined): boolean {
+    return proto3.util.equals(ListNamespacesResponse, a, b);
+  }
+}
+
+/**
+ * @generated from message cortex.v1.RenameNamespaceRequest
+ */
+export class RenameNamespaceRequest extends Message<RenameNamespaceRequest> {
+  /**
+   * existing namespace to move away from
+   *
+   * @generated from field: string from = 1;
+   */
+  from = "";
+
+  /**
+   * destination namespace (created if absent, merged if present)
+   *
+   * @generated from field: string to = 2;
+   */
+  to = "";
+
+  constructor(data?: PartialMessage<RenameNamespaceRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "cortex.v1.RenameNamespaceRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "from", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "to", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): RenameNamespaceRequest {
+    return new RenameNamespaceRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): RenameNamespaceRequest {
+    return new RenameNamespaceRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): RenameNamespaceRequest {
+    return new RenameNamespaceRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: RenameNamespaceRequest | PlainMessage<RenameNamespaceRequest> | undefined, b: RenameNamespaceRequest | PlainMessage<RenameNamespaceRequest> | undefined): boolean {
+    return proto3.util.equals(RenameNamespaceRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message cortex.v1.RenameNamespaceResponse
+ */
+export class RenameNamespaceResponse extends Message<RenameNamespaceResponse> {
+  /**
+   * @generated from field: int32 memories_updated = 1;
+   */
+  memoriesUpdated = 0;
+
+  /**
+   * @generated from field: int32 summaries_updated = 2;
+   */
+  summariesUpdated = 0;
+
+  constructor(data?: PartialMessage<RenameNamespaceResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "cortex.v1.RenameNamespaceResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "memories_updated", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 2, name: "summaries_updated", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): RenameNamespaceResponse {
+    return new RenameNamespaceResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): RenameNamespaceResponse {
+    return new RenameNamespaceResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): RenameNamespaceResponse {
+    return new RenameNamespaceResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: RenameNamespaceResponse | PlainMessage<RenameNamespaceResponse> | undefined, b: RenameNamespaceResponse | PlainMessage<RenameNamespaceResponse> | undefined): boolean {
+    return proto3.util.equals(RenameNamespaceResponse, a, b);
+  }
+}
+
+/**
+ * @generated from message cortex.v1.DeleteNamespaceRequest
+ */
+export class DeleteNamespaceRequest extends Message<DeleteNamespaceRequest> {
+  /**
+   * the namespace whose memories and summaries to delete
+   *
+   * @generated from field: string namespace = 1;
+   */
+  namespace = "";
+
+  constructor(data?: PartialMessage<DeleteNamespaceRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "cortex.v1.DeleteNamespaceRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "namespace", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): DeleteNamespaceRequest {
+    return new DeleteNamespaceRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): DeleteNamespaceRequest {
+    return new DeleteNamespaceRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): DeleteNamespaceRequest {
+    return new DeleteNamespaceRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: DeleteNamespaceRequest | PlainMessage<DeleteNamespaceRequest> | undefined, b: DeleteNamespaceRequest | PlainMessage<DeleteNamespaceRequest> | undefined): boolean {
+    return proto3.util.equals(DeleteNamespaceRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message cortex.v1.DeleteNamespaceResponse
+ */
+export class DeleteNamespaceResponse extends Message<DeleteNamespaceResponse> {
+  /**
+   * @generated from field: int32 memories_deleted = 1;
+   */
+  memoriesDeleted = 0;
+
+  /**
+   * @generated from field: int32 summaries_deleted = 2;
+   */
+  summariesDeleted = 0;
+
+  constructor(data?: PartialMessage<DeleteNamespaceResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "cortex.v1.DeleteNamespaceResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "memories_deleted", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 2, name: "summaries_deleted", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): DeleteNamespaceResponse {
+    return new DeleteNamespaceResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): DeleteNamespaceResponse {
+    return new DeleteNamespaceResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): DeleteNamespaceResponse {
+    return new DeleteNamespaceResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: DeleteNamespaceResponse | PlainMessage<DeleteNamespaceResponse> | undefined, b: DeleteNamespaceResponse | PlainMessage<DeleteNamespaceResponse> | undefined): boolean {
+    return proto3.util.equals(DeleteNamespaceResponse, a, b);
+  }
+}
+
+/**
  * @generated from message cortex.v1.ConsolidateResponse
  */
 export class ConsolidateResponse extends Message<ConsolidateResponse> {
