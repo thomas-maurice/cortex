@@ -86,8 +86,29 @@ user/pass check for a user store and emit per-user claims.
 | `/` | **Memories** — search/list, add (New Memory form), delete | `Search`, `List`, `Save`, `Delete` |
 | `/graph` | **Graph** — memory map + explicit links | `List`, `Search`, `Link`, `Unlink` |
 | `/explore` | **Explore** — query → relevance cloud | `Search` |
-| `/sessions` | **Sessions** — conversation summaries | `ListSummaries` |
+| `/sessions` | **Sessions** — conversation summaries (edit in place) | `ListSummaries`, `SummarizeSession` |
+| `/namespaces` | **Namespaces** — per-namespace counts; rename / delete a whole namespace | `ListNamespaces`, `RenameNamespace`, `DeleteNamespace` |
+| `/preferences` | **Preferences** — `global` + `preference` memories, edit/add/delete | `List`, `Save`, `UpdateMemory`, `Delete` |
+| `/backup` | **Backup** — export / import memories (JSON, no vectors) | `List`, `RestoreMemories` |
+| `/queue` | **Indexing** — live index-queue counts + dead letters; auto-refreshes | `IndexQueue`, `Dead` |
 | `/status` | **Status** — backend health + counts | `Status` |
+
+### Namespaces (`ui/src/views/NamespacesView.vue`)
+
+A table of every namespace with its memory count, summary count, and last
+activity. **Rename** is inline and metadata-only — the server PATCHes the
+`namespace` field on each object (memories *and* conversation summaries), so
+nothing is re-embedded; renaming into an existing namespace merges the two.
+**Delete** removes an entire namespace's memories and summaries and is guarded by
+a typed confirmation (you must type the namespace name).
+
+### Indexing (`ui/src/views/QueueView.vue`)
+
+Shows the async index queue: pending, in-flight, and dead-lettered counts, plus
+the list of failed memories (with requeue / purge). It **polls every second while
+mounted** — indexing is fast and bursty (and usually driven in the background by
+the agent or a bulk import), so a one-shot snapshot would almost always read
+`0/0/0`; the poll makes a burst visible as it drains.
 
 ### Graph (`ui/src/views/GraphView.vue`)
 
@@ -156,7 +177,8 @@ ui/
     utils/connect.js       typed Connect client (attaches the JWT)
     utils/api.js           /auth/login client
     views/                 LoginView, MemoriesView, GraphView, ExploreView,
-                           SessionsView, StatusView
+                           SessionsView, NamespacesView, PreferencesView,
+                           BackupView, QueueView (Indexing), StatusView
 internal/rpc/
   jwt.go                   HS256 issue/parse
   login.go                 POST /auth/login

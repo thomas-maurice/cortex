@@ -171,6 +171,10 @@ port as the Connect API; open the server's address in a browser. Views:
   your memories, rendered as a cloud radiating from a central query node (closer
   + bigger = more relevant, edge label = vector distance).
 - **Sessions** — conversation summaries (`ListSummaries`).
+- **Namespaces** — admin view of every namespace with its memory and summary
+  counts and last activity. **Rename** a namespace (a metadata-only move — nothing
+  is re-embedded; both memories and summaries move) or **delete** an entire
+  namespace (typed confirmation, removes its memories and summaries).
 - **Preferences** — standing, cross-project preferences: the memories in the
   `global` namespace tagged `preference`. Add / edit / delete them here without
   touching namespace or tags (both are managed for you). These are what the
@@ -180,6 +184,9 @@ port as the Connect API; open the server's address in a browser. Views:
   import such a dump back. The format is identical to the `cortex export` /
   `cortex import` CLI, so dumps are interchangeable; import re-ingests through the
   normal queue (worker re-embeds), batched, and reports how many were queued.
+- **Indexing** — live state of the async index queue (pending / in-flight /
+  dead-lettered) and the failed-memory list, with requeue/purge. Auto-refreshes
+  while open, so a burst of ingestion is actually visible as it drains.
 - **Status** — backing-service health and memory count.
 
 Sign in with `CORTEX_UI_USER` / `CORTEX_UI_PASSWORD`. Login mints a short-lived
@@ -593,6 +600,26 @@ Full evaluation, benchmark table, and the swap procedure (including the
 **re-index gotcha** — changing models changes vector dimensions and requires
 re-indexing) are in [`docs/EMBEDDING_MODELS.md`](docs/EMBEDDING_MODELS.md).
 
+## Seeding a dev stack with fake data
+
+To poke at the UI without using real memories, load the bundled fake dataset
+(`testdata/seed-memories.json` — invented worldbuilding, pre-wired links, in the
+`cortex export`/`import` format) into your dev stack:
+
+```bash
+make build   # produces ./bin/cortex
+./bin/cortex --server http://localhost:8088 import testdata/seed-memories.json
+```
+
+It lands in `demo-*` namespaces (so it's easy to spot and bulk-delete from the
+**Namespaces** view). Format and editing rules are in
+[`testdata/README.md`](testdata/README.md). To copy *real* data from another
+Cortex into a dev stack instead, use `scripts/prod-to-dev.sh` (export + import).
+
+> Pass `--server` explicitly. A bare `cortex import` uses your `~/.config/cortex`
+> config, which may point at a remote/prod server — `--server` (highest
+> precedence: flag > env > file > default) is what targets the local stack.
+
 ## Manual smoke test (no Claude needed)
 
 ```bash
@@ -663,7 +690,8 @@ internal/
   embed/           Ollama embeddings client
   store/           Weaviate: schema, upsert, gRPC nearVector search, links, delete
   rpc/             Connect service impl, auth (token+JWT), login, JWT, client helper
-ui/                embedded Vue 3 SPA (Memories, Graph, Explore, Sessions, Status)
+ui/                embedded Vue 3 SPA (Memories, Graph, Explore, Sessions, Namespaces, Preferences, Backup, Indexing, Status)
+testdata/          fake seed memories for a dev stack (cortex import format)
 docker-compose.yml   nats + weaviate + ollama + worker + server
 deploy/truenas/      TrueNAS Scale compose (non-root, host bind mounts, Traefik h2c)
 Dockerfile           node (UI) + go multi-binary build → distroless

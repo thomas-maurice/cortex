@@ -1,0 +1,270 @@
+[
+  {
+    "id": "83585949-9f17-44f0-8e8e-5f8742de9f6b",
+    "text": "Halcyon Station orbits the gas giant Vesper Prime and is built around a captured asteroid core. Population is roughly 12,000, mostly miners, traders, and station-born families.",
+    "namespace": "demo-station",
+    "tags": [
+      "station",
+      "overview",
+      "vesper-prime"
+    ],
+    "source": "seed",
+    "createdAt": "2026-06-01T09:12:00Z",
+    "linkedIds": [
+      "e21adf03-d2a1-4a5a-835d-341111bed954",
+      "a6a11abe-d4ef-4938-b2a0-78cdb090eb60"
+    ]
+  },
+  {
+    "id": "e21adf03-d2a1-4a5a-835d-341111bed954",
+    "text": "Halcyon draws power from three fusion rings. Ring Two has been offline since the Cinder Incident, so the station runs on a thin margin during peak load.",
+    "namespace": "demo-station",
+    "tags": [
+      "station",
+      "power",
+      "fusion-rings"
+    ],
+    "source": "seed",
+    "createdAt": "2026-06-01T09:18:00Z",
+    "linkedIds": [
+      "83585949-9f17-44f0-8e8e-5f8742de9f6b",
+      "a6a11abe-d4ef-4938-b2a0-78cdb090eb60",
+      "0543c146-a9d8-46dd-9154-f75685e2a276"
+    ]
+  },
+  {
+    "id": "a6a11abe-d4ef-4938-b2a0-78cdb090eb60",
+    "text": "Gravity on Halcyon is spin-induced: about 0.8g on the outer ring, tapering to zero-g at the central docking spindle where ships berth.",
+    "namespace": "demo-station",
+    "tags": [
+      "station",
+      "gravity",
+      "docking"
+    ],
+    "source": "seed",
+    "createdAt": "2026-06-01T09:25:00Z",
+    "linkedIds": [
+      "83585949-9f17-44f0-8e8e-5f8742de9f6b",
+      "e21adf03-d2a1-4a5a-835d-341111bed954"
+    ]
+  },
+  {
+    "id": "abcb9cc9-f628-4773-bfa0-ed0a17987489",
+    "text": "Commander Lyra Okonkwo runs Halcyon Station. Former survey-fleet officer, known for her 'open hatch' policy: any crew member can bring a grievance to her directly.",
+    "namespace": "demo-crew",
+    "tags": [
+      "crew",
+      "command",
+      "okonkwo"
+    ],
+    "source": "seed",
+    "createdAt": "2026-06-02T11:00:00Z",
+    "linkedIds": [
+      "f46d80c9-c2ba-4e7d-a0e2-6d2621a61fd5"
+    ]
+  },
+  {
+    "id": "f46d80c9-c2ba-4e7d-a0e2-6d2621a61fd5",
+    "text": "Chief Engineer Dax Mercer keeps the fusion rings alive. Gruff, hoards spare parts in unlabeled crates, and is the only person who fully understands Ring Two's failure.",
+    "namespace": "demo-crew",
+    "tags": [
+      "crew",
+      "engineering",
+      "mercer"
+    ],
+    "source": "seed",
+    "createdAt": "2026-06-02T11:06:00Z",
+    "linkedIds": [
+      "abcb9cc9-f628-4773-bfa0-ed0a17987489",
+      "52cf3e06-5288-4758-bf79-61c8e9d1cc44"
+    ]
+  },
+  {
+    "id": "52cf3e06-5288-4758-bf79-61c8e9d1cc44",
+    "text": "Dr. Soren Vale heads the Halcyon med bay and researches low-gravity bone loss. Keeps a waiting list for the centrifuge therapy ward.",
+    "namespace": "demo-crew",
+    "tags": [
+      "crew",
+      "medical",
+      "vale"
+    ],
+    "source": "seed",
+    "createdAt": "2026-06-02T11:12:00Z",
+    "linkedIds": [
+      "f46d80c9-c2ba-4e7d-a0e2-6d2621a61fd5"
+    ]
+  },
+  {
+    "id": "9d49a012-4dbe-4737-910c-ec7a77f64342",
+    "text": "Founders' Day on Halcyon falls on the 40th of Brightfall in the local calendar. The crew releases paper lanterns from the docking spindle into the zero-g core.",
+    "namespace": "demo-crew",
+    "tags": [
+      "crew",
+      "festival",
+      "calendar"
+    ],
+    "source": "seed",
+    "createdAt": "2026-06-03T08:05:00Z",
+    "linkedIds": [
+      "bcf89a6b-5bf6-470f-95bf-c103157da7ee"
+    ]
+  },
+  {
+    "id": "bcf89a6b-5bf6-470f-95bf-c103157da7ee",
+    "text": "The Long Night is an 88-day eclipse when Vesper Prime occludes the sun. Halcyon switches to strict power rationing and the markets move to a barter economy.",
+    "namespace": "demo-crew",
+    "tags": [
+      "crew",
+      "calendar",
+      "rationing"
+    ],
+    "source": "seed",
+    "createdAt": "2026-06-03T08:09:00Z",
+    "linkedIds": [
+      "9d49a012-4dbe-4737-910c-ec7a77f64342"
+    ]
+  },
+  {
+    "id": "3b3a0309-7586-4dbd-9dff-b1cb2380d155",
+    "text": "Jump drives in this setting use 'fold cores'. A single fold is unstable beyond about 12 light-years, so long hauls are chained as multiple folds with cooldowns between them.",
+    "namespace": "demo-tech",
+    "tags": [
+      "tech",
+      "fold-drive",
+      "travel"
+    ],
+    "source": "seed",
+    "createdAt": "2026-06-04T21:00:00Z",
+    "linkedIds": [
+      "230932b7-765c-45b9-b8ae-45dce7f6d173"
+    ]
+  },
+  {
+    "id": "230932b7-765c-45b9-b8ae-45dce7f6d173",
+    "text": "Fold cores are stabilized with refined lumarite, a rare crystal mined only at the Tycho Drift. Without it, a fold core degrades after a handful of jumps.",
+    "namespace": "demo-tech",
+    "tags": [
+      "tech",
+      "lumarite",
+      "fold-drive"
+    ],
+    "source": "seed",
+    "createdAt": "2026-06-04T21:08:00Z",
+    "linkedIds": [
+      "3b3a0309-7586-4dbd-9dff-b1cb2380d155",
+      "6de88427-18c2-4d51-bf95-47139594b992"
+    ]
+  },
+  {
+    "id": "6de88427-18c2-4d51-bf95-47139594b992",
+    "text": "Lumarite glows faint blue and disrupts comms within about 3 meters when unshielded. Smugglers exploit this to hide cargo from sensor sweeps.",
+    "namespace": "demo-tech",
+    "tags": [
+      "tech",
+      "lumarite",
+      "smuggling"
+    ],
+    "source": "seed",
+    "createdAt": "2026-06-04T21:15:00Z",
+    "linkedIds": [
+      "230932b7-765c-45b9-b8ae-45dce7f6d173"
+    ]
+  },
+  {
+    "id": "aec0b9b3-0fab-4eff-898d-760a9812b58c",
+    "text": "Halcyon's air is recycled through engineered algae vats. Vat 7 is the cold-spare: it stays dormant and is only spun up if a primary vat is contaminated.",
+    "namespace": "demo-tech",
+    "tags": [
+      "tech",
+      "life-support",
+      "algae"
+    ],
+    "source": "seed",
+    "createdAt": "2026-06-05T13:30:00Z"
+  },
+  {
+    "id": "db9432ec-dd7d-4b5f-9617-1bac2d1ffbb9",
+    "text": "The Tycho Drift is a lawless mining belt and the only known source of lumarite. It is controlled by the Drift Cartel, who set the price and the rules.",
+    "namespace": "demo-ports",
+    "tags": [
+      "ports",
+      "tycho-drift",
+      "drift-cartel"
+    ],
+    "source": "seed",
+    "createdAt": "2026-06-06T15:00:00Z",
+    "linkedIds": [
+      "fa32a2f7-42b1-40cc-b850-7cd058c41121",
+      "361802bb-5037-4ff6-a816-6bcccd0f8358"
+    ]
+  },
+  {
+    "id": "fa32a2f7-42b1-40cc-b850-7cd058c41121",
+    "text": "Port Aurelia is the nearest civilized dock to Halcyon, four folds out. Famous for its night markets where you can buy almost anything if you don't ask where it came from.",
+    "namespace": "demo-ports",
+    "tags": [
+      "ports",
+      "aurelia",
+      "trade"
+    ],
+    "source": "seed",
+    "createdAt": "2026-06-06T15:08:00Z",
+    "linkedIds": [
+      "db9432ec-dd7d-4b5f-9617-1bac2d1ffbb9"
+    ]
+  },
+  {
+    "id": "788f4f1f-18f0-4c4d-a9c6-c796a54769bf",
+    "text": "The Quiet Reach is a dead-comms zone just past the Tycho Drift. Ships crossing it go silent for days; some never come out. Navigators chart routes that avoid it entirely.",
+    "namespace": "demo-ports",
+    "tags": [
+      "ports",
+      "quiet-reach",
+      "hazard"
+    ],
+    "source": "seed",
+    "createdAt": "2026-06-07T10:40:00Z"
+  },
+  {
+    "id": "0543c146-a9d8-46dd-9154-f75685e2a276",
+    "text": "The Cinder Incident was a reactor cascade six years ago that scarred Ring Two and killed two hundred people. It is why Halcyon now runs power drills twice a year.",
+    "namespace": "demo-lore",
+    "tags": [
+      "lore",
+      "history",
+      "cinder-incident"
+    ],
+    "source": "seed",
+    "createdAt": "2026-06-08T19:20:00Z",
+    "linkedIds": [
+      "e21adf03-d2a1-4a5a-835d-341111bed954"
+    ]
+  },
+  {
+    "id": "361802bb-5037-4ff6-a816-6bcccd0f8358",
+    "text": "The Vesper Accord is the uneasy treaty under which the Drift Cartel sells lumarite to Halcyon in exchange for medical supplies and reactor parts. Both sides break it quietly.",
+    "namespace": "demo-lore",
+    "tags": [
+      "lore",
+      "politics",
+      "vesper-accord"
+    ],
+    "source": "seed",
+    "createdAt": "2026-06-08T19:28:00Z",
+    "linkedIds": [
+      "db9432ec-dd7d-4b5f-9617-1bac2d1ffbb9"
+    ]
+  },
+  {
+    "id": "4de2c27e-f566-4e30-9854-e19aff1240a5",
+    "text": "Old Earth is a half-myth to the station-born. Some keep 'soil shrines' — a sealed jar of dirt said to be from the homeworld — and swear oaths on them.",
+    "namespace": "demo-lore",
+    "tags": [
+      "lore",
+      "culture",
+      "old-earth"
+    ],
+    "source": "seed",
+    "createdAt": "2026-06-09T18:30:00Z"
+  }
+]
