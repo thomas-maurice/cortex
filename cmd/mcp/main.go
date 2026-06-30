@@ -127,6 +127,28 @@ type deps struct {
 	autoSaveTags []string
 }
 
+// withTimeout wraps a tool handler so EVERY cortex MCP call fails fast: it bounds
+// the handler's context to `timeout`, so a slow or unreachable Cortex server
+// returns a quick, clear timeout error to Claude instead of blocking the session
+// while it loads/recalls context. Applied to all tools at registration. NOTE this
+// is MCP-only — the CLI shares the RPC client but NOT this wrapper, so long-running
+// CLI ops (import, reindex) keep their own (unbounded) timeouts.
+func withTimeout[In, Out any](
+	timeout time.Duration,
+	h func(context.Context, *mcp.CallToolRequest, In) (*mcp.CallToolResult, Out, error),
+) func(context.Context, *mcp.CallToolRequest, In) (*mcp.CallToolResult, Out, error) {
+	return func(ctx context.Context, req *mcp.CallToolRequest, in In) (*mcp.CallToolResult, Out, error) {
+		ctx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		res, out, err := h(ctx, req, in)
+		if ctx.Err() == context.DeadlineExceeded {
+			var zero Out
+			return nil, zero, fmt.Errorf("cortex call timed out after %s (server slow or unreachable) — failing fast so I don't block", timeout)
+		}
+		return res, out, err
+	}
+}
+
 func main() {
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
@@ -142,11 +164,13 @@ func main() {
 	cfg.SetDefault("source", "claude-code")
 	cfg.SetDefault("mcp.search-limit", 0) // 0 = defer to the server's own default
 	cfg.SetDefault("mcp.fact-limit", 0)
+	cfg.SetDefault("mcp.timeout", "2s") // per-call fail-fast deadline so a slow/down server never blocks Claude
 	cfg.SetDefault("save.hostname-tag", false) // opt-in: stamp host:<hostname> on saves
 	_ = cfg.BindEnv("server", "CORTEX_SERVER_URL")
 	_ = cfg.BindEnv("token", "CORTEX_AUTH_TOKEN")
 	_ = cfg.BindEnv("source", "MEMORY_SOURCE")
 	_ = cfg.BindEnv("mcp.max-distance", "MAX_DISTANCE")
+	_ = cfg.BindEnv("mcp.timeout", "CORTEX_MCP_TIMEOUT")
 
 	var (
 		serverURL   = cfg.GetString("server")
@@ -159,6 +183,16 @@ func main() {
 	conversationID := resolveConversationID(log)
 
 	autoSaveTags := config.AutoTags(cfg.GetStringSlice("save.tags"), cfg.GetBool("save.hostname-tag"))
+
+	// Fail-fast deadline for every tool call: a slow or unreachable Cortex server
+	// must never hang Claude while it loads/recalls context. Default 2s; tune with
+	// CORTEX_MCP_TIMEOUT (e.g. "5s") if a cold Ollama embed or a consolidate trips it.
+	callTimeout := 2 * time.Second
+	if t, err := time.ParseDuration(cfg.GetString("mcp.timeout")); err == nil && t > 0 {
+		callTimeout = t
+	} else {
+		log.Warn("invalid mcp.timeout, using default", "value", cfg.GetString("mcp.timeout"), "default", callTimeout)
+	}
 
 	d := &deps{
 		client:             rpc.NewClient(serverURL, authToken),
@@ -192,7 +226,7 @@ func main() {
 			"memory and each target are indexed, so you do not need a separate cortex_memory_link call and " +
 			"the targets need not be indexed yet. Indexing is asynchronous and durable; saving is cheap, so " +
 			"err on the side of saving more.",
-	}, d.save)
+	}, withTimeout(callTimeout, d.save))
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "cortex_memory_search",
@@ -208,12 +242,12 @@ func main() {
 			"self-contained mechanical step. Returns the most relevant memories for a natural-language query, " +
 			"optionally filtered by namespace, required/excluded tags, and a relevance cutoff (maxDistance) that " +
 			"drops weak matches.",
-	}, d.search)
+	}, withTimeout(callTimeout, d.search))
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "cortex_memory_delete",
 		Description: "Delete a memory by its ID (as returned by cortex_memory_search).",
-	}, d.del)
+	}, withTimeout(callTimeout, d.del))
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "cortex_memory_edit",
@@ -225,7 +259,7 @@ func main() {
 			"replaceTags=true, in which case the tags field becomes the memory's new tag set (an empty list clears " +
 			"them). Namespace is left untouched unless you pass a non-empty namespace. Editing is asynchronous: the " +
 			"updated memory is re-indexed shortly after the call returns.",
-	}, d.edit)
+	}, withTimeout(callTimeout, d.edit))
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "cortex_memory_link",
@@ -240,12 +274,12 @@ func main() {
 			"from cortex_memory_save this turn (still being indexed) as well as IDs from cortex_memory_search " +
 			"or cortex_recall_session — the link waits for both endpoints to exist. The linkTo field of " +
 			"cortex_memory_save remains a convenient shortcut for linking a new memory at save time.",
-	}, d.link)
+	}, withTimeout(callTimeout, d.link))
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "cortex_memory_unlink",
 		Description: "Remove the explicit link between two memories (by their IDs). The inverse of cortex_memory_link.",
-	}, d.unlink)
+	}, withTimeout(callTimeout, d.unlink))
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "cortex_session_summarize",
@@ -259,7 +293,7 @@ func main() {
 			"Markdown. Keeping it fresh is what makes later recall accurate; a " +
 			"stale summary means the session is remembered wrong. You do not provide an ID — the server ties " +
 			"the summary to this session automatically.",
-	}, d.summarize)
+	}, withTimeout(callTimeout, d.summarize))
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "cortex_recall_session",
@@ -271,7 +305,7 @@ func main() {
 			"off\", \"the X we set up\", or any time you are resuming a project and broader prior context would " +
 			"help. Prefer it over cortex_memory_search when the user points at a whole conversation rather than " +
 			"a single fact. When unsure whether a past session is relevant, recall it.",
-	}, d.recall)
+	}, withTimeout(callTimeout, d.recall))
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "cortex_review_candidates",
@@ -285,7 +319,7 @@ func main() {
 			"the pair is never flagged again. Use this when " +
 			"the user asks to clean up / deduplicate their memory, or proactively at the start of a session to keep " +
 			"the store tidy. Scope with namespace (omit for default, \"*\" for all).",
-	}, d.reviewCandidates)
+	}, withTimeout(callTimeout, d.reviewCandidates))
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "cortex_dismiss_duplicate",
@@ -294,7 +328,7 @@ func main() {
 			"and you decide two flagged memories are genuinely distinct (related but not redundant). The decision " +
 			"is bidirectional and durable. Pass the two memory IDs (as returned by cortex_review_candidates). This " +
 			"does NOT delete or link anything — it only suppresses the false-positive duplicate flag.",
-	}, d.dismissDuplicate)
+	}, withTimeout(callTimeout, d.dismissDuplicate))
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "cortex_consolidate",
@@ -312,7 +346,7 @@ func main() {
 			"want; it gathers fewer, more relevant memories and costs far fewer tokens). Pass \"*\" to span ALL " +
 			"projects ONLY when the user explicitly asks to consolidate across everything — it pulls in much more " +
 			"and is expensive.",
-	}, d.consolidate)
+	}, withTimeout(callTimeout, d.consolidate))
 
 	log.Info("cortex mcp server starting on stdio", "namespace", defaultNS, "server", serverURL, "autoSaveTags", autoSaveTags)
 	if err := server.Run(context.Background(), &mcp.StdioTransport{}); err != nil {

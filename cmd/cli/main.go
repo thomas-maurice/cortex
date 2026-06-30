@@ -149,6 +149,7 @@ mcp:
   search-limit: 10              # default max results for cortex_memory_search
   fact-limit: 50                # default max facts for cortex_recall_session
   max-distance: 0.45            # relevance cutoff, cosine distance; 0 = no cutoff (env: MAX_DISTANCE)
+  timeout: 2s                   # per-call fail-fast deadline so a slow/unreachable server never blocks Claude (env: CORTEX_MCP_TIMEOUT)
 `
 
 func configCmd() *cobra.Command {
