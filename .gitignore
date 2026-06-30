@@ -8,3 +8,7 @@
 # Ignore local Claude Code cruft, but version shared skills.
 .claude/*
 !.claude/skills/
+scripts/.venv
+testdata/.prod-dump.json
+testdata/.prod-probe-queries.json
+scripts/results/

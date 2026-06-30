@@ -123,6 +123,22 @@ should encode *why* the behaviour matters, not just what it does (Rule 9).
 - **Only `text` is embedded.** Every other field (namespace, tags, source,
   conversationId, links…) is filterable metadata, never part of the vector. This
   is a load-bearing invariant (pinned by `TestMemoryClassVectorizerNone`).
+- **Chunked retrieval (optional, default on).** The worker splits each memory into
+  overlapping, token-bounded chunks (`internal/chunk`, 512/64 tok defaults via
+  cl100k proxy) and indexes them as the `MemoryChunk` class — the PRIMARY search
+  target. `store.Search` queries chunks, groups by parent `memoryId` (best chunk
+  distance), resolves to full `Memory` records, and **falls back to whole-memory
+  vectors for memories that have no chunks** (so an un-chunked / mid-reindex store
+  still works — no flag-day reindex). The whole-memory vector is still used by dedup
+  (`SearchMemoryVectors`) and find-similar (`SearchByID`). Toggle: `CHUNKING_ENABLED`
+  (default true), set the SAME on worker (writes chunks) and server (searches them);
+  false = pre-chunking whole-memory search. Delete / namespace-rename / -delete
+  cascade to chunks. See docs/CHUNKING.md.
+- **Exact-match keys use `tokenization: field`.** `namespace`, `memoryId`,
+  `conversationId`, `source` are field-tokenized — Weaviate's default *word*
+  tokenization makes `Equal` fuzzy (`"demo"` matches `"demo-2"`; UUIDs match on
+  hyphen fragments). Changing tokenization needs a class REBUILD (ensureProps only
+  adds missing props), so a prod schema change to these requires a reindex/rebuild.
 - **Metadata-only edits skip the worker.** Changing a field that isn't embedded
   (links, namespace rename, reinforcement, dedup decisions) is a direct Weaviate
   **merge/PATCH** from the server — no re-embed, no NATS round-trip. Re-embedding
@@ -199,6 +215,17 @@ hits PROD (see the warning in §5). Watch the **Indexing** tab (auto-refreshes) 
 delete the `demo-*` namespaces from the **Namespaces** UI view.
 Format details and editing rules (UUID ids, symmetric `linkedIds`, no vectors)
 are in `testdata/README.md`.
+
+### Recall-accuracy harness
+
+`scripts/recall_accuracy.py` measures retrieval recall@k / MRR against a running
+server from a labelled query set (query → expected memory id). It is a black-box
+RPC client, so the SAME harness runs before and after a code change for A/B
+comparisons (`scripts/recall_compare.py` renders the before/after table). Fixtures:
+`testdata/seed-long.json` (+ `recall-queries.json`) are long needle-in-haystack
+memories with labelled probes. This is what validated chunking — see
+docs/CHUNKING.md. The gitignored venv `scripts/.venv` holds tiktoken for fixture
+token-counting.
 
 ## 7. Keep this skill (and the docs) current
 

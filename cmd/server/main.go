@@ -67,6 +67,20 @@ func envInt(key string, def int) int {
 	return n
 }
 
+// envBool reads a boolean env var (1/t/true/0/f/false, case-insensitive),
+// returning def when unset or unparseable.
+func envBool(key string, def bool) bool {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		return def
+	}
+	return b
+}
+
 func main() {
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
@@ -86,6 +100,10 @@ func main() {
 		rerankWeight   = envFloat("RERANK_WEIGHT", 0)
 		rerankHalfLife = envFloat("RERANK_HALFLIFE_DAYS", 30)
 		reinforceTopK  = envInt("REINFORCE_TOPK", 1)
+		// chunkingEnabled selects the primary search path: chunk-based (with a
+		// whole-memory fallback so an un-chunked store still works) when true, or
+		// pure whole-memory search when false. Must match the worker's setting.
+		chunkingEnabled = envBool("CHUNKING_ENABLED", true)
 		authToken      = os.Getenv("CORTEX_AUTH_TOKEN")
 		uiUser         = env("CORTEX_UI_USER", "admin")
 		uiPass         = os.Getenv("CORTEX_UI_PASSWORD")
@@ -141,6 +159,7 @@ func main() {
 		log.Error("ensure schema", "err", err)
 		os.Exit(1)
 	}
+	checkSchema(ctx, log, st)
 
 	svc := rpc.NewService(nc, js, st, embed.New(ollamaURL, ollamaModel), rpc.Config{
 		DefaultNamespace:   defaultNS,
@@ -151,6 +170,7 @@ func main() {
 		RerankWeight:       rerankWeight,
 		RerankHalfLifeDays: rerankHalfLife,
 		ReinforceTopK:      reinforceTopK,
+		ChunkingEnabled:    chunkingEnabled,
 	}, log)
 
 	// When the API token is set, accept either it (MCP/CLI) or a UI-issued JWT
@@ -221,4 +241,25 @@ func ensureSchemaWithRetry(ctx context.Context, log *slog.Logger, st *store.Stor
 		}
 	}
 	return err
+}
+
+// checkSchema verifies the Weaviate classes are present and correctly shaped after
+// EnsureSchema, logging a clear OK or loud, actionable warnings (e.g. a class
+// created before the tokenization fix needs a rebuild/reindex). Advisory only —
+// search keeps working via the whole-memory fallback — so it never aborts boot.
+func checkSchema(ctx context.Context, log *slog.Logger, st *store.Store) {
+	problems, err := st.VerifySchema(ctx)
+	if err != nil {
+		log.Warn("schema verification could not run", "err", err)
+		return
+	}
+	if len(problems) == 0 {
+		log.Info("weaviate schema OK", "classes", "Memory, MemoryChunk, ConversationSummary")
+		return
+	}
+	for _, p := range problems {
+		log.Warn("weaviate schema issue", "problem", p)
+	}
+	log.Warn("weaviate schema needs attention — search still works (whole-memory fallback), but a `cortex reindex` / class rebuild is recommended",
+		"issues", len(problems))
 }

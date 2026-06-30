@@ -15,7 +15,7 @@ import (
 // This pins Vectorizer to "none" so any such change fails loudly in CI rather
 // than silently corrupting search relevance.
 func TestMemoryClassVectorizerNone(t *testing.T) {
-	for _, class := range []*models.Class{memoryClass(), summaryClass()} {
+	for _, class := range []*models.Class{memoryClass(), chunkClass(), summaryClass()} {
 		assert.Equal(t, "none", class.Vectorizer, "%s must not auto-vectorize; vectors are supplied by the worker from text only", class.Class)
 		assert.Empty(t, class.ModuleConfig, "no vector module may be configured on %s", class.Class)
 

@@ -52,6 +52,15 @@ services:
       # Model-specific — qwen3 distances are compressed, so start tight (~0.1) and
       # tune against your data. The worker never deletes/merges on its own.
       DEDUP_DISTANCE: ${DEDUP_DISTANCE:-0}
+      # Chunking: the worker splits each memory into overlapping, token-bounded
+      # chunks and indexes those as the primary search target (a fact buried in a
+      # long memory is matched at the chunk level, not against the whole-document
+      # vector). Sizes are token counts via a cl100k proxy tokenizer. Set
+      # CHUNKING_ENABLED=false to turn it off (worker writes only whole-memory
+      # vectors); keep it identical on the server. Sizes are ignored when disabled.
+      CHUNKING_ENABLED: ${CHUNKING_ENABLED:-true}
+      CHUNK_MAX_TOKENS: ${CHUNK_MAX_TOKENS:-512}
+      CHUNK_OVERLAP_TOKENS: ${CHUNK_OVERLAP_TOKENS:-64}
     depends_on:
       - nats
       - weaviate
@@ -77,6 +86,10 @@ services:
       # so exact tokens — hostnames, codenames, IDs — surface, not just semantic
       # matches. Tune per your data; <=0 falls back to the built-in default.
       SEARCH_ALPHA: ${SEARCH_ALPHA:-0.5}
+      # Must match the worker's CHUNKING_ENABLED: true → search the chunk index
+      # (with a whole-memory fallback for un-chunked memories), false → search
+      # whole-memory vectors only (pre-chunking behaviour).
+      CHUNKING_ENABLED: ${CHUNKING_ENABLED:-true}
       # "Living memory": usage-aware re-ranking + hit reinforcement. RERANK_WEIGHT
       # is the usage share vs relevance (0 = OFF, the safe default; the whole
       # feature, including reinforcement writes, is disabled at 0). RERANK_HALFLIFE_DAYS

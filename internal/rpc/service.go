@@ -51,6 +51,13 @@ type Config struct {
 	// defaults to 1 so a query strengthens its single best match, not the whole
 	// returned page (which would be a noisy signal).
 	ReinforceTopK int
+	// ChunkingEnabled selects the primary retrieval path. When true, Search and
+	// Consolidate match against the MemoryChunk index (with a whole-memory
+	// fallback, so a store whose memories were never chunked still returns
+	// results). When false, they match against whole-memory vectors only — the
+	// pre-chunking behaviour, so disabling is a clean revert. Must agree with the
+	// worker's CHUNKING_ENABLED (which gates whether chunks are written at all).
+	ChunkingEnabled bool
 }
 
 // Service implements the MemoryService Connect handler. It is the single owner
@@ -164,6 +171,19 @@ func (s *Service) UpdateMemory(ctx context.Context, req *connect.Request[cortexv
 	return connect.NewResponse(&cortexv1.UpdateMemoryResponse{Id: id, Status: "queued"}), nil
 }
 
+// searchStore runs the configured primary retrieval and returns parent memories
+// either way, so callers (Search, Consolidate) are oblivious to the mode. When
+// chunking is enabled it matches the MemoryChunk index (store.Search, which falls
+// back to whole-memory vectors for any memory that has no chunks); when disabled
+// it matches whole-memory vectors only (the pre-chunking path), so a deployment
+// can turn chunking off and behave exactly as before.
+func (s *Service) searchStore(ctx context.Context, vec []float32, opts store.SearchOpts) ([]memory.Hit, error) {
+	if s.cfg.ChunkingEnabled {
+		return s.store.Search(ctx, vec, opts)
+	}
+	return s.store.SearchMemoryVectors(ctx, vec, opts)
+}
+
 func (s *Service) Search(ctx context.Context, req *connect.Request[cortexv1.SearchRequest]) (*connect.Response[cortexv1.SearchResponse], error) {
 	query := strings.TrimSpace(req.Msg.GetQuery())
 	if query == "" {
@@ -174,7 +194,7 @@ func (s *Service) Search(ctx context.Context, req *connect.Request[cortexv1.Sear
 	if err != nil {
 		return nil, err
 	}
-	hits, err := s.store.Search(ctx, vec, store.SearchOpts{
+	hits, err := s.searchStore(ctx, vec, store.SearchOpts{
 		Namespace:          resolveNamespace(req.Msg.GetNamespace(), s.cfg.DefaultNamespace),
 		Limit:              int(req.Msg.GetLimit()),
 		MaxDistance:        req.Msg.GetMaxDistance(),
@@ -750,7 +770,7 @@ func (s *Service) Consolidate(ctx context.Context, req *connect.Request[cortexv1
 		return nil, err
 	}
 	includeTags, anyTags, excludeTags := req.Msg.GetTags(), req.Msg.GetAnyTags(), req.Msg.GetExcludeTags()
-	seeds, err := s.store.Search(ctx, vec, store.SearchOpts{
+	seeds, err := s.searchStore(ctx, vec, store.SearchOpts{
 		Namespace:   resolveNamespace(req.Msg.GetNamespace(), s.cfg.DefaultNamespace),
 		Limit:       limit,
 		MaxDistance: req.Msg.GetMaxDistance(),

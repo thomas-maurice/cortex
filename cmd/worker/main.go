@@ -19,6 +19,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/thomas-maurice/cortex/internal/bus"
+	"github.com/thomas-maurice/cortex/internal/chunk"
 	"github.com/thomas-maurice/cortex/internal/embed"
 	"github.com/thomas-maurice/cortex/internal/memory"
 	"github.com/thomas-maurice/cortex/internal/store"
@@ -44,6 +45,32 @@ func envFloat(key string, def float32) float32 {
 	return float32(f)
 }
 
+// envInt reads an int env var, returning def when unset or unparseable.
+func envInt(key string, def int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return def
+	}
+	return n
+}
+
+// envBool reads a boolean env var, returning def when unset or unparseable.
+func envBool(key string, def bool) bool {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		return def
+	}
+	return b
+}
+
 func main() {
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
@@ -59,6 +86,16 @@ func main() {
 		// until opted in. The right value is model-specific (qwen3 distances are
 		// compressed) — tune it against your own data.
 		dedupDistance = envFloat("DEDUP_DISTANCE", 0)
+		// chunkMaxTokens / chunkOverlap size the per-chunk vectors the primary search
+		// runs against. 512/64 by default; sized with a cl100k proxy tokenizer (see
+		// internal/chunk). Configurable so chunk granularity can be tuned per model.
+		chunkMaxTokens = envInt("CHUNK_MAX_TOKENS", chunk.DefaultMaxTokens)
+		chunkOverlap   = envInt("CHUNK_OVERLAP_TOKENS", chunk.DefaultOverlap)
+		// chunkingEnabled gates whether the worker writes per-chunk vectors at all.
+		// When false the worker only embeds + upserts the whole memory (the
+		// pre-chunking behaviour); the server must be set to match. Must agree with
+		// the server's CHUNKING_ENABLED.
+		chunkingEnabled = envBool("CHUNKING_ENABLED", true)
 	)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -87,8 +124,20 @@ func main() {
 		log.Error("ensure schema", "err", err)
 		os.Exit(1)
 	}
+	checkSchema(ctx, log, st)
 
 	embedder := embed.New(ollamaURL, ollamaModel)
+
+	// A nil chunker means chunking is disabled: indexChunks becomes a no-op and the
+	// worker only writes whole-memory vectors (the server then searches those).
+	var chunker *chunk.Chunker
+	if chunkingEnabled {
+		chunker, err = chunk.New(chunkMaxTokens, chunkOverlap)
+		if err != nil {
+			log.Error("init chunker", "err", err)
+			os.Exit(1)
+		}
+	}
 
 	cons, err := js.CreateOrUpdateConsumer(ctx, memory.StreamName, jetstream.ConsumerConfig{
 		Durable:        memory.ConsumerName,
@@ -115,10 +164,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	log.Info("worker up", "nats", natsURL, "weaviate", weaviate, "model", ollamaModel, "dedup_distance", dedupDistance)
+	log.Info("worker up", "nats", natsURL, "weaviate", weaviate, "model", ollamaModel,
+		"dedup_distance", dedupDistance, "chunking_enabled", chunkingEnabled,
+		"chunk_max_tokens", chunkMaxTokens, "chunk_overlap", chunkOverlap)
 
 	cc, err := cons.Consume(func(msg jetstream.Msg) {
-		handle(ctx, log, js, embedder, st, msg, dedupDistance)
+		handle(ctx, log, js, embedder, st, chunker, msg, dedupDistance)
 	})
 	if err != nil {
 		log.Error("consume", "err", err)
@@ -137,6 +188,27 @@ func main() {
 
 	<-ctx.Done()
 	log.Info("shutting down")
+}
+
+// checkSchema verifies the Weaviate classes exist and are correctly shaped after
+// EnsureSchema, logging a clear OK or loud, actionable warnings (e.g. a class
+// created before the tokenization fix needs a rebuild/reindex). Advisory only, so
+// it never aborts boot.
+func checkSchema(ctx context.Context, log *slog.Logger, st *store.Store) {
+	problems, err := st.VerifySchema(ctx)
+	if err != nil {
+		log.Warn("schema verification could not run", "err", err)
+		return
+	}
+	if len(problems) == 0 {
+		log.Info("weaviate schema OK", "classes", "Memory, MemoryChunk, ConversationSummary")
+		return
+	}
+	for _, p := range problems {
+		log.Warn("weaviate schema issue", "problem", p)
+	}
+	log.Warn("weaviate schema needs attention — indexing/search still work, but a `cortex reindex` / class rebuild is recommended",
+		"issues", len(problems))
 }
 
 // ensureSchemaWithRetry tries to create the schema, backing off while Weaviate
@@ -160,12 +232,12 @@ func ensureSchemaWithRetry(ctx context.Context, log *slog.Logger, st *store.Stor
 
 // handle dispatches by subject: fact-index events and conversation-summary
 // events share one durable consumer.
-func handle(ctx context.Context, log *slog.Logger, js jetstream.JetStream, embedder *embed.Client, st *store.Store, msg jetstream.Msg, dedupDistance float32) {
+func handle(ctx context.Context, log *slog.Logger, js jetstream.JetStream, embedder *embed.Client, st *store.Store, chunker *chunk.Chunker, msg jetstream.Msg, dedupDistance float32) {
 	if msg.Subject() == memory.SubjectSummary {
 		handleSummary(ctx, log, embedder, st, msg)
 		return
 	}
-	handleIndex(ctx, log, js, embedder, st, msg, dedupDistance)
+	handleIndex(ctx, log, js, embedder, st, chunker, msg, dedupDistance)
 }
 
 // handleSummary embeds a conversation summary and upserts it (one per
@@ -402,7 +474,10 @@ func findCandidates(ctx context.Context, log *slog.Logger, st *store.Store, rec 
 	if dedupDistance <= 0 {
 		return nil
 	}
-	hits, err := st.Search(ctx, vec, store.SearchOpts{
+	// Dedup wants WHOLE-memory similarity (is this a near-duplicate of an existing
+	// memory?), so it searches the full-memory vectors directly, NOT the chunk index
+	// the primary Search now uses.
+	hits, err := st.SearchMemoryVectors(ctx, vec, store.SearchOpts{
 		Namespace:   rec.Namespace,
 		Limit:       candidateLimit + 1 + len(rec.NotDuplicateOf), // headroom for self + dismissed pairs
 		MaxDistance: dedupDistance,
@@ -430,7 +505,37 @@ func findCandidates(ctx context.Context, log *slog.Logger, st *store.Store, rec 
 	return out
 }
 
-func handleIndex(ctx context.Context, log *slog.Logger, js jetstream.JetStream, embedder *embed.Client, st *store.Store, msg jetstream.Msg, dedupDistance float32) {
+// indexChunks splits rec.Text into overlapping, token-bounded chunks, embeds each
+// one, and (idempotently) replaces the memory's chunk set in the store. The chunk
+// vectors are the PRIMARY search target — a fact buried in a long memory is found
+// by matching its focused chunk, not the whole document's averaged vector. Returns
+// the number of chunks written. Any embed/store error is returned so the caller
+// retries (chunk ids are deterministic, so the retry overwrites cleanly). A nil
+// chunker means chunking is disabled — a no-op, so the worker only writes the
+// whole-memory vector.
+func indexChunks(ctx context.Context, embedder *embed.Client, st *store.Store, chunker *chunk.Chunker, rec memory.Record) (int, error) {
+	if chunker == nil {
+		// Chunking disabled: purge any chunks this memory had from when it WAS
+		// enabled, so re-importing a memory while disabled doesn't leave orphans.
+		// ReplaceChunks with no chunks deletes all of the memory's chunks.
+		return 0, st.ReplaceChunks(ctx, rec, nil)
+	}
+	chunks := chunker.Split(rec.Text)
+	cvs := make([]store.ChunkVec, 0, len(chunks))
+	for i, ct := range chunks {
+		cvec, err := embedder.Embed(ctx, ct)
+		if err != nil {
+			return 0, fmt.Errorf("embed chunk %d: %w", i, err)
+		}
+		cvs = append(cvs, store.ChunkVec{Index: i, Text: ct, Vector: cvec})
+	}
+	if err := st.ReplaceChunks(ctx, rec, cvs); err != nil {
+		return 0, err
+	}
+	return len(cvs), nil
+}
+
+func handleIndex(ctx context.Context, log *slog.Logger, js jetstream.JetStream, embedder *embed.Client, st *store.Store, chunker *chunk.Chunker, msg jetstream.Msg, dedupDistance float32) {
 	var rec memory.Record
 	if err := json.Unmarshal(msg.Data(), &rec); err != nil {
 		// Unrecoverable: bad payload. Terminate so it is not redelivered.
@@ -441,6 +546,7 @@ func handleIndex(ctx context.Context, log *slog.Logger, js jetstream.JetStream, 
 
 	var procErr error
 	var embedDur, storeDur time.Duration
+	var nChunks int
 	embedStart := time.Now()
 	vec, err := embedder.Embed(ctx, rec.Text)
 	embedDur = time.Since(embedStart)
@@ -458,14 +564,20 @@ func handleIndex(ctx context.Context, log *slog.Logger, js jetstream.JetStream, 
 		rec.DupCandidates = findCandidates(ctx, log, st, rec, vec, dedupDistance)
 		storeStart := time.Now()
 		if err := st.Upsert(ctx, rec, vec); err != nil {
+			// The full-memory vector is still stored (dedup + find-similar use it),
+			// but it is no longer the primary search target.
 			procErr = fmt.Errorf("upsert: %w", err)
+		} else if n, err := indexChunks(ctx, embedder, st, chunker, rec); err != nil {
+			// Chunks are what Search matches against, so a chunk failure must retry —
+			// the memory would otherwise exist but be unfindable. Idempotent on retry.
+			procErr = fmt.Errorf("chunk index: %w", err)
 		} else {
+			nChunks = n
 			// Requested links are no longer applied here: they travel on
 			// SubjectLink and are applied by the link consumer, which waits for both
 			// endpoints to exist. Supersedes still runs inline — now that the merged
-			// memory is durable, delete the sources it replaces. Ordering matters:
-			// post-upsert means a crash here can't lose the merged content.
-			// Best-effort and non-fatal.
+			// memory AND its chunks are durable, delete the sources it replaces.
+			// Ordering matters: post-upsert means a crash here can't lose content.
 			applySupersedes(ctx, log, st, rec)
 		}
 		storeDur = time.Since(storeStart)
@@ -475,7 +587,7 @@ func handleIndex(ctx context.Context, log *slog.Logger, js jetstream.JetStream, 
 		// queue_latency_ms is the end-to-end wait from publish (rec.CreatedAt) to
 		// indexed — it includes JetStream queue time and any Ollama cold-load, so
 		// it is the number to watch for "why did indexing take so long".
-		log.Info("indexed", "id", rec.ID, "namespace", rec.Namespace, "dims", len(vec),
+		log.Info("indexed", "id", rec.ID, "namespace", rec.Namespace, "dims", len(vec), "chunks", nChunks,
 			"embed_ms", embedDur.Milliseconds(), "store_ms", storeDur.Milliseconds(),
 			"total_ms", (embedDur + storeDur).Milliseconds(),
 			"queue_latency_ms", time.Since(rec.CreatedAt).Milliseconds())

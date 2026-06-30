@@ -600,6 +600,27 @@ Full evaluation, benchmark table, and the swap procedure (including the
 **re-index gotcha** — changing models changes vector dimensions and requires
 re-indexing) are in [`docs/EMBEDDING_MODELS.md`](docs/EMBEDDING_MODELS.md).
 
+## Chunked retrieval
+
+Memories are indexed as **chunks**, not just as one whole-document vector. A long
+memory's single vector averages its content together, so a query about a specific
+fact buried inside it matches weakly. The worker therefore splits each memory into
+overlapping, token-bounded chunks (default **512 tokens, 64 overlap**;
+`CHUNK_MAX_TOKENS` / `CHUNK_OVERLAP_TOKENS`), embeds each, and **search runs
+against the chunks**, resolving hits back to their parent memory. The whole-memory
+vector is still stored and used for duplicate detection and "find similar".
+
+It is **optional and backward-compatible**: `CHUNKING_ENABLED` (default `true`,
+set the same on worker + server) turns it off to revert to whole-memory search,
+and when on, search **falls back to whole-memory vectors for any memory that has
+no chunks** — so enabling it on an existing store does not require a flag-day
+reindex (run `cortex reindex` at leisure for the full benefit).
+
+In a controlled experiment this improved retrieval on long memories
+(recall@1 +8.3pp, MRR +0.054) and left short-memory recall unchanged. Full design,
+methodology, and before/after numbers are in [docs/CHUNKING.md](docs/CHUNKING.md);
+the harness is `scripts/recall_accuracy.py`.
+
 ## Seeding a dev stack with fake data
 
 To poke at the UI without using real memories, load the bundled fake dataset
@@ -687,8 +708,9 @@ cmd/worker/        NATS consumer — embeds via Ollama, writes to Weaviate
 internal/
   memory/          shared data model (Record, Hit) + stream/class names
   bus/             NATS JetStream: connect, stream, publish
+  chunk/           token-bounded, overlapping text splitter (tiktoken, offline)
   embed/           Ollama embeddings client
-  store/           Weaviate: schema, upsert, gRPC nearVector search, links, delete
+  store/           Weaviate: schema, upsert, chunk-based gRPC search, links, delete
   rpc/             Connect service impl, auth (token+JWT), login, JWT, client helper
 ui/                embedded Vue 3 SPA (Memories, Graph, Explore, Sessions, Namespaces, Preferences, Backup, Indexing, Status)
 testdata/          fake seed memories for a dev stack (cortex import format)
@@ -697,7 +719,9 @@ deploy/truenas/      TrueNAS Scale compose (non-root, host bind mounts, Traefik 
 Dockerfile           node (UI) + go multi-binary build → distroless
 .goreleaser.yaml     binary release build (linux/macOS × amd64/arm64)
 .github/workflows/   test (PRs) · build (image → ghcr) · release (GoReleaser)
-docs/                DESIGN.md, WEB_UI.md, EMBEDDING_MODELS.md, RESEARCH.md
+testdata/            fake seed memories + recall fixtures for a dev stack
+scripts/             install, prod→dev copy, recall-accuracy harness
+docs/                DESIGN.md, WEB_UI.md, CHUNKING.md, EMBEDDING_MODELS.md, RESEARCH.md
 ```
 
 ## Roadmap (extension points, already designed for)

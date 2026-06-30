@@ -99,6 +99,12 @@ func (s *Store) RenameNamespace(ctx context.Context, from, to string) (int, int,
 	if err != nil {
 		return mem, 0, err
 	}
+	// Chunks carry their parent's namespace so namespace filters push down to the
+	// chunk query; they must move too, or a chunk would keep the old namespace and
+	// be missed by a namespace-scoped search. Not reported in the user-facing count.
+	if _, err := s.renameInClass(ctx, memory.ChunkClassName, from, to); err != nil {
+		return mem, 0, err
+	}
 	sum, err := s.renameInClass(ctx, memory.SummaryClassName, from, to)
 	if err != nil {
 		return mem, sum, err
@@ -156,6 +162,11 @@ func (s *Store) idsInNamespace(ctx context.Context, className, namespace string)
 func (s *Store) DeleteNamespace(ctx context.Context, namespace string) (int, int, error) {
 	mem, err := s.deleteInClass(ctx, memory.ClassName, namespace)
 	if err != nil {
+		return mem, 0, err
+	}
+	// The namespace's chunks carry the same namespace; delete them too so no
+	// orphaned chunks survive a namespace wipe. Not reported in the user count.
+	if _, err := s.deleteInClass(ctx, memory.ChunkClassName, namespace); err != nil {
 		return mem, 0, err
 	}
 	sum, err := s.deleteInClass(ctx, memory.SummaryClassName, namespace)

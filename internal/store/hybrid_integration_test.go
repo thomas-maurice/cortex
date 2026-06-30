@@ -68,9 +68,13 @@ func TestHybridSurfacesKeyword(t *testing.T) {
 		{keywordID, "the production NAS host is codenamed mega-fucker and handles most traffic", far},
 	}
 	for _, d := range docs {
-		require.NoError(t, st.Upsert(ctx, memory.Record{
-			ID: d.id, Text: d.text, Namespace: ns, CreatedAt: time.Now().UTC(),
-		}, d.vec))
+		rec := memory.Record{ID: d.id, Text: d.text, Namespace: ns, CreatedAt: time.Now().UTC()}
+		require.NoError(t, st.Upsert(ctx, rec, d.vec))
+		// Search now matches against MemoryChunk, so each doc needs a chunk. These
+		// texts are short → a single chunk carrying the whole text and the same
+		// crafted vector, which preserves the hybrid keyword-vs-vector behaviour the
+		// test exercises (BM25 runs over the chunk text == the full text).
+		require.NoError(t, st.ReplaceChunks(ctx, rec, []ChunkVec{{Index: 0, Text: d.text, Vector: d.vec}}))
 	}
 
 	// Wait until all three are queryable (Weaviate indexing is near-real-time).

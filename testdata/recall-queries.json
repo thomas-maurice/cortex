@@ -1,0 +1,254 @@
+[
+  {
+    "id": "q01",
+    "query": "How many docking slots does the central spindle's main structure offer to incoming ships?",
+    "expectedId": "a6cb8c52-29a8-4773-8805-8a2fadd8ea76",
+    "needle": "Spindle Three has 41 hard berths",
+    "depth": "start"
+  },
+  {
+    "id": "q02",
+    "query": "Who is the dock supervisor that personally walks the berth line and once held a cartel ship over paperwork?",
+    "expectedId": "a6cb8c52-29a8-4773-8805-8a2fadd8ea76",
+    "needle": "harbormaster Inez Calloway",
+    "depth": "middle"
+  },
+  {
+    "id": "q03",
+    "query": "Which vessel is the only one cleared to drag a powerless hull off a cradle without a yard crew?",
+    "expectedId": "a6cb8c52-29a8-4773-8805-8a2fadd8ea76",
+    "needle": "the tug Brackish Mary",
+    "depth": "end"
+  },
+  {
+    "id": "q04",
+    "query": "At what fraction of rated output does the automatic power-dropping routine begin cutting circuits?",
+    "expectedId": "78641c53-7755-4614-86e8-ae4602a4241f",
+    "needle": "Amber Cascade load-shed trips at 0.82 of rated capacity",
+    "depth": "start"
+  },
+  {
+    "id": "q05",
+    "query": "What share of used water does the recycling facility manage to recover on an ordinary run?",
+    "expectedId": "78641c53-7755-4614-86e8-ae4602a4241f",
+    "needle": "reclaim plant recovers 94% of greywater",
+    "depth": "middle"
+  },
+  {
+    "id": "q06",
+    "query": "Which air-scrubbing tank was destroyed by a microscopic grazer, and when did that happen?",
+    "expectedId": "78641c53-7755-4614-86e8-ae4602a4241f",
+    "needle": "Vat 4 lost to a rotifer bloom in the third week of Brightfall",
+    "depth": "end"
+  },
+  {
+    "id": "q07",
+    "query": "How sensitive is the magnetic detector at the sixth checkpoint to the smuggled blue crystal?",
+    "expectedId": "f5daf7b7-81d1-480a-a853-6525d241558b",
+    "needle": "Gate 6 scanner reads lumarite at 11 picotesla",
+    "depth": "start"
+  },
+  {
+    "id": "q08",
+    "query": "Which veteran enforcement officer is famous for spotting faked cargo declarations on a hunch?",
+    "expectedId": "f5daf7b7-81d1-480a-a853-6525d241558b",
+    "needle": "deputy Rourke Halversen",
+    "depth": "middle"
+  },
+  {
+    "id": "q09",
+    "query": "What was the codename of the bust that took down the broker ring, and on what date did it close?",
+    "expectedId": "f5daf7b7-81d1-480a-a853-6525d241558b",
+    "needle": "smuggling ring broke on the 17th of Brightfall, Operation Tallow",
+    "depth": "end"
+  },
+  {
+    "id": "q10",
+    "query": "What is the station leader's military identification code from her former fleet?",
+    "expectedId": "207a91cd-08ea-4287-962e-601b5d005161",
+    "needle": "Commander Lyra Okonkwo, service number SF-2207-Kestrel",
+    "depth": "start"
+  },
+  {
+    "id": "q11",
+    "query": "Who is the second-in-command and how long did he serve in the survey corps?",
+    "expectedId": "207a91cd-08ea-4287-962e-601b5d005161",
+    "needle": "executive officer Tomás Renn, 22-year survey-fleet veteran",
+    "depth": "middle"
+  },
+  {
+    "id": "q12",
+    "query": "Which signals officer finally cracked the garbled transmission leaking from the dead-comms region?",
+    "expectedId": "207a91cd-08ea-4287-962e-601b5d005161",
+    "needle": "Wren Adeyemi decoded the Quiet Reach beacon",
+    "depth": "end"
+  },
+  {
+    "id": "q13",
+    "query": "Who is the sole person possessing the complete breakdown of why the second fusion ring died?",
+    "expectedId": "86bdc334-0080-403e-abf2-c566944ff2a5",
+    "needle": "Chief Engineer Dax Mercer holds the Ring Two failure analysis",
+    "depth": "start"
+  },
+  {
+    "id": "q14",
+    "query": "After how many days of persistent skeletal loss does the doctor move a resident into spin-gravity treatment?",
+    "expectedId": "86bdc334-0080-403e-abf2-c566944ff2a5",
+    "needle": "Vale's centrifuge ward, 14-day threshold for bone-density intervention",
+    "depth": "middle"
+  },
+  {
+    "id": "q15",
+    "query": "Which trainee reprogrammed the backup air-tank startup so it activates in less than ten minutes?",
+    "expectedId": "86bdc334-0080-403e-abf2-c566944ff2a5",
+    "needle": "apprentice Joon Park cut Vat 7 spin-up to under nine minutes",
+    "depth": "end"
+  },
+  {
+    "id": "q16",
+    "query": "Who leads the organization of tank-tenders that holds sway over the station's food and air?",
+    "expectedId": "cda17196-ea92-4e79-bc11-4d879eeeac5c",
+    "needle": "guild master Petra Oyelaran of the Vatkeepers' Guild",
+    "depth": "start"
+  },
+  {
+    "id": "q17",
+    "query": "What real commodity backs the value of the station's barter token?",
+    "expectedId": "cda17196-ea92-4e79-bc11-4d879eeeac5c",
+    "needle": "the chit is pegged to one liter of potable water",
+    "depth": "middle"
+  },
+  {
+    "id": "q18",
+    "query": "Which old resident safeguards the sole full genealogical record of the station's families?",
+    "expectedId": "cda17196-ea92-4e79-bc11-4d879eeeac5c",
+    "needle": "elder Mosi Tran keeps the only complete Founders' Register",
+    "depth": "end"
+  },
+  {
+    "id": "q19",
+    "query": "What is the maximum number of consecutive jumps allowed before a drive must rest, and for how long?",
+    "expectedId": "47d2a72f-4ec2-4fb8-a096-2005e831c103",
+    "needle": "a fold core may chain at most four jumps before a 6-hour cooldown",
+    "depth": "start"
+  },
+  {
+    "id": "q20",
+    "query": "What temperature ceiling must the processed crystal be kept under while being shipped?",
+    "expectedId": "47d2a72f-4ec2-4fb8-a096-2005e831c103",
+    "needle": "refined lumarite must stay below 4 degrees Celsius in transit",
+    "depth": "middle"
+  },
+  {
+    "id": "q21",
+    "query": "At roughly how many operating hours does the older stabilizer coil model reliably break down?",
+    "expectedId": "47d2a72f-4ec2-4fb8-a096-2005e831c103",
+    "needle": "the SR-9 stabilizer coil fails predictably at 1,200 fold-hours",
+    "depth": "end"
+  },
+  {
+    "id": "q22",
+    "query": "How much carbon dioxide does a single full-strength culture tank remove from the air each hour?",
+    "expectedId": "2fe6cb7b-b84c-4c24-a899-bf39cd1b3c19",
+    "needle": "each primary algae vat scrubs 1.6 kilograms of CO2 per hour",
+    "depth": "start"
+  },
+  {
+    "id": "q23",
+    "query": "How long must a feed batch sit in isolation before it is permitted into a living tank?",
+    "expectedId": "2fe6cb7b-b84c-4c24-a899-bf39cd1b3c19",
+    "needle": "nutrient quarantine hold is fixed at 72 hours",
+    "depth": "middle"
+  },
+  {
+    "id": "q24",
+    "query": "On what operating-hour interval does the water plant's filter assembly need swapping out?",
+    "expectedId": "2fe6cb7b-b84c-4c24-a899-bf39cd1b3c19",
+    "needle": "the reclaim membrane stack must be replaced every 5,000 service hours",
+    "depth": "end"
+  },
+  {
+    "id": "q25",
+    "query": "How many jumps separate the station from the lawless mining belt where the crystal is dug?",
+    "expectedId": "e3a21e6f-5669-4a0c-931c-1f9f05488e61",
+    "needle": "the Tycho Drift lies seven folds out from Halcyon",
+    "depth": "start"
+  },
+  {
+    "id": "q26",
+    "query": "What proportion of a cargo's worth does the syndicate skim off every crystal cask?",
+    "expectedId": "e3a21e6f-5669-4a0c-931c-1f9f05488e61",
+    "needle": "the cartel toll is one-fifth of assayed value, the 'fifth-cut'",
+    "depth": "middle"
+  },
+  {
+    "id": "q27",
+    "query": "What is the name of the syndicate's armed patrol force and the broker who commands it?",
+    "expectedId": "e3a21e6f-5669-4a0c-931c-1f9f05488e61",
+    "needle": "the cartel's enforcement arm is the Ashfleet, led by the Tallyman",
+    "depth": "end"
+  },
+  {
+    "id": "q28",
+    "query": "How far is the friendly port, and what is the weight limit below which it waives berthing charges?",
+    "expectedId": "00aa006c-b313-4cac-aceb-7c1670903c13",
+    "needle": "Port Aurelia is four folds out and charges no docking fee under 50 tons",
+    "depth": "start"
+  },
+  {
+    "id": "q29",
+    "query": "During which hours is the famous bazaar shuttered before it opens again?",
+    "expectedId": "00aa006c-b313-4cac-aceb-7c1670903c13",
+    "needle": "Aurelia's night market closes at the third bell and reopens at the ninth",
+    "depth": "middle"
+  },
+  {
+    "id": "q30",
+    "query": "Which lost vessel vanished into the dead-comms zone, and how many people were aboard?",
+    "expectedId": "00aa006c-b313-4cac-aceb-7c1670903c13",
+    "needle": "the Quiet Reach swallowed the survey ship Meridian Lark with all forty crew",
+    "depth": "end"
+  },
+  {
+    "id": "q31",
+    "query": "On what calendar date did the reactor disaster strike, and how long ago was that?",
+    "expectedId": "31503932-9adc-4e0f-972c-d3fc3898ca57",
+    "needle": "the Cinder Incident occurred on the 9th of Emberwane, six years ago",
+    "depth": "start"
+  },
+  {
+    "id": "q32",
+    "query": "What was the initial mechanical failure that triggered the runaway reactor event?",
+    "expectedId": "31503932-9adc-4e0f-972c-d3fc3898ca57",
+    "needle": "the cascade began with a coolant manifold rupture in the outer torus",
+    "depth": "middle"
+  },
+  {
+    "id": "q33",
+    "query": "How many lives were lost, and what emergency procedure was used to isolate the ring?",
+    "expectedId": "31503932-9adc-4e0f-972c-d3fc3898ca57",
+    "needle": "217 people died and the ring was sealed under the Ashen Protocol",
+    "depth": "end"
+  },
+  {
+    "id": "q34",
+    "query": "In what year, and how long ago, was the crystal-for-medicine treaty established?",
+    "expectedId": "59167cb4-52a6-4e70-aa0e-707460e688e6",
+    "needle": "the Vesper Accord was signed in the year of the Long Drought, eleven years ago",
+    "depth": "start"
+  },
+  {
+    "id": "q35",
+    "query": "What hidden clause lets the syndicate berth ships on the station during the long eclipse?",
+    "expectedId": "59167cb4-52a6-4e70-aa0e-707460e688e6",
+    "needle": "the secret annex grants the cartel docking at Spindle Two during the Long Night",
+    "depth": "middle"
+  },
+  {
+    "id": "q36",
+    "query": "What words does the mysterious transmission from the dead zone keep repeating?",
+    "expectedId": "59167cb4-52a6-4e70-aa0e-707460e688e6",
+    "needle": "the beacon repeats a single phrase, 'the Lark still sails'",
+    "depth": "end"
+  }
+]

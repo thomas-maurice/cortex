@@ -3,6 +3,7 @@
 package memory
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -11,6 +12,7 @@ import (
 // Weaviate class + NATS stream/subject identifiers.
 const (
 	ClassName        = "Memory"
+	ChunkClassName   = "MemoryChunk"
 	SummaryClassName = "ConversationSummary"
 	StreamName       = "MEMORY"
 	SubjectIndex     = "memory.index"
@@ -62,6 +64,15 @@ type LinkMsg struct {
 // one, ever-current summary per conversation without any dedup logic.
 func SummaryID(conversationID string) string {
 	return uuid.NewSHA1(uuid.NameSpaceURL, []byte("cortex/summary:"+conversationID)).String()
+}
+
+// ChunkID derives the deterministic Weaviate object ID for chunk `index` of the
+// memory `memoryID`. Because it is a pure function of (memoryID, index),
+// re-indexing a memory overwrites its existing chunks in place (idempotent), and
+// stale chunks from a now-shorter text are exactly those whose index is past the
+// new chunk count — which the store deletes after re-upserting.
+func ChunkID(memoryID string, index int) string {
+	return uuid.NewSHA1(uuid.NameSpaceURL, fmt.Appendf(nil, "cortex/chunk:%s:%d", memoryID, index)).String()
 }
 
 // Record is one stored memory. It doubles as the NATS index payload and the

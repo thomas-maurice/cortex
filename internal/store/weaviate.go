@@ -105,6 +105,9 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 	if err := s.ensureClass(ctx, memoryClass(), memoryProperties()); err != nil {
 		return err
 	}
+	if err := s.ensureClass(ctx, chunkClass(), chunkProperties()); err != nil {
+		return err
+	}
 	if err := s.ensureClass(ctx, summaryClass(), summaryProperties()); err != nil {
 		return err
 	}
@@ -151,13 +154,18 @@ func memoryClass() *models.Class {
 func memoryProperties() []*models.Property {
 	return []*models.Property{
 		{Name: "text", DataType: []string{"text"}},
-		{Name: "namespace", DataType: []string{"text"}},
+		// namespace, source and conversationId are EXACT-MATCH filter keys, so they
+		// must use "field" tokenization (whole value = one token). The default
+		// "word" tokenization would make `namespace Equal "demo"` also match
+		// "demo-2" (shared token) and a `conversationId`/UUID Equal match on the
+		// hyphen-split tokens — i.e. fuzzy, wrong scoping. "field" makes them exact.
+		{Name: "namespace", DataType: []string{"text"}, Tokenization: "field"},
 		{Name: "tags", DataType: []string{"text[]"}},
-		{Name: "source", DataType: []string{"text"}},
+		{Name: "source", DataType: []string{"text"}, Tokenization: "field"},
 		{Name: "createdAt", DataType: []string{"date"}},
 		{Name: "model", DataType: []string{"text"}},
 		{Name: "dims", DataType: []string{"int"}},
-		{Name: "conversationId", DataType: []string{"text"}},
+		{Name: "conversationId", DataType: []string{"text"}, Tokenization: "field"},
 		{Name: "linkedIds", DataType: []string{"text[]"}},
 		{Name: "dupCandidates", DataType: []string{"text[]"}},
 		{Name: "notDuplicateOf", DataType: []string{"text[]"}},
@@ -181,9 +189,9 @@ func summaryClass() *models.Class {
 func summaryProperties() []*models.Property {
 	return []*models.Property{
 		{Name: "text", DataType: []string{"text"}},
-		{Name: "conversationId", DataType: []string{"text"}},
-		{Name: "namespace", DataType: []string{"text"}},
-		{Name: "source", DataType: []string{"text"}},
+		{Name: "conversationId", DataType: []string{"text"}, Tokenization: "field"},
+		{Name: "namespace", DataType: []string{"text"}, Tokenization: "field"},
+		{Name: "source", DataType: []string{"text"}, Tokenization: "field"},
 		{Name: "createdAt", DataType: []string{"date"}},
 		{Name: "updatedAt", DataType: []string{"date"}},
 		{Name: "model", DataType: []string{"text"}},
@@ -214,13 +222,76 @@ func (s *Store) ensureProps(ctx context.Context, className string, props []*mode
 	return nil
 }
 
+// expectedFieldTokenized lists, per class, the text properties that MUST use
+// "field" tokenization for exact-match filtering. A class created before that fix
+// (default "word" tokenization) makes `namespace`/UUID `Equal` filters fuzzy, and
+// tokenization is IMMUTABLE on an existing property — ensureProps cannot correct
+// it, only a class rebuild + reindex can — so VerifySchema surfaces it loudly.
+func expectedFieldTokenized() map[string][]string {
+	return map[string][]string{
+		memory.ClassName:        {"namespace", "source", "conversationId"},
+		memory.ChunkClassName:   {"memoryId", "namespace"},
+		memory.SummaryClassName: {"namespace", "source", "conversationId"},
+	}
+}
+
+// VerifySchema checks, on boot, that every class Cortex relies on exists with its
+// full property set and that exact-match keys use "field" tokenization. It returns
+// a list of human-readable problems (empty = healthy); a hard error is returned
+// only if Weaviate itself can't be queried. The problems are advisory — search
+// keeps working (a missing MemoryChunk class degrades to the whole-memory
+// fallback) — so callers LOG them loudly rather than crash, except they signal
+// that a reindex/rebuild is needed. Run it AFTER EnsureSchema (which creates
+// classes and adds missing properties); VerifySchema catches the rest.
+func (s *Store) VerifySchema(ctx context.Context) ([]string, error) {
+	expectProps := map[string][]*models.Property{
+		memory.ClassName:        memoryProperties(),
+		memory.ChunkClassName:   chunkProperties(),
+		memory.SummaryClassName: summaryProperties(),
+	}
+	fieldKeys := expectedFieldTokenized()
+
+	var problems []string
+	for _, className := range []string{memory.ClassName, memory.ChunkClassName, memory.SummaryClassName} {
+		exists, err := s.client.Schema().ClassExistenceChecker().WithClassName(className).Do(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("check class %s: %w", className, err)
+		}
+		if !exists {
+			problems = append(problems, fmt.Sprintf("class %s is MISSING (EnsureSchema should have created it)", className))
+			continue
+		}
+		class, err := s.client.Schema().ClassGetter().WithClassName(className).Do(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("get class %s: %w", className, err)
+		}
+		have := make(map[string]*models.Property, len(class.Properties))
+		for _, p := range class.Properties {
+			have[p.Name] = p
+		}
+		for _, want := range expectProps[className] {
+			if _, ok := have[want.Name]; !ok {
+				problems = append(problems, fmt.Sprintf("class %s missing property %q", className, want.Name))
+			}
+		}
+		for _, key := range fieldKeys[className] {
+			if p, ok := have[key]; ok && p.Tokenization != "field" {
+				problems = append(problems, fmt.Sprintf(
+					"class %s property %q has tokenization %q, want \"field\" — namespace/id filters are fuzzy; rebuild + reindex to fix",
+					className, key, p.Tokenization))
+			}
+		}
+	}
+	return problems, nil
+}
+
 // DeleteClass drops the Memory AND ConversationSummary classes and all their
 // objects. Used by reindex when a model change alters the vector dimension and
 // the classes must be rebuilt — both are dropped so their stored vectors stay
 // dimension-consistent. Facts are then republished by reindex; summaries start
 // empty and are rebuilt as the agent re-summarises.
 func (s *Store) DeleteClass(ctx context.Context) error {
-	for _, name := range []string{memory.ClassName, memory.SummaryClassName} {
+	for _, name := range []string{memory.ClassName, memory.ChunkClassName, memory.SummaryClassName} {
 		if err := s.client.Schema().ClassDeleter().WithClassName(name).Do(ctx); err != nil {
 			return fmt.Errorf("delete class %s: %w", name, err)
 		}
@@ -309,8 +380,14 @@ func (s *Store) upsertObject(ctx context.Context, className, id string, props ma
 	return nil
 }
 
-// Delete removes a memory by ID.
+// Delete removes a memory by ID, cascading to its chunks so no orphaned chunks
+// are left behind to surface in search. Chunks are deleted first: if the memory
+// delete then fails the caller retries, whereas the reverse order could leave the
+// memory present but unsearchable-via-its-own-chunks momentarily.
 func (s *Store) Delete(ctx context.Context, id string) error {
+	if err := s.deleteChunksByMemory(ctx, id); err != nil {
+		return err
+	}
 	err := s.client.Data().Deleter().
 		WithClassName(memory.ClassName).
 		WithID(id).Do(ctx)
@@ -529,10 +606,16 @@ func excludeTagged[T any](items []T, tagsOf func(T) []string, exclude []string) 
 	return out
 }
 
-// Search runs a nearVector query (over gRPC) with optional namespace, tag, and
+// SearchMemoryVectors runs a nearVector/hybrid query against the FULL-memory
+// vectors in the Memory class (over gRPC), with optional namespace, tag, and
 // relevance filtering. ExcludeTags is applied after the query, so it can reduce
 // the returned count below Limit.
-func (s *Store) Search(ctx context.Context, vector []float32, opts SearchOpts) ([]memory.Hit, error) {
+//
+// Since chunking, the PRIMARY retrieval path is Search (over MemoryChunk). This
+// method is retained for the worker's duplicate-candidate detection, which
+// genuinely wants whole-memory similarity (is this new memory a near-duplicate of
+// an existing one?), not chunk-level matches.
+func (s *Store) SearchMemoryVectors(ctx context.Context, vector []float32, opts SearchOpts) ([]memory.Hit, error) {
 	limit := opts.Limit
 	if limit <= 0 {
 		limit = 5

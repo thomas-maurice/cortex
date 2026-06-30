@@ -3,6 +3,10 @@ BIN := bin
 IMAGE ?= ghcr.io/thomas-maurice/cortex:latest
 VERSION ?= dev
 OLLAMA_MODEL ?= qwen3-embedding:0.6b
+# `make recall` knobs (override on the command line, e.g. `make recall CORTEX_SERVER=...`)
+CORTEX_SERVER  ?= http://localhost:8088
+RECALL_QUERIES ?= testdata/recall-queries.json
+RECALL_LABEL   ?= local
 
 .PHONY: help
 help: ## Show this help
@@ -70,3 +74,10 @@ tidy: ## go mod tidy
 .PHONY: test
 test: ## Run unit tests
 	go test ./...
+
+.PHONY: recall
+recall: ## Measure retrieval recall@k/MRR vs a running, seeded stack (not a CI test)
+	python3 scripts/recall_accuracy.py \
+		--server $(CORTEX_SERVER) \
+		--queries $(RECALL_QUERIES) \
+		--label $(RECALL_LABEL)
