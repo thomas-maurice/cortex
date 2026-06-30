@@ -43,23 +43,26 @@ func TestNamespaceOperations(t *testing.T) {
 	require.NoError(t, st.EnsureSchema(ctx))
 	t.Cleanup(func() { _ = st.DeleteClass(ctx) })
 
+	// MT off (empty tenant) — identical to pre-P3 single-user behaviour.
+	ts := st.Tenant("")
+
 	vec := []float32{1, 0, 0, 0}
 	now := time.Now().UTC()
 
 	// alpha: 2 memories + 1 summary; beta: 1 memory. Renaming/deleting alpha must
 	// never touch beta.
-	require.NoError(t, st.Upsert(ctx, memory.Record{ID: uuid.NewString(), Text: "alpha one", Namespace: "alpha", CreatedAt: now}, vec))
-	require.NoError(t, st.Upsert(ctx, memory.Record{ID: uuid.NewString(), Text: "alpha two", Namespace: "alpha", CreatedAt: now}, vec))
-	require.NoError(t, st.Upsert(ctx, memory.Record{ID: uuid.NewString(), Text: "beta one", Namespace: "beta", CreatedAt: now}, vec))
-	require.NoError(t, st.UpsertSummary(ctx, memory.Summary{ConversationID: "conv-alpha", Text: "alpha session", Namespace: "alpha", CreatedAt: now, UpdatedAt: now}, vec))
+	require.NoError(t, ts.Upsert(ctx, memory.Record{ID: uuid.NewString(), Text: "alpha one", Namespace: "alpha", CreatedAt: now}, vec))
+	require.NoError(t, ts.Upsert(ctx, memory.Record{ID: uuid.NewString(), Text: "alpha two", Namespace: "alpha", CreatedAt: now}, vec))
+	require.NoError(t, ts.Upsert(ctx, memory.Record{ID: uuid.NewString(), Text: "beta one", Namespace: "beta", CreatedAt: now}, vec))
+	require.NoError(t, ts.UpsertSummary(ctx, memory.Summary{ConversationID: "conv-alpha", Text: "alpha session", Namespace: "alpha", CreatedAt: now, UpdatedAt: now}, vec))
 
 	require.Eventually(t, func() bool {
-		c, err := st.Count(ctx, "")
+		c, err := ts.Count(ctx, "")
 		return err == nil && c == 3
 	}, 10*time.Second, 200*time.Millisecond, "memories did not become queryable")
 
 	statByName := func() map[string]NamespaceStat {
-		stats, err := st.ListNamespaces(ctx)
+		stats, err := ts.ListNamespaces(ctx)
 		require.NoError(t, err)
 		m := map[string]NamespaceStat{}
 		for _, s := range stats {
@@ -79,7 +82,7 @@ func TestNamespaceOperations(t *testing.T) {
 	})
 
 	t.Run("RenameNamespace moves both memories and summaries, leaving others alone", func(t *testing.T) {
-		mem, sum, err := st.RenameNamespace(ctx, "alpha", "gamma")
+		mem, sum, err := ts.RenameNamespace(ctx, "alpha", "gamma")
 		require.NoError(t, err)
 		assert.Equal(t, 2, mem)
 		assert.Equal(t, 1, sum, "the summary must move too, or session recall orphans on the old name")
@@ -92,7 +95,7 @@ func TestNamespaceOperations(t *testing.T) {
 	})
 
 	t.Run("DeleteNamespace removes both and leaves other namespaces intact", func(t *testing.T) {
-		mem, sum, err := st.DeleteNamespace(ctx, "gamma")
+		mem, sum, err := ts.DeleteNamespace(ctx, "gamma")
 		require.NoError(t, err)
 		assert.Equal(t, 2, mem)
 		assert.Equal(t, 1, sum, "the summary must be deleted too, not orphaned")

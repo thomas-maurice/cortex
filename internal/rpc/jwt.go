@@ -8,11 +8,12 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
-// Claims is the JWT payload issued to the web UI. Username and Role are the seam
-// for multi-user: today the server mints exactly one identity, but the UI and
-// the validator already read these claims, so adding real users later is a
-// backend-only change — the token shape does not move.
+// Claims is the JWT payload issued to the web UI. UserID is the tenant id (=
+// Weaviate tenant name) set by the multi-tenancy login path; in single-user
+// mode it mirrors the bootstrap tenant. Username and Role were here first and
+// stay so the UI and existing sessions keep working without a token refresh.
 type Claims struct {
+	UserID   string `json:"userId"`
 	Username string `json:"username"`
 	Role     string `json:"role"`
 	jwt.RegisteredClaims
@@ -31,10 +32,13 @@ func NewJWTManager(secret string, ttl time.Duration) *JWTManager {
 	return &JWTManager{secret: []byte(secret), ttl: ttl}
 }
 
-// Issue mints a signed token for the given identity.
-func (m *JWTManager) Issue(username, role string) (string, error) {
+// Issue mints a signed token for the given identity. userID is the tenant id
+// (empty string is fine for backward-compat callers; the interceptor falls back
+// to the bootstrap identity when the claim is absent).
+func (m *JWTManager) Issue(userID, username, role string) (string, error) {
 	now := time.Now()
 	claims := &Claims{
+		UserID:   userID,
 		Username: username,
 		Role:     role,
 		RegisteredClaims: jwt.RegisteredClaims{

@@ -38,7 +38,7 @@ func TestVerifyPasswordBcrypt(t *testing.T) {
 func TestLoginHandlerAcceptsArgon2Hash(t *testing.T) {
 	hash, err := argon2id.CreateHash("s3cret", argon2id.DefaultParams)
 	require.NoError(t, err)
-	h := LoginHandler(NewJWTManager("secret", time.Hour), "admin", hash, "admin", testLogger())
+	h := LoginHandler(NewJWTManager("secret", time.Hour), "admin", hash, "admin", testLogger(), false, nil)
 
 	ok := postLogin(t, h, `{"username":"admin","password":"s3cret"}`)
 	assert.Equal(t, http.StatusOK, ok.Code, "correct password should authenticate against the configured hash")

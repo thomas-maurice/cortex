@@ -14,6 +14,12 @@ const (
 	ClassName        = "Memory"
 	ChunkClassName   = "MemoryChunk"
 	SummaryClassName = "ConversationSummary"
+	// UserClassName / ApiKeyClassName are the multi-tenancy identity registry —
+	// global (NON-multi-tenant) collections that hold the user accounts and API
+	// keys. They exist only when CORTEX_MULTI_TENANT is on, and are read/written by
+	// the SERVER only (never the worker or a client).
+	UserClassName    = "User"
+	ApiKeyClassName  = "ApiKey"
 	StreamName       = "MEMORY"
 	SubjectIndex     = "memory.index"
 	SubjectSummary   = "memory.summary"
@@ -52,10 +58,16 @@ const (
 // double-publish are no-ops. For add, if either endpoint is not yet indexed (its
 // index event may still be queued) the worker NAKs for retry until both land or
 // LinkMaxDeliver is exhausted — the out-of-order case this queue exists for.
+//
+// UserID is the tenant the edge endpoints belong to. It is stamped by the RPC
+// handler from the request context identity and consumed by the worker's link
+// handler to scope its store lookups/writes to the correct tenant. It is NOT a
+// Weaviate property — the tenant is the boundary, not a field.
 type LinkMsg struct {
-	Op LinkOp `json:"op"`
-	A  string `json:"a"`
-	B  string `json:"b"`
+	Op     LinkOp `json:"op"`
+	A      string `json:"a"`
+	B      string `json:"b"`
+	UserID string `json:"userId,omitempty"`
 }
 
 // SummaryID derives the deterministic Weaviate object ID for a conversation's
@@ -75,6 +87,23 @@ func ChunkID(memoryID string, index int) string {
 	return uuid.NewSHA1(uuid.NameSpaceURL, fmt.Appendf(nil, "cortex/chunk:%s:%d", memoryID, index)).String()
 }
 
+// UserID derives the deterministic Weaviate object id for a user from their
+// username. It doubles as the Weaviate TENANT name for that user's memories.
+// Deterministic so a username maps to a stable tenant and a duplicate username
+// collides on object id (detectable on create) rather than silently forking a
+// second account/tenant. There is no rename-username feature, so the "renaming a
+// username orphans its tenant" downside cannot occur.
+func UserID(username string) string {
+	return uuid.NewSHA1(uuid.NameSpaceURL, []byte("cortex/user:"+username)).String()
+}
+
+// ApiKeyID derives the deterministic object id for an API key from its hash, so
+// re-adding the SAME raw key (e.g. the env bootstrap key applied on every boot) is
+// an idempotent upsert rather than a duplicate row.
+func ApiKeyID(keyHash string) string {
+	return uuid.NewSHA1(uuid.NameSpaceURL, []byte("cortex/apikey:"+keyHash)).String()
+}
+
 // Record is one stored memory. It doubles as the NATS index payload and the
 // Weaviate object body.
 //
@@ -82,6 +111,11 @@ func ChunkID(memoryID string, index int) string {
 // and the resulting vector dimension. They are authoritative only after the
 // worker indexes the record (the producer does not embed), so they are empty on
 // a freshly published save event and stamped by the worker before Upsert.
+//
+// UserID is stamped by the RPC handler from the request context identity onto the
+// NATS payload only — it is NOT written as a Weaviate property (the tenant is
+// the isolation boundary, not a field). The worker reads it to scope its store
+// writes to the correct tenant.
 type Record struct {
 	ID        string    `json:"id"`
 	Text      string    `json:"text"`
@@ -91,6 +125,8 @@ type Record struct {
 	CreatedAt time.Time `json:"createdAt"`
 	Model     string    `json:"model,omitempty"`
 	Dims      int       `json:"dims,omitempty"`
+	// UserID is the tenant this record belongs to (NATS payload only; not a Weaviate property).
+	UserID string `json:"userId,omitempty"`
 
 	// ConversationID ties a memory back to the client session that created it
 	// (e.g. the Claude Code session ID). Optional provenance; metadata only,
@@ -155,6 +191,9 @@ type Hit struct {
 // It is the entry point for "do you remember the session where we…" recall: a
 // vector match on the summary yields a ConversationID, which then fans out to
 // the individual facts that carry the same conversationId.
+//
+// UserID is stamped by the RPC handler from the request context identity onto the
+// NATS payload only — it is NOT written as a Weaviate property.
 type Summary struct {
 	ConversationID string    `json:"conversationId"`
 	Text           string    `json:"text"`
@@ -164,6 +203,8 @@ type Summary struct {
 	UpdatedAt      time.Time `json:"updatedAt"`
 	Model          string    `json:"model,omitempty"`
 	Dims           int       `json:"dims,omitempty"`
+	// UserID is the tenant this summary belongs to (NATS payload only; not a Weaviate property).
+	UserID string `json:"userId,omitempty"`
 }
 
 // SummaryHit is a summary plus its vector distance to the query.

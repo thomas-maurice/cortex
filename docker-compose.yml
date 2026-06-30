@@ -61,6 +61,10 @@ services:
       CHUNKING_ENABLED: ${CHUNKING_ENABLED:-true}
       CHUNK_MAX_TOKENS: ${CHUNK_MAX_TOKENS:-512}
       CHUNK_OVERLAP_TOKENS: ${CHUNK_OVERLAP_TOKENS:-64}
+      # Multi-tenancy (per-user isolation). DEFAULT ON. Set to false for legacy
+      # single-user mode. Must match the server. An EXISTING (pre-MT) store needs a
+      # one-time `cortex migrate-mt` after first enabling it.
+      CORTEX_MULTI_TENANT: ${CORTEX_MULTI_TENANT:-true}
     depends_on:
       - nats
       - weaviate
@@ -107,6 +111,17 @@ services:
       CORTEX_JWT_SECRET: ${CORTEX_JWT_SECRET:-}
       CORTEX_UI_USER: ${CORTEX_UI_USER:-admin}
       CORTEX_UI_PASSWORD: ${CORTEX_UI_PASSWORD:-admin}
+      # Multi-tenancy (per-user isolation via Weaviate multi-tenancy, tenant=user).
+      # DEFAULT ON; set CORTEX_MULTI_TENANT=false for legacy single-user mode. Must
+      # match the worker. The bootstrap admin defaults to CORTEX_UI_USER/PASSWORD
+      # (admin/admin here) and registers CORTEX_AUTH_TOKEN as its API key, so the
+      # stack is usable out of the box; override the CORTEX_BOOTSTRAP_* vars to set
+      # them explicitly. An EXISTING (pre-MT) store needs a one-time `cortex
+      # migrate-mt` to move its memories into the admin's tenant.
+      CORTEX_MULTI_TENANT: ${CORTEX_MULTI_TENANT:-true}
+      CORTEX_BOOTSTRAP_USER: ${CORTEX_BOOTSTRAP_USER:-}
+      CORTEX_BOOTSTRAP_PASSWORD: ${CORTEX_BOOTSTRAP_PASSWORD:-}
+      CORTEX_BOOTSTRAP_API_KEY: ${CORTEX_BOOTSTRAP_API_KEY:-}
     depends_on:
       - nats
       - weaviate

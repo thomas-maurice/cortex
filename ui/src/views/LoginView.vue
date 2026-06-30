@@ -32,7 +32,9 @@
 <script setup>
 import { ref } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
+import { Code, ConnectError } from '@connectrpc/connect'
 import { useAuthStore } from '@/stores/auth'
+import { memoryClient } from '@/utils/connect'
 import { login } from '@/utils/api'
 
 const router = useRouter()
@@ -50,6 +52,17 @@ async function handleLogin() {
   try {
     const token = await login(username.value, password.value)
     auth.login(token)
+    // Probe whether CORTEX_MULTI_TENANT is on: listApiKeys returns
+    // FailedPrecondition when MT is disabled; any other response means MT is on.
+    // This sets auth.multiTenant so the nav shows/hides Users + API Keys.
+    // The probe fires once after login; the result is persisted in localStorage.
+    try {
+      await memoryClient.listApiKeys({})
+      auth.setMultiTenant(true)
+    } catch (probeErr) {
+      const isFP = probeErr instanceof ConnectError && probeErr.code === Code.FailedPrecondition
+      auth.setMultiTenant(!isFP)
+    }
     router.push(route.query.redirect || '/')
   } catch (e) {
     error.value = e.response?.status === 401 ? 'Invalid credentials' : 'Login failed'

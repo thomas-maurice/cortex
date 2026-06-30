@@ -10,6 +10,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/thomas-maurice/cortex/internal/identity"
 	"github.com/thomas-maurice/cortex/internal/memory"
 )
 
@@ -41,8 +42,23 @@ func EnsureStream(ctx context.Context, js jetstream.JetStream) error {
 	return nil
 }
 
+// tenantFromContext extracts the UserID from the context identity, falling back
+// to the empty string if no identity is set (single-user / flag-off mode). The
+// UserID is the ONLY source of the tenant on the NATS payload — it is never read
+// from the request body (security invariant).
+func tenantFromContext(ctx context.Context) string {
+	id, ok := identity.From(ctx)
+	if !ok {
+		return ""
+	}
+	return id.UserID
+}
+
 // PublishIndex publishes a record for async indexing and waits for the broker ack.
+// The record's UserID is stamped from the request context identity before
+// publishing — the worker reads it to scope its store writes to the correct tenant.
 func PublishIndex(ctx context.Context, js jetstream.JetStream, rec memory.Record) error {
+	rec.UserID = tenantFromContext(ctx)
 	data, err := json.Marshal(rec)
 	if err != nil {
 		return err
@@ -54,8 +70,10 @@ func PublishIndex(ctx context.Context, js jetstream.JetStream, rec memory.Record
 }
 
 // PublishSummary publishes a conversation summary for async indexing and waits
-// for the broker ack.
+// for the broker ack. The summary's UserID is stamped from the request context
+// identity before publishing.
 func PublishSummary(ctx context.Context, js jetstream.JetStream, sum memory.Summary) error {
+	sum.UserID = tenantFromContext(ctx)
 	data, err := json.Marshal(sum)
 	if err != nil {
 		return err
@@ -71,12 +89,13 @@ func PublishSummary(ctx context.Context, js jetstream.JetStream, sum memory.Summ
 // (sorted) so the same edge always carries the same Nats-Msg-Id, letting
 // JetStream collapse redundant publishes within its dedup window; the worker's
 // apply is idempotent regardless, so the dedup is an optimisation, not a
-// correctness requirement.
+// correctness requirement. The UserID is stamped from context so the link
+// consumer operates within the correct tenant.
 func PublishLink(ctx context.Context, js jetstream.JetStream, op memory.LinkOp, a, b string) error {
 	if a > b {
 		a, b = b, a
 	}
-	data, err := json.Marshal(memory.LinkMsg{Op: op, A: a, B: b})
+	data, err := json.Marshal(memory.LinkMsg{Op: op, A: a, B: b, UserID: tenantFromContext(ctx)})
 	if err != nil {
 		return err
 	}
@@ -89,7 +108,9 @@ func PublishLink(ctx context.Context, js jetstream.JetStream, op memory.LinkOp, 
 }
 
 // PublishDead records a record that exhausted its indexing retries onto the
-// dead-letter subject, preserving it for later inspection or requeue.
+// dead-letter subject, preserving it for later inspection or requeue. The
+// record's UserID is already set (it was stamped on the original publish); this
+// function preserves it so a requeue targets the same tenant.
 func PublishDead(ctx context.Context, js jetstream.JetStream, dl memory.DeadLetter) error {
 	data, err := json.Marshal(dl)
 	if err != nil {

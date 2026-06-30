@@ -13,6 +13,11 @@ export const useAuthStore = defineStore('auth', {
     role: '',
     isAdmin: false,
     loggedIn: false,
+    // multiTenant is true when the server has CORTEX_MULTI_TENANT=true. It is
+    // probed at login via a listApiKeys call: FailedPrecondition → false, any
+    // other response → true. Controls visibility of the Users and API Keys nav
+    // entries. Persisted so it survives a page refresh without an extra probe.
+    multiTenant: false,
   }),
 
   actions: {
@@ -29,6 +34,12 @@ export const useAuthStore = defineStore('auth', {
         console.error('failed to decode JWT', e)
         this.logout()
       }
+    },
+
+    // setMultiTenant is called after login to cache the MT flag. The caller
+    // (LoginView) probes listApiKeys once; FailedPrecondition = MT off.
+    setMultiTenant(enabled) {
+      this.multiTenant = enabled
     },
 
     logout() {
@@ -53,6 +64,6 @@ export const useAuthStore = defineStore('auth', {
 
   persist: {
     storage: localStorage,
-    paths: ['token', 'username', 'role', 'isAdmin', 'loggedIn'],
+    paths: ['token', 'username', 'role', 'isAdmin', 'loggedIn', 'multiTenant'],
   },
 })

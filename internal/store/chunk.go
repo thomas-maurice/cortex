@@ -25,13 +25,20 @@ type ChunkVec struct {
 // invariant as Memory: vectorizer "none", so the ONLY vector a chunk has is the
 // one the worker supplies (computed from the chunk text alone). The primary vector
 // search runs against THIS class; hits are resolved back to their parent Memory.
-func chunkClass() *models.Class {
-	return &models.Class{
+func chunkClass(multiTenant bool) *models.Class {
+	c := &models.Class{
 		Class:       memory.ChunkClassName,
 		Description: "A token-bounded, overlapping slice of a Memory's text, indexed for retrieval",
 		Vectorizer:  "none",
 		Properties:  chunkProperties(),
 	}
+	if multiTenant {
+		c.MultiTenancyConfig = &models.MultiTenancyConfig{
+			Enabled:            true,
+			AutoTenantCreation: true,
+		}
+	}
+	return c
 }
 
 // chunkProperties is the full property set for the MemoryChunk class. namespace and
@@ -64,8 +71,8 @@ func chunkProperties() []*models.Property {
 // callers because Search falls back to the whole-memory vector for chunkless
 // memories. Chunk ids are still deterministic so a mid-write retry overwrites
 // cleanly rather than duplicating.
-func (s *Store) ReplaceChunks(ctx context.Context, rec memory.Record, chunks []ChunkVec) error {
-	if err := s.deleteChunksByMemory(ctx, rec.ID); err != nil {
+func (ts *TenantStore) ReplaceChunks(ctx context.Context, rec memory.Record, chunks []ChunkVec) error {
+	if err := ts.deleteChunksByMemory(ctx, rec.ID); err != nil {
 		return err
 	}
 	for _, c := range chunks {
@@ -81,7 +88,7 @@ func (s *Store) ReplaceChunks(ctx context.Context, rec memory.Record, chunks []C
 		if !rec.CreatedAt.IsZero() {
 			props["createdAt"] = rec.CreatedAt.UTC().Format(time.RFC3339)
 		}
-		if err := s.upsertObject(ctx, memory.ChunkClassName, memory.ChunkID(rec.ID, c.Index), props, c.Vector); err != nil {
+		if err := ts.upsertObject(ctx, memory.ChunkClassName, memory.ChunkID(rec.ID, c.Index), props, c.Vector); err != nil {
 			return fmt.Errorf("upsert chunk %d of %s: %w", c.Index, rec.ID, err)
 		}
 	}
@@ -90,11 +97,20 @@ func (s *Store) ReplaceChunks(ctx context.Context, rec memory.Record, chunks []C
 
 // deleteChunksByMemory removes ALL chunks belonging to a memory. Used by
 // ReplaceChunks (drop-then-write) and when the parent memory is deleted.
-func (s *Store) deleteChunksByMemory(ctx context.Context, memoryID string) error {
-	if _, err := s.client.Batch().ObjectsBatchDeleter().
+func (ts *TenantStore) deleteChunksByMemory(ctx context.Context, memoryID string) error {
+	deleter := ts.s.client.Batch().ObjectsBatchDeleter().
 		WithClassName(memory.ChunkClassName).
-		WithWhere(filters.Where().WithPath([]string{"memoryId"}).WithOperator(filters.Equal).WithValueText(memoryID)).
-		Do(ctx); err != nil {
+		WithWhere(filters.Where().WithPath([]string{"memoryId"}).WithOperator(filters.Equal).WithValueText(memoryID))
+	if ts.t != "" {
+		deleter = deleter.WithTenant(ts.t)
+	}
+	if _, err := deleter.Do(ctx); err != nil {
+		// A brand-new MT tenant has never been written to, so AutoTenantCreation
+		// hasn't fired yet. Weaviate returns 422 "tenant not found" on deletes
+		// against such a tenant — which is semantically empty, so this is a no-op.
+		if isTenantNotFound(err) {
+			return nil
+		}
 		return fmt.Errorf("delete chunks of %s: %w", memoryID, err)
 	}
 	return nil
@@ -112,7 +128,7 @@ const chunkPoolFactor = 10
 // chunk level, not against the whole document's averaged vector. namespace/tag
 // filters are pushed down to chunks (which carry the parent's namespace+tags);
 // excludeTags and living-memory re-ranking are applied on the resolved parents.
-func (s *Store) Search(ctx context.Context, vector []float32, opts SearchOpts) ([]memory.Hit, error) {
+func (ts *TenantStore) Search(ctx context.Context, vector []float32, opts SearchOpts) ([]memory.Hit, error) {
 	limit := opts.Limit
 	if limit <= 0 {
 		limit = 5
@@ -127,10 +143,13 @@ func (s *Store) Search(ctx context.Context, vector []float32, opts SearchOpts) (
 		fetch = 50
 	}
 
-	query := s.client.Experimental().Search().
+	query := ts.s.client.Experimental().Search().
 		WithCollection(memory.ChunkClassName).
 		WithProperties("memoryId").
 		WithLimit(fetch)
+	if ts.t != "" {
+		query = query.WithTenant(ts.t)
+	}
 
 	hybrid := strings.TrimSpace(opts.Query) != ""
 	if hybrid {
@@ -159,6 +178,9 @@ func (s *Store) Search(ctx context.Context, vector []float32, opts SearchOpts) (
 
 	res, err := query.Do(ctx)
 	if err != nil {
+		if isTenantNotFound(err) {
+			return nil, nil
+		}
 		return nil, searchError(err, len(vector))
 	}
 
@@ -192,7 +214,7 @@ func (s *Store) Search(ctx context.Context, vector []float32, opts SearchOpts) (
 	}
 	hits := make([]memory.Hit, 0, want)
 	for _, mid := range order {
-		rec, found, err := s.Get(ctx, mid)
+		rec, found, err := ts.Get(ctx, mid)
 		if err != nil {
 			return nil, fmt.Errorf("resolve chunk parent %s: %w", mid, err)
 		}
@@ -222,7 +244,7 @@ func (s *Store) Search(ctx context.Context, vector []float32, opts SearchOpts) (
 	// store makes chunk search return nothing and this degrades cleanly to the
 	// original whole-memory search.
 	if len(hits) < limit {
-		hits = s.fillFromMemoryVectors(ctx, vector, opts, hits, limit)
+		hits = ts.fillFromMemoryVectors(ctx, vector, opts, hits, limit)
 	}
 	return hits, nil
 }
@@ -231,7 +253,7 @@ func (s *Store) Search(ctx context.Context, vector []float32, opts SearchOpts) (
 // up to limit. It is the un-chunked-memory fallback for Search and is strictly
 // best-effort: a fallback error is swallowed (the chunk hits already found stand),
 // never failing the search.
-func (s *Store) fillFromMemoryVectors(ctx context.Context, vector []float32, opts SearchOpts, hits []memory.Hit, limit int) []memory.Hit {
+func (ts *TenantStore) fillFromMemoryVectors(ctx context.Context, vector []float32, opts SearchOpts, hits []memory.Hit, limit int) []memory.Hit {
 	seen := make(map[string]bool, len(hits))
 	for _, h := range hits {
 		seen[h.ID] = true
@@ -239,7 +261,7 @@ func (s *Store) fillFromMemoryVectors(ctx context.Context, vector []float32, opt
 	memOpts := opts
 	memOpts.Limit = limit
 	memOpts.RerankWeight = 0 // the appended tail just fills gaps; don't re-rank it
-	memHits, err := s.SearchMemoryVectors(ctx, vector, memOpts)
+	memHits, err := ts.SearchMemoryVectors(ctx, vector, memOpts)
 	if err != nil {
 		return hits
 	}

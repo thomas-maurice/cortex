@@ -46,6 +46,9 @@ func TestHybridSurfacesKeyword(t *testing.T) {
 	_ = st.DeleteClass(ctx)
 	require.NoError(t, st.EnsureSchema(ctx))
 
+	// MT off (empty tenant) — identical to pre-P3 single-user behaviour.
+	ts := st.Tenant("")
+
 	const ns = "hybrid-test"
 	// 4-dim crafted vectors. "near" points one way, the keyword doc the opposite.
 	near := []float32{1, 0, 0, 0}
@@ -69,17 +72,17 @@ func TestHybridSurfacesKeyword(t *testing.T) {
 	}
 	for _, d := range docs {
 		rec := memory.Record{ID: d.id, Text: d.text, Namespace: ns, CreatedAt: time.Now().UTC()}
-		require.NoError(t, st.Upsert(ctx, rec, d.vec))
+		require.NoError(t, ts.Upsert(ctx, rec, d.vec))
 		// Search now matches against MemoryChunk, so each doc needs a chunk. These
 		// texts are short → a single chunk carrying the whole text and the same
 		// crafted vector, which preserves the hybrid keyword-vs-vector behaviour the
 		// test exercises (BM25 runs over the chunk text == the full text).
-		require.NoError(t, st.ReplaceChunks(ctx, rec, []ChunkVec{{Index: 0, Text: d.text, Vector: d.vec}}))
+		require.NoError(t, ts.ReplaceChunks(ctx, rec, []ChunkVec{{Index: 0, Text: d.text, Vector: d.vec}}))
 	}
 
 	// Wait until all three are queryable (Weaviate indexing is near-real-time).
 	require.Eventually(t, func() bool {
-		c, err := st.Count(ctx, ns)
+		c, err := ts.Count(ctx, ns)
 		return err == nil && c == 3
 	}, 10*time.Second, 200*time.Millisecond, "memories did not become searchable")
 
@@ -95,7 +98,7 @@ func TestHybridSurfacesKeyword(t *testing.T) {
 	// This is the exact bug reported: searching the codename returns nothing
 	// because the doc is far in vector space and the relevance cutoff drops it.
 	t.Run("pure vector + cutoff drops the keyword doc entirely (the bug)", func(t *testing.T) {
-		hits, err := st.Search(ctx, query, SearchOpts{Namespace: ns, Limit: 5, MaxDistance: 0.6})
+		hits, err := ts.Search(ctx, query, SearchOpts{Namespace: ns, Limit: 5, MaxDistance: 0.6})
 		require.NoError(t, err)
 		assert.Equal(t, -1, rankOf(hits, keywordID), "vector search with a cutoff must NOT return the orthogonal keyword doc — reproduces the '0 insight' report")
 	})
@@ -103,14 +106,14 @@ func TestHybridSurfacesKeyword(t *testing.T) {
 	// The fix: hybrid makes the exact-token doc a candidate via BM25, so the same
 	// cutoff no longer hides it.
 	t.Run("hybrid retrieves the keyword doc through the same cutoff (the fix)", func(t *testing.T) {
-		hits, err := st.Search(ctx, query, SearchOpts{Namespace: ns, Limit: 5, MaxDistance: 0.6, Query: "mega-fucker", Alpha: 0.5})
+		hits, err := ts.Search(ctx, query, SearchOpts{Namespace: ns, Limit: 5, MaxDistance: 0.6, Query: "mega-fucker", Alpha: 0.5})
 		require.NoError(t, err)
 		assert.NotEqual(t, -1, rankOf(hits, keywordID), "hybrid must surface the exact-token doc that pure vector dropped")
 	})
 
 	// And with keyword weight it ranks first.
 	t.Run("keyword-leaning blend ranks the exact-token doc first", func(t *testing.T) {
-		hits, err := st.Search(ctx, query, SearchOpts{Namespace: ns, Limit: 5, Query: "mega-fucker", Alpha: 0.2})
+		hits, err := ts.Search(ctx, query, SearchOpts{Namespace: ns, Limit: 5, Query: "mega-fucker", Alpha: 0.2})
 		require.NoError(t, err)
 		require.NotEmpty(t, hits)
 		assert.Equal(t, keywordID, hits[0].ID, "with keyword weight the exact-token doc must be the top hit")

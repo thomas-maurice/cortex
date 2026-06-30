@@ -96,6 +96,11 @@ func main() {
 		// pre-chunking behaviour); the server must be set to match. Must agree with
 		// the server's CHUNKING_ENABLED.
 		chunkingEnabled = envBool("CHUNKING_ENABLED", true)
+		// multiTenant gates per-user isolation (Weaviate multi-tenancy). DEFAULT ON;
+		// set CORTEX_MULTI_TENANT=false for legacy single-user mode. The worker
+		// scopes its store writes by the payload's tenant when on. Must match the
+		// server's CORTEX_MULTI_TENANT.
+		multiTenant = envBool("CORTEX_MULTI_TENANT", true)
 	)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -118,6 +123,7 @@ func main() {
 		log.Error("store init", "err", err)
 		os.Exit(1)
 	}
+	st.SetMultiTenant(multiTenant)
 	// Weaviate may still be starting on a fresh stack; retry rather than
 	// crash-loop on the restart policy.
 	if err := ensureSchemaWithRetry(ctx, log, st); err != nil {
@@ -166,7 +172,7 @@ func main() {
 
 	log.Info("worker up", "nats", natsURL, "weaviate", weaviate, "model", ollamaModel,
 		"dedup_distance", dedupDistance, "chunking_enabled", chunkingEnabled,
-		"chunk_max_tokens", chunkMaxTokens, "chunk_overlap", chunkOverlap)
+		"chunk_max_tokens", chunkMaxTokens, "chunk_overlap", chunkOverlap, "multi_tenant", multiTenant)
 
 	cc, err := cons.Consume(func(msg jetstream.Msg) {
 		handle(ctx, log, js, embedder, st, chunker, msg, dedupDistance)
@@ -252,6 +258,10 @@ func handleSummary(ctx context.Context, log *slog.Logger, embedder *embed.Client
 		return
 	}
 
+	// Tenant comes from the NATS payload UserID stamped by the server handler —
+	// NEVER from a request field. st.Tenant("") is a no-op when MT is off.
+	ts := st.Tenant(sum.UserID)
+
 	var procErr error
 	var embedDur, storeDur time.Duration
 	embedStart := time.Now()
@@ -266,7 +276,7 @@ func handleSummary(ctx context.Context, log *slog.Logger, embedder *embed.Client
 			sum.UpdatedAt = time.Now().UTC()
 		}
 		storeStart := time.Now()
-		if err := st.UpsertSummary(ctx, sum, vec); err != nil {
+		if err := ts.UpsertSummary(ctx, sum, vec); err != nil {
 			procErr = fmt.Errorf("upsert: %w", err)
 		}
 		storeDur = time.Since(storeStart)
@@ -327,12 +337,15 @@ func handleLink(ctx context.Context, log *slog.Logger, st *store.Store, msg jets
 	linkMu.Lock()
 	defer linkMu.Unlock()
 
-	a, aOK, err := st.Get(ctx, lm.A)
+	// Tenant comes from the NATS payload's UserID, stamped by the RPC handler.
+	ts := st.Tenant(lm.UserID)
+
+	a, aOK, err := ts.Get(ctx, lm.A)
 	if err != nil {
 		linkRetry(log, msg, lm, "endpoint lookup failed", err)
 		return
 	}
-	b, bOK, err := st.Get(ctx, lm.B)
+	b, bOK, err := ts.Get(ctx, lm.B)
 	if err != nil {
 		linkRetry(log, msg, lm, "endpoint lookup failed", err)
 		return
@@ -356,13 +369,13 @@ func handleLink(ctx context.Context, log *slog.Logger, st *store.Store, msg jets
 
 	newA, newB := applyEdge(lm.Op, lm.A, a.LinkedIDs, lm.B, b.LinkedIDs)
 	if aOK {
-		if err := st.SetLinks(ctx, lm.A, newA); err != nil {
+		if err := ts.SetLinks(ctx, lm.A, newA); err != nil {
 			linkRetry(log, msg, lm, "set links failed", err)
 			return
 		}
 	}
 	if bOK {
-		if err := st.SetLinks(ctx, lm.B, newB); err != nil {
+		if err := ts.SetLinks(ctx, lm.B, newB); err != nil {
 			linkRetry(log, msg, lm, "set links failed", err)
 			return
 		}
@@ -449,10 +462,11 @@ func planSupersedes(recID string, supersedes []string) []string {
 // a failure here leaves stale sources behind (the pre-merge state) rather than
 // losing the merged content. Best-effort and non-fatal: a missing/already-gone
 // source is logged and skipped, so a redelivery that re-runs this (sources
-// already deleted) is harmless.
-func applySupersedes(ctx context.Context, log *slog.Logger, st *store.Store, rec memory.Record) {
+// already deleted) is harmless. ts is scoped to the record's tenant so the
+// deletes only affect the correct tenant's data in multi-tenant mode.
+func applySupersedes(ctx context.Context, log *slog.Logger, ts *store.TenantStore, rec memory.Record) {
 	for _, id := range planSupersedes(rec.ID, rec.Supersedes) {
-		if err := st.Delete(ctx, id); err != nil {
+		if err := ts.Delete(ctx, id); err != nil {
 			log.Warn("supersede delete failed, skipping", "id", rec.ID, "superseded", id, "err", err)
 			continue
 		}
@@ -469,15 +483,16 @@ const candidateLimit = 5
 // rec's vector, in the same namespace — heuristic duplicate hints for later
 // review. Returns nil when the check is disabled (dedupDistance<=0). Best-effort:
 // a search failure is logged and treated as "no candidates", never fatal, since
-// the record must still be indexed regardless.
-func findCandidates(ctx context.Context, log *slog.Logger, st *store.Store, rec memory.Record, vec []float32, dedupDistance float32) []string {
+// the record must still be indexed regardless. ts is scoped to the record's tenant
+// so cross-tenant matches are impossible in multi-tenant mode.
+func findCandidates(ctx context.Context, log *slog.Logger, ts *store.TenantStore, rec memory.Record, vec []float32, dedupDistance float32) []string {
 	if dedupDistance <= 0 {
 		return nil
 	}
 	// Dedup wants WHOLE-memory similarity (is this a near-duplicate of an existing
 	// memory?), so it searches the full-memory vectors directly, NOT the chunk index
 	// the primary Search now uses.
-	hits, err := st.SearchMemoryVectors(ctx, vec, store.SearchOpts{
+	hits, err := ts.SearchMemoryVectors(ctx, vec, store.SearchOpts{
 		Namespace:   rec.Namespace,
 		Limit:       candidateLimit + 1 + len(rec.NotDuplicateOf), // headroom for self + dismissed pairs
 		MaxDistance: dedupDistance,
@@ -512,13 +527,13 @@ func findCandidates(ctx context.Context, log *slog.Logger, st *store.Store, rec 
 // the number of chunks written. Any embed/store error is returned so the caller
 // retries (chunk ids are deterministic, so the retry overwrites cleanly). A nil
 // chunker means chunking is disabled — a no-op, so the worker only writes the
-// whole-memory vector.
-func indexChunks(ctx context.Context, embedder *embed.Client, st *store.Store, chunker *chunk.Chunker, rec memory.Record) (int, error) {
+// whole-memory vector. ts is scoped to the record's tenant.
+func indexChunks(ctx context.Context, embedder *embed.Client, ts *store.TenantStore, chunker *chunk.Chunker, rec memory.Record) (int, error) {
 	if chunker == nil {
 		// Chunking disabled: purge any chunks this memory had from when it WAS
 		// enabled, so re-importing a memory while disabled doesn't leave orphans.
 		// ReplaceChunks with no chunks deletes all of the memory's chunks.
-		return 0, st.ReplaceChunks(ctx, rec, nil)
+		return 0, ts.ReplaceChunks(ctx, rec, nil)
 	}
 	chunks := chunker.Split(rec.Text)
 	cvs := make([]store.ChunkVec, 0, len(chunks))
@@ -529,7 +544,7 @@ func indexChunks(ctx context.Context, embedder *embed.Client, st *store.Store, c
 		}
 		cvs = append(cvs, store.ChunkVec{Index: i, Text: ct, Vector: cvec})
 	}
-	if err := st.ReplaceChunks(ctx, rec, cvs); err != nil {
+	if err := ts.ReplaceChunks(ctx, rec, cvs); err != nil {
 		return 0, err
 	}
 	return len(cvs), nil
@@ -543,6 +558,11 @@ func handleIndex(ctx context.Context, log *slog.Logger, js jetstream.JetStream, 
 		_ = msg.Term()
 		return
 	}
+
+	// Tenant comes from the NATS payload's UserID, stamped by the RPC handler
+	// from the authenticated identity — NEVER from any request field.
+	// st.Tenant("") is a no-op when multi-tenancy is off.
+	ts := st.Tenant(rec.UserID)
 
 	var procErr error
 	var embedDur, storeDur time.Duration
@@ -561,13 +581,13 @@ func handleIndex(ctx context.Context, log *slog.Logger, js jetstream.JetStream, 
 		// Heuristic dedup: reuse the vector we just computed to find existing
 		// near neighbours in the same namespace and flag them as candidates.
 		// Recomputed on every (re)index, so it always reflects current contents.
-		rec.DupCandidates = findCandidates(ctx, log, st, rec, vec, dedupDistance)
+		rec.DupCandidates = findCandidates(ctx, log, ts, rec, vec, dedupDistance)
 		storeStart := time.Now()
-		if err := st.Upsert(ctx, rec, vec); err != nil {
+		if err := ts.Upsert(ctx, rec, vec); err != nil {
 			// The full-memory vector is still stored (dedup + find-similar use it),
 			// but it is no longer the primary search target.
 			procErr = fmt.Errorf("upsert: %w", err)
-		} else if n, err := indexChunks(ctx, embedder, st, chunker, rec); err != nil {
+		} else if n, err := indexChunks(ctx, embedder, ts, chunker, rec); err != nil {
 			// Chunks are what Search matches against, so a chunk failure must retry —
 			// the memory would otherwise exist but be unfindable. Idempotent on retry.
 			procErr = fmt.Errorf("chunk index: %w", err)
@@ -578,7 +598,7 @@ func handleIndex(ctx context.Context, log *slog.Logger, js jetstream.JetStream, 
 			// endpoints to exist. Supersedes still runs inline — now that the merged
 			// memory AND its chunks are durable, delete the sources it replaces.
 			// Ordering matters: post-upsert means a crash here can't lose content.
-			applySupersedes(ctx, log, st, rec)
+			applySupersedes(ctx, log, ts, rec)
 		}
 		storeDur = time.Since(storeStart)
 	}

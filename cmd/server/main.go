@@ -25,6 +25,7 @@ import (
 	"github.com/thomas-maurice/cortex/gen/cortex/v1/cortexv1connect"
 	"github.com/thomas-maurice/cortex/internal/bus"
 	"github.com/thomas-maurice/cortex/internal/embed"
+	"github.com/thomas-maurice/cortex/internal/identity"
 	"github.com/thomas-maurice/cortex/internal/rpc"
 	"github.com/thomas-maurice/cortex/internal/store"
 	"github.com/thomas-maurice/cortex/ui"
@@ -104,10 +105,22 @@ func main() {
 		// whole-memory fallback so an un-chunked store still works) when true, or
 		// pure whole-memory search when false. Must match the worker's setting.
 		chunkingEnabled = envBool("CHUNKING_ENABLED", true)
-		authToken      = os.Getenv("CORTEX_AUTH_TOKEN")
-		uiUser         = env("CORTEX_UI_USER", "admin")
-		uiPass         = os.Getenv("CORTEX_UI_PASSWORD")
-		jwtSecret      = os.Getenv("CORTEX_JWT_SECRET")
+		// multiTenant gates per-user isolation (Weaviate multi-tenancy, tenant =
+		// user). DEFAULT ON. Set CORTEX_MULTI_TENANT=false for legacy single-user
+		// mode. Must match the worker's CORTEX_MULTI_TENANT. NOTE: an existing
+		// pre-multi-tenancy store must be migrated ONCE with `cortex migrate-mt`
+		// after enabling this — it cannot flip a populated class in place.
+		multiTenant = envBool("CORTEX_MULTI_TENANT", true)
+		authToken   = os.Getenv("CORTEX_AUTH_TOKEN")
+		uiUser      = env("CORTEX_UI_USER", "admin")
+		uiPass      = os.Getenv("CORTEX_UI_PASSWORD")
+		// Bootstrap admin: fall back to the UI creds / auth token so an MT deployment
+		// that already sets CORTEX_UI_USER/PASSWORD (or CORTEX_AUTH_TOKEN) gets a
+		// working admin with zero extra config.
+		bootstrapUser = env("CORTEX_BOOTSTRAP_USER", uiUser)
+		bootstrapPass = env("CORTEX_BOOTSTRAP_PASSWORD", uiPass)
+		bootstrapKey  = env("CORTEX_BOOTSTRAP_API_KEY", authToken)
+		jwtSecret     = os.Getenv("CORTEX_JWT_SECRET")
 	)
 
 	// The UI logs in for a JWT signed with this secret.
@@ -151,6 +164,7 @@ func main() {
 		log.Error("store init", "err", err)
 		os.Exit(1)
 	}
+	st.SetMultiTenant(multiTenant)
 	// The server is the query owner, so it ensures the schema it reads exists.
 	// EnsureSchema is idempotent and additive (it only adds missing properties),
 	// so deploying a server that knows about a new property migrates the class
@@ -160,6 +174,13 @@ func main() {
 		os.Exit(1)
 	}
 	checkSchema(ctx, log, st)
+	if multiTenant {
+		if err := st.EnsureIdentitySchema(ctx); err != nil {
+			log.Error("ensure identity schema", "err", err)
+			os.Exit(1)
+		}
+		bootstrapMultiTenant(ctx, log, st, bootstrapUser, bootstrapPass, bootstrapKey)
+	}
 
 	svc := rpc.NewService(nc, js, st, embed.New(ollamaURL, ollamaModel), rpc.Config{
 		DefaultNamespace:   defaultNS,
@@ -171,15 +192,26 @@ func main() {
 		RerankHalfLifeDays: rerankHalfLife,
 		ReinforceTopK:      reinforceTopK,
 		ChunkingEnabled:    chunkingEnabled,
+		MultiTenant:        multiTenant,
 	}, log)
 
-	// When the API token is set, accept either it (MCP/CLI) or a UI-issued JWT
-	// (browser). With no token the server stays open for local dev.
+	// Wire the JWT verifier whenever UI/login auth is in play: when a static API
+	// token is set (single-user: token for MCP/CLI + UI JWT for the browser), OR in
+	// multi-tenant mode where per-user JWT login IS the primary auth (so it must be
+	// verifiable even with no static token). Without this, login would issue JWTs
+	// the interceptor can't verify. Open dev (no token, MT off) leaves it nil.
 	var authJWT *rpc.JWTManager
-	if authToken != "" {
+	if authToken != "" || multiTenant {
 		authJWT = jwtMgr
 	}
-	auth, enabled := rpc.NewServerAuthenticator(authToken, authJWT)
+	authCfg := rpc.ServerAuthenticatorConfig{
+		Token:             authToken,
+		JWTMgr:            authJWT,
+		MultiTenant:       multiTenant,
+		Store:             st,
+		BootstrapUsername: bootstrapUser,
+	}
+	auth, enabled := rpc.NewServerAuthenticator(authCfg)
 	if !enabled {
 		log.Warn("CORTEX_AUTH_TOKEN is not set — the server is UNAUTHENTICATED; set a token before exposing it off localhost")
 	}
@@ -200,7 +232,7 @@ func main() {
 	mux.Handle(grpcreflect.NewHandlerV1(reflector))
 	mux.Handle(grpcreflect.NewHandlerV1Alpha(reflector))
 	// Web UI: login mints a JWT, the embedded SPA is the catch-all route.
-	mux.Handle("/auth/login", rpc.LoginHandler(jwtMgr, uiUser, uiPass, "admin", log))
+	mux.Handle("/auth/login", rpc.LoginHandler(jwtMgr, uiUser, uiPass, "admin", log, multiTenant, st))
 	mux.Handle("/", ui.Handler())
 
 	srv := &http.Server{
@@ -241,6 +273,45 @@ func ensureSchemaWithRetry(ctx context.Context, log *slog.Logger, st *store.Stor
 		}
 	}
 	return err
+}
+
+// bootstrapMultiTenant creates the admin user and its API key from the environment
+// if they don't already exist — the migration/bootstrap path so an existing
+// deployment's clients keep working. CORTEX_BOOTSTRAP_USER + CORTEX_BOOTSTRAP_PASSWORD
+// create the admin account; CORTEX_BOOTSTRAP_API_KEY (the SAME raw key existing
+// MCP/CLI configs already use) is registered to that admin. Idempotent: a re-run
+// with the user/key already present does nothing. Best-effort — a failure is logged
+// loudly but does not abort boot (the operator can fix and restart).
+func bootstrapMultiTenant(ctx context.Context, log *slog.Logger, st *store.Store, user, pass, rawKey string) {
+	if user == "" || pass == "" {
+		log.Warn("multi-tenancy on but no bootstrap admin configured (set CORTEX_BOOTSTRAP_USER/PASSWORD, or CORTEX_UI_USER/PASSWORD) — no admin will exist until one is created, and the server will reject all requests except the legacy CORTEX_AUTH_TOKEN")
+		return
+	}
+
+	u, found, err := st.GetUserByUsername(ctx, user)
+	if err != nil {
+		log.Error("bootstrap: look up admin failed", "err", err)
+		return
+	}
+	if !found {
+		u, err = st.CreateUser(ctx, user, pass, identity.RoleAdmin)
+		if err != nil {
+			log.Error("bootstrap: create admin failed", "err", err)
+			return
+		}
+		log.Info("bootstrap admin user created", "username", user, "userId", u.ID)
+	}
+
+	if rawKey == "" {
+		return
+	}
+	if _, ok, err := st.GetApiKeyByHash(ctx, store.HashAPIKey(rawKey)); err == nil && !ok {
+		if _, err := st.AddApiKeyRaw(ctx, u.ID, "bootstrap", rawKey); err != nil {
+			log.Error("bootstrap: register admin api key failed", "err", err)
+			return
+		}
+		log.Info("bootstrap admin api key registered", "username", user)
+	}
 }
 
 // checkSchema verifies the Weaviate classes are present and correctly shaped after

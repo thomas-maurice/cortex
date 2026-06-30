@@ -2846,6 +2846,123 @@ export class DeleteNamespaceResponse extends Message<DeleteNamespaceResponse> {
 }
 
 /**
+ * @generated from message cortex.v1.MigrateMTRequest
+ */
+export class MigrateMTRequest extends Message<MigrateMTRequest> {
+  constructor(data?: PartialMessage<MigrateMTRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "cortex.v1.MigrateMTRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): MigrateMTRequest {
+    return new MigrateMTRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): MigrateMTRequest {
+    return new MigrateMTRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): MigrateMTRequest {
+    return new MigrateMTRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: MigrateMTRequest | PlainMessage<MigrateMTRequest> | undefined, b: MigrateMTRequest | PlainMessage<MigrateMTRequest> | undefined): boolean {
+    return proto3.util.equals(MigrateMTRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message cortex.v1.MigrateMTResponse
+ */
+export class MigrateMTResponse extends Message<MigrateMTResponse> {
+  /**
+   * backup_path is the server-side snapshot written before the destructive rebuild.
+   *
+   * @generated from field: string backup_path = 1;
+   */
+  backupPath = "";
+
+  /**
+   * memories_exported is the count of memories captured in the snapshot.
+   *
+   * @generated from field: int32 memories_exported = 2;
+   */
+  memoriesExported = 0;
+
+  /**
+   * summaries_exported is the count of summaries captured in the snapshot.
+   *
+   * @generated from field: int32 summaries_exported = 3;
+   */
+  summariesExported = 0;
+
+  /**
+   * memories_queued is the count of memories re-queued for re-import (equal to
+   * memories_exported unless some had empty text and were skipped).
+   *
+   * @generated from field: int32 memories_queued = 4;
+   */
+  memoriesQueued = 0;
+
+  /**
+   * summaries_queued is the count of summaries re-queued for re-import.
+   *
+   * @generated from field: int32 summaries_queued = 5;
+   */
+  summariesQueued = 0;
+
+  /**
+   * tenant is the bootstrap admin tenant all data was migrated into.
+   *
+   * @generated from field: string tenant = 6;
+   */
+  tenant = "";
+
+  /**
+   * @generated from field: string message = 7;
+   */
+  message = "";
+
+  constructor(data?: PartialMessage<MigrateMTResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "cortex.v1.MigrateMTResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "backup_path", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "memories_exported", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 3, name: "summaries_exported", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 4, name: "memories_queued", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 5, name: "summaries_queued", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 6, name: "tenant", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 7, name: "message", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): MigrateMTResponse {
+    return new MigrateMTResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): MigrateMTResponse {
+    return new MigrateMTResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): MigrateMTResponse {
+    return new MigrateMTResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: MigrateMTResponse | PlainMessage<MigrateMTResponse> | undefined, b: MigrateMTResponse | PlainMessage<MigrateMTResponse> | undefined): boolean {
+    return proto3.util.equals(MigrateMTResponse, a, b);
+  }
+}
+
+/**
  * @generated from message cortex.v1.ConsolidateResponse
  */
 export class ConsolidateResponse extends Message<ConsolidateResponse> {
@@ -2893,6 +3010,775 @@ export class ConsolidateResponse extends Message<ConsolidateResponse> {
 
   static equals(a: ConsolidateResponse | PlainMessage<ConsolidateResponse> | undefined, b: ConsolidateResponse | PlainMessage<ConsolidateResponse> | undefined): boolean {
     return proto3.util.equals(ConsolidateResponse, a, b);
+  }
+}
+
+/**
+ * UserInfo is a safe, read-only view of a user record (no password hash).
+ *
+ * @generated from message cortex.v1.UserInfo
+ */
+export class UserInfo extends Message<UserInfo> {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id = "";
+
+  /**
+   * @generated from field: string username = 2;
+   */
+  username = "";
+
+  /**
+   * @generated from field: string role = 3;
+   */
+  role = "";
+
+  /**
+   * @generated from field: google.protobuf.Timestamp created_at = 4;
+   */
+  createdAt?: Timestamp;
+
+  /**
+   * @generated from field: google.protobuf.Timestamp updated_at = 5;
+   */
+  updatedAt?: Timestamp;
+
+  constructor(data?: PartialMessage<UserInfo>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "cortex.v1.UserInfo";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "username", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "role", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 4, name: "created_at", kind: "message", T: Timestamp },
+    { no: 5, name: "updated_at", kind: "message", T: Timestamp },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): UserInfo {
+    return new UserInfo().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): UserInfo {
+    return new UserInfo().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): UserInfo {
+    return new UserInfo().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: UserInfo | PlainMessage<UserInfo> | undefined, b: UserInfo | PlainMessage<UserInfo> | undefined): boolean {
+    return proto3.util.equals(UserInfo, a, b);
+  }
+}
+
+/**
+ * @generated from message cortex.v1.ListUsersRequest
+ */
+export class ListUsersRequest extends Message<ListUsersRequest> {
+  constructor(data?: PartialMessage<ListUsersRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "cortex.v1.ListUsersRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListUsersRequest {
+    return new ListUsersRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ListUsersRequest {
+    return new ListUsersRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ListUsersRequest {
+    return new ListUsersRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ListUsersRequest | PlainMessage<ListUsersRequest> | undefined, b: ListUsersRequest | PlainMessage<ListUsersRequest> | undefined): boolean {
+    return proto3.util.equals(ListUsersRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message cortex.v1.ListUsersResponse
+ */
+export class ListUsersResponse extends Message<ListUsersResponse> {
+  /**
+   * @generated from field: repeated cortex.v1.UserInfo users = 1;
+   */
+  users: UserInfo[] = [];
+
+  constructor(data?: PartialMessage<ListUsersResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "cortex.v1.ListUsersResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "users", kind: "message", T: UserInfo, repeated: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListUsersResponse {
+    return new ListUsersResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ListUsersResponse {
+    return new ListUsersResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ListUsersResponse {
+    return new ListUsersResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ListUsersResponse | PlainMessage<ListUsersResponse> | undefined, b: ListUsersResponse | PlainMessage<ListUsersResponse> | undefined): boolean {
+    return proto3.util.equals(ListUsersResponse, a, b);
+  }
+}
+
+/**
+ * @generated from message cortex.v1.CreateUserRequest
+ */
+export class CreateUserRequest extends Message<CreateUserRequest> {
+  /**
+   * required
+   *
+   * @generated from field: string username = 1;
+   */
+  username = "";
+
+  /**
+   * required; hashed server-side
+   *
+   * @generated from field: string password = 2;
+   */
+  password = "";
+
+  /**
+   * "admin" or "user"; defaults to "user" when empty
+   *
+   * @generated from field: string role = 3;
+   */
+  role = "";
+
+  constructor(data?: PartialMessage<CreateUserRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "cortex.v1.CreateUserRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "username", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "password", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "role", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): CreateUserRequest {
+    return new CreateUserRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): CreateUserRequest {
+    return new CreateUserRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): CreateUserRequest {
+    return new CreateUserRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: CreateUserRequest | PlainMessage<CreateUserRequest> | undefined, b: CreateUserRequest | PlainMessage<CreateUserRequest> | undefined): boolean {
+    return proto3.util.equals(CreateUserRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message cortex.v1.CreateUserResponse
+ */
+export class CreateUserResponse extends Message<CreateUserResponse> {
+  /**
+   * @generated from field: cortex.v1.UserInfo user = 1;
+   */
+  user?: UserInfo;
+
+  constructor(data?: PartialMessage<CreateUserResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "cortex.v1.CreateUserResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "user", kind: "message", T: UserInfo },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): CreateUserResponse {
+    return new CreateUserResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): CreateUserResponse {
+    return new CreateUserResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): CreateUserResponse {
+    return new CreateUserResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: CreateUserResponse | PlainMessage<CreateUserResponse> | undefined, b: CreateUserResponse | PlainMessage<CreateUserResponse> | undefined): boolean {
+    return proto3.util.equals(CreateUserResponse, a, b);
+  }
+}
+
+/**
+ * @generated from message cortex.v1.DeleteUserRequest
+ */
+export class DeleteUserRequest extends Message<DeleteUserRequest> {
+  /**
+   * the user to delete (target, not the caller)
+   *
+   * @generated from field: string username = 1;
+   */
+  username = "";
+
+  constructor(data?: PartialMessage<DeleteUserRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "cortex.v1.DeleteUserRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "username", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): DeleteUserRequest {
+    return new DeleteUserRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): DeleteUserRequest {
+    return new DeleteUserRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): DeleteUserRequest {
+    return new DeleteUserRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: DeleteUserRequest | PlainMessage<DeleteUserRequest> | undefined, b: DeleteUserRequest | PlainMessage<DeleteUserRequest> | undefined): boolean {
+    return proto3.util.equals(DeleteUserRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message cortex.v1.DeleteUserResponse
+ */
+export class DeleteUserResponse extends Message<DeleteUserResponse> {
+  /**
+   * "deleted"
+   *
+   * @generated from field: string status = 1;
+   */
+  status = "";
+
+  constructor(data?: PartialMessage<DeleteUserResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "cortex.v1.DeleteUserResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "status", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): DeleteUserResponse {
+    return new DeleteUserResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): DeleteUserResponse {
+    return new DeleteUserResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): DeleteUserResponse {
+    return new DeleteUserResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: DeleteUserResponse | PlainMessage<DeleteUserResponse> | undefined, b: DeleteUserResponse | PlainMessage<DeleteUserResponse> | undefined): boolean {
+    return proto3.util.equals(DeleteUserResponse, a, b);
+  }
+}
+
+/**
+ * @generated from message cortex.v1.SetUserRoleRequest
+ */
+export class SetUserRoleRequest extends Message<SetUserRoleRequest> {
+  /**
+   * the target user
+   *
+   * @generated from field: string username = 1;
+   */
+  username = "";
+
+  /**
+   * "admin" or "user"
+   *
+   * @generated from field: string role = 2;
+   */
+  role = "";
+
+  constructor(data?: PartialMessage<SetUserRoleRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "cortex.v1.SetUserRoleRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "username", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "role", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): SetUserRoleRequest {
+    return new SetUserRoleRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): SetUserRoleRequest {
+    return new SetUserRoleRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): SetUserRoleRequest {
+    return new SetUserRoleRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: SetUserRoleRequest | PlainMessage<SetUserRoleRequest> | undefined, b: SetUserRoleRequest | PlainMessage<SetUserRoleRequest> | undefined): boolean {
+    return proto3.util.equals(SetUserRoleRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message cortex.v1.SetUserRoleResponse
+ */
+export class SetUserRoleResponse extends Message<SetUserRoleResponse> {
+  /**
+   * @generated from field: cortex.v1.UserInfo user = 1;
+   */
+  user?: UserInfo;
+
+  constructor(data?: PartialMessage<SetUserRoleResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "cortex.v1.SetUserRoleResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "user", kind: "message", T: UserInfo },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): SetUserRoleResponse {
+    return new SetUserRoleResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): SetUserRoleResponse {
+    return new SetUserRoleResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): SetUserRoleResponse {
+    return new SetUserRoleResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: SetUserRoleResponse | PlainMessage<SetUserRoleResponse> | undefined, b: SetUserRoleResponse | PlainMessage<SetUserRoleResponse> | undefined): boolean {
+    return proto3.util.equals(SetUserRoleResponse, a, b);
+  }
+}
+
+/**
+ * @generated from message cortex.v1.ResetUserPasswordRequest
+ */
+export class ResetUserPasswordRequest extends Message<ResetUserPasswordRequest> {
+  /**
+   * the target user
+   *
+   * @generated from field: string username = 1;
+   */
+  username = "";
+
+  /**
+   * hashed server-side; never stored in plaintext
+   *
+   * @generated from field: string new_password = 2;
+   */
+  newPassword = "";
+
+  constructor(data?: PartialMessage<ResetUserPasswordRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "cortex.v1.ResetUserPasswordRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "username", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "new_password", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ResetUserPasswordRequest {
+    return new ResetUserPasswordRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ResetUserPasswordRequest {
+    return new ResetUserPasswordRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ResetUserPasswordRequest {
+    return new ResetUserPasswordRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ResetUserPasswordRequest | PlainMessage<ResetUserPasswordRequest> | undefined, b: ResetUserPasswordRequest | PlainMessage<ResetUserPasswordRequest> | undefined): boolean {
+    return proto3.util.equals(ResetUserPasswordRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message cortex.v1.ResetUserPasswordResponse
+ */
+export class ResetUserPasswordResponse extends Message<ResetUserPasswordResponse> {
+  /**
+   * "updated"
+   *
+   * @generated from field: string status = 1;
+   */
+  status = "";
+
+  constructor(data?: PartialMessage<ResetUserPasswordResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "cortex.v1.ResetUserPasswordResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "status", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ResetUserPasswordResponse {
+    return new ResetUserPasswordResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ResetUserPasswordResponse {
+    return new ResetUserPasswordResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ResetUserPasswordResponse {
+    return new ResetUserPasswordResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ResetUserPasswordResponse | PlainMessage<ResetUserPasswordResponse> | undefined, b: ResetUserPasswordResponse | PlainMessage<ResetUserPasswordResponse> | undefined): boolean {
+    return proto3.util.equals(ResetUserPasswordResponse, a, b);
+  }
+}
+
+/**
+ * ApiKeyInfo is a safe, read-only view of an API key (no secret).
+ *
+ * @generated from message cortex.v1.ApiKeyInfo
+ */
+export class ApiKeyInfo extends Message<ApiKeyInfo> {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id = "";
+
+  /**
+   * @generated from field: string label = 2;
+   */
+  label = "";
+
+  /**
+   * non-secret identifier (~12 chars)
+   *
+   * @generated from field: string prefix = 3;
+   */
+  prefix = "";
+
+  /**
+   * @generated from field: google.protobuf.Timestamp created_at = 4;
+   */
+  createdAt?: Timestamp;
+
+  /**
+   * zero if never used
+   *
+   * @generated from field: google.protobuf.Timestamp last_used_at = 5;
+   */
+  lastUsedAt?: Timestamp;
+
+  constructor(data?: PartialMessage<ApiKeyInfo>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "cortex.v1.ApiKeyInfo";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "label", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "prefix", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 4, name: "created_at", kind: "message", T: Timestamp },
+    { no: 5, name: "last_used_at", kind: "message", T: Timestamp },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ApiKeyInfo {
+    return new ApiKeyInfo().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ApiKeyInfo {
+    return new ApiKeyInfo().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ApiKeyInfo {
+    return new ApiKeyInfo().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ApiKeyInfo | PlainMessage<ApiKeyInfo> | undefined, b: ApiKeyInfo | PlainMessage<ApiKeyInfo> | undefined): boolean {
+    return proto3.util.equals(ApiKeyInfo, a, b);
+  }
+}
+
+/**
+ * @generated from message cortex.v1.CreateApiKeyRequest
+ */
+export class CreateApiKeyRequest extends Message<CreateApiKeyRequest> {
+  /**
+   * human label ("laptop", "ci"); optional
+   *
+   * @generated from field: string label = 1;
+   */
+  label = "";
+
+  constructor(data?: PartialMessage<CreateApiKeyRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "cortex.v1.CreateApiKeyRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "label", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): CreateApiKeyRequest {
+    return new CreateApiKeyRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): CreateApiKeyRequest {
+    return new CreateApiKeyRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): CreateApiKeyRequest {
+    return new CreateApiKeyRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: CreateApiKeyRequest | PlainMessage<CreateApiKeyRequest> | undefined, b: CreateApiKeyRequest | PlainMessage<CreateApiKeyRequest> | undefined): boolean {
+    return proto3.util.equals(CreateApiKeyRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message cortex.v1.CreateApiKeyResponse
+ */
+export class CreateApiKeyResponse extends Message<CreateApiKeyResponse> {
+  /**
+   * raw_key is the full API key, returned EXACTLY ONCE. Store it now; it
+   * cannot be retrieved again. Present only on creation.
+   *
+   * @generated from field: string raw_key = 1;
+   */
+  rawKey = "";
+
+  /**
+   * @generated from field: cortex.v1.ApiKeyInfo key = 2;
+   */
+  key?: ApiKeyInfo;
+
+  constructor(data?: PartialMessage<CreateApiKeyResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "cortex.v1.CreateApiKeyResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "raw_key", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "key", kind: "message", T: ApiKeyInfo },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): CreateApiKeyResponse {
+    return new CreateApiKeyResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): CreateApiKeyResponse {
+    return new CreateApiKeyResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): CreateApiKeyResponse {
+    return new CreateApiKeyResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: CreateApiKeyResponse | PlainMessage<CreateApiKeyResponse> | undefined, b: CreateApiKeyResponse | PlainMessage<CreateApiKeyResponse> | undefined): boolean {
+    return proto3.util.equals(CreateApiKeyResponse, a, b);
+  }
+}
+
+/**
+ * @generated from message cortex.v1.ListApiKeysRequest
+ */
+export class ListApiKeysRequest extends Message<ListApiKeysRequest> {
+  constructor(data?: PartialMessage<ListApiKeysRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "cortex.v1.ListApiKeysRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListApiKeysRequest {
+    return new ListApiKeysRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ListApiKeysRequest {
+    return new ListApiKeysRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ListApiKeysRequest {
+    return new ListApiKeysRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ListApiKeysRequest | PlainMessage<ListApiKeysRequest> | undefined, b: ListApiKeysRequest | PlainMessage<ListApiKeysRequest> | undefined): boolean {
+    return proto3.util.equals(ListApiKeysRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message cortex.v1.ListApiKeysResponse
+ */
+export class ListApiKeysResponse extends Message<ListApiKeysResponse> {
+  /**
+   * @generated from field: repeated cortex.v1.ApiKeyInfo keys = 1;
+   */
+  keys: ApiKeyInfo[] = [];
+
+  constructor(data?: PartialMessage<ListApiKeysResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "cortex.v1.ListApiKeysResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "keys", kind: "message", T: ApiKeyInfo, repeated: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListApiKeysResponse {
+    return new ListApiKeysResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ListApiKeysResponse {
+    return new ListApiKeysResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ListApiKeysResponse {
+    return new ListApiKeysResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ListApiKeysResponse | PlainMessage<ListApiKeysResponse> | undefined, b: ListApiKeysResponse | PlainMessage<ListApiKeysResponse> | undefined): boolean {
+    return proto3.util.equals(ListApiKeysResponse, a, b);
+  }
+}
+
+/**
+ * @generated from message cortex.v1.DeleteApiKeyRequest
+ */
+export class DeleteApiKeyRequest extends Message<DeleteApiKeyRequest> {
+  /**
+   * the API key object id to delete
+   *
+   * @generated from field: string id = 1;
+   */
+  id = "";
+
+  constructor(data?: PartialMessage<DeleteApiKeyRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "cortex.v1.DeleteApiKeyRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): DeleteApiKeyRequest {
+    return new DeleteApiKeyRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): DeleteApiKeyRequest {
+    return new DeleteApiKeyRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): DeleteApiKeyRequest {
+    return new DeleteApiKeyRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: DeleteApiKeyRequest | PlainMessage<DeleteApiKeyRequest> | undefined, b: DeleteApiKeyRequest | PlainMessage<DeleteApiKeyRequest> | undefined): boolean {
+    return proto3.util.equals(DeleteApiKeyRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message cortex.v1.DeleteApiKeyResponse
+ */
+export class DeleteApiKeyResponse extends Message<DeleteApiKeyResponse> {
+  /**
+   * "deleted"
+   *
+   * @generated from field: string status = 1;
+   */
+  status = "";
+
+  constructor(data?: PartialMessage<DeleteApiKeyResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "cortex.v1.DeleteApiKeyResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "status", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): DeleteApiKeyResponse {
+    return new DeleteApiKeyResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): DeleteApiKeyResponse {
+    return new DeleteApiKeyResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): DeleteApiKeyResponse {
+    return new DeleteApiKeyResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: DeleteApiKeyResponse | PlainMessage<DeleteApiKeyResponse> | undefined, b: DeleteApiKeyResponse | PlainMessage<DeleteApiKeyResponse> | undefined): boolean {
+    return proto3.util.equals(DeleteApiKeyResponse, a, b);
   }
 }
 

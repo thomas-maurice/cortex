@@ -12,23 +12,26 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/thomas-maurice/cortex/internal/identity"
 )
 
 func testLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
 func TestJWTRoundTrip(t *testing.T) {
 	m := NewJWTManager("secret", time.Hour)
-	tok, err := m.Issue("alice", "admin")
+	tok, err := m.Issue("user-id-123", "alice", "admin")
 	require.NoError(t, err)
 
 	claims, err := m.Parse(tok)
 	require.NoError(t, err)
+	assert.Equal(t, "user-id-123", claims.UserID)
 	assert.Equal(t, "alice", claims.Username)
 	assert.Equal(t, "admin", claims.Role)
 }
 
 func TestJWTRejectsWrongSecret(t *testing.T) {
-	tok, err := NewJWTManager("secret-a", time.Hour).Issue("alice", "admin")
+	tok, err := NewJWTManager("secret-a", time.Hour).Issue("uid", "alice", "admin")
 	require.NoError(t, err)
 	// A token signed with a different secret must not validate — this is the
 	// guarantee that a UI session can't be forged without the server secret.
@@ -38,7 +41,7 @@ func TestJWTRejectsWrongSecret(t *testing.T) {
 
 func TestJWTRejectsExpired(t *testing.T) {
 	m := NewJWTManager("secret", -time.Minute) // already expired
-	tok, err := m.Issue("alice", "admin")
+	tok, err := m.Issue("uid", "alice", "admin")
 	require.NoError(t, err)
 	_, err = m.Parse(tok)
 	assert.Error(t, err)
@@ -54,7 +57,7 @@ func postLogin(t *testing.T, h http.Handler, body string) *httptest.ResponseReco
 
 func TestLoginHandlerSuccess(t *testing.T) {
 	mgr := NewJWTManager("secret", time.Hour)
-	h := LoginHandler(mgr, "admin", "hunter2", "admin", testLogger())
+	h := LoginHandler(mgr, "admin", "hunter2", "admin", testLogger(), false, nil)
 
 	rr := postLogin(t, h, `{"username":"admin","password":"hunter2"}`)
 	require.Equal(t, http.StatusOK, rr.Code)
@@ -66,10 +69,11 @@ func TestLoginHandlerSuccess(t *testing.T) {
 	claims, err := mgr.Parse(resp.Token)
 	require.NoError(t, err)
 	assert.Equal(t, "admin", claims.Username)
+	assert.NotEmpty(t, claims.UserID, "single-user login must include a userId claim")
 }
 
 func TestLoginHandlerRejectsBadCredentials(t *testing.T) {
-	h := LoginHandler(NewJWTManager("secret", time.Hour), "admin", "hunter2", "admin", testLogger())
+	h := LoginHandler(NewJWTManager("secret", time.Hour), "admin", "hunter2", "admin", testLogger(), false, nil)
 	rr := postLogin(t, h, `{"username":"admin","password":"wrong"}`)
 	assert.Equal(t, http.StatusUnauthorized, rr.Code)
 }
@@ -77,28 +81,34 @@ func TestLoginHandlerRejectsBadCredentials(t *testing.T) {
 func TestLoginHandlerDisabledWhenNoPassword(t *testing.T) {
 	// No configured password means the UI login must be refused outright, never
 	// fall through to issuing a token.
-	h := LoginHandler(NewJWTManager("secret", time.Hour), "admin", "", "admin", testLogger())
+	h := LoginHandler(NewJWTManager("secret", time.Hour), "admin", "", "admin", testLogger(), false, nil)
 	rr := postLogin(t, h, `{"username":"admin","password":""}`)
 	assert.Equal(t, http.StatusServiceUnavailable, rr.Code)
 }
 
 func TestServerAuthenticatorAcceptsTokenOrJWT(t *testing.T) {
 	mgr := NewJWTManager("secret", time.Hour)
-	auth, enabled := NewServerAuthenticator("static-tok", mgr)
+	auth, enabled := NewServerAuthenticator(ServerAuthenticatorConfig{
+		Token:             "static-tok",
+		JWTMgr:            mgr,
+		BootstrapUsername: "admin",
+	})
 	require.True(t, enabled)
 
-	jwtTok, err := mgr.Issue("alice", "admin")
+	jwtTok, err := mgr.Issue("user-id-alice", "alice", "admin")
 	require.NoError(t, err)
 
 	cases := map[string]struct {
-		bearer string
-		wantOK bool
+		bearer      string
+		wantOK      bool
+		wantUserID  string
+		wantRole    string
 	}{
-		"static token":  {"static-tok", true},
-		"valid jwt":     {jwtTok, true},
-		"garbage":       {"nonsense", false},
-		"empty":         {"", false},
-		"wrong token":   {"static-toj", false},
+		"static token": {"static-tok", true, "", identity.RoleAdmin},   // bootstrap id from username
+		"valid jwt":    {jwtTok, true, "user-id-alice", identity.RoleAdmin},
+		"garbage":      {"nonsense", false, "", ""},
+		"empty":        {"", false, "", ""},
+		"wrong token":  {"static-toj", false, "", ""},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -106,9 +116,13 @@ func TestServerAuthenticatorAcceptsTokenOrJWT(t *testing.T) {
 			if tc.bearer != "" {
 				h.Set(authHeader, "Bearer "+tc.bearer)
 			}
-			err := auth.Authenticate(t.Context(), h)
+			id, err := auth.Authenticate(t.Context(), h)
 			if tc.wantOK {
-				assert.NoError(t, err)
+				require.NoError(t, err)
+				if tc.wantUserID != "" {
+					assert.Equal(t, tc.wantUserID, id.UserID)
+				}
+				assert.Equal(t, tc.wantRole, id.Role)
 			} else {
 				assert.Error(t, err)
 			}
@@ -117,7 +131,27 @@ func TestServerAuthenticatorAcceptsTokenOrJWT(t *testing.T) {
 }
 
 func TestServerAuthenticatorOpenWhenNoTokenOrJWT(t *testing.T) {
-	auth, enabled := NewServerAuthenticator("", nil)
+	auth, enabled := NewServerAuthenticator(ServerAuthenticatorConfig{})
 	assert.False(t, enabled)
-	assert.NoError(t, auth.Authenticate(t.Context(), http.Header{}))
+	id, err := auth.Authenticate(t.Context(), http.Header{})
+	assert.NoError(t, err)
+	assert.Equal(t, identity.RoleAdmin, id.Role, "open auth must return bootstrap admin")
+}
+
+// TestLegacyTokenResolvesToBootstrapAdmin pins the security contract: the legacy
+// CORTEX_AUTH_TOKEN resolves to the bootstrap admin identity, not an anonymous one.
+// The BootstrapUsername maps to a deterministic tenant id that P3 uses as the
+// legacy data tenant.
+func TestLegacyTokenResolvesToBootstrapAdmin(t *testing.T) {
+	auth, _ := NewServerAuthenticator(ServerAuthenticatorConfig{
+		Token:             "legacy-token",
+		BootstrapUsername: "admin",
+	})
+	h := http.Header{}
+	h.Set(authHeader, "Bearer legacy-token")
+	id, err := auth.Authenticate(t.Context(), h)
+	require.NoError(t, err)
+	assert.Equal(t, identity.RoleAdmin, id.Role)
+	assert.Equal(t, "admin", id.Username)
+	assert.NotEmpty(t, id.UserID, "bootstrap admin must have a non-empty UserID")
 }

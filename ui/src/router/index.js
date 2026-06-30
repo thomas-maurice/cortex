@@ -64,6 +64,21 @@ const router = createRouter({
       component: () => import('@/views/StatusView.vue'),
       meta: { requiresAuth: true },
     },
+    // P5: admin-only user management (hidden when MT is off via nav; server
+    // enforces admin gate regardless)
+    {
+      path: '/users',
+      name: 'users',
+      component: () => import('@/views/UsersView.vue'),
+      meta: { requiresAuth: true, requiresAdmin: true },
+    },
+    // P6: per-user API key management (any authenticated user)
+    {
+      path: '/api-keys',
+      name: 'apikeys',
+      component: () => import('@/views/ApiKeysView.vue'),
+      meta: { requiresAuth: true },
+    },
   ],
 })
 
@@ -74,6 +89,10 @@ router.beforeEach((to) => {
     return { name: 'login', query: { redirect: to.fullPath } }
   }
   if (to.name === 'login' && auth.checkAuth()) {
+    return { name: 'memories' }
+  }
+  // Admin-only routes redirect non-admins to the memories view.
+  if (to.meta.requiresAdmin && !auth.isAdmin) {
     return { name: 'memories' }
   }
 })

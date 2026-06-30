@@ -157,6 +157,43 @@ Package map: `internal/rpc` (service + auth/JWT/login + client), `internal/store
 UI in `ui/src/views/*.vue` wired through `ui/src/router/index.js` + the navbar in
 `ui/src/App.vue`; RPC client in `ui/src/utils/connect.js`.
 
+## 4b. Multi-tenancy (DEFAULT ON) + migration (`cortex migrate-mt`)
+
+`CORTEX_MULTI_TENANT` is **on by default** (set `=false` on server AND worker for
+legacy single-user). Tenant = user; the bootstrap admin is created from
+`CORTEX_BOOTSTRAP_USER/PASSWORD`, falling back to `CORTEX_UI_USER/PASSWORD`, and
+`CORTEX_AUTH_TOKEN` is registered as its API key + maps to the admin identity. MT
+requires auth, so a deployment with no admin and no token is locked out (fail loud).
+
+An EXISTING pre-MT store can't flip in place — Weaviate cannot enable MT on a
+populated class. `cortex migrate-mt` (admin-only) rebuilds it:
+
+1. Server snapshots all memories + summaries to a backup JSON file (text+metadata,
+   no vectors; same format as `cortex export`). **Chunks are NOT in the backup**;
+   they regenerate when the worker processes the re-import queue.
+2. Server drops the three classes and recreates them with MT enabled.
+3. Server re-queues every snapshotted record into the **calling admin's tenant**
+   (`identity.From(ctx).UserID` — NOT a fixed sentinel, so the data is visible to
+   the admin's own JWT/api-key) via `bus.PublishIndex`/`PublishSummary`. The worker
+   re-embeds and re-chunks.
+
+Guards: admin-only; refuses if `CORTEX_MULTI_TENANT` is off; refuses if `Memory` is
+already MT (one-shot). Safe to re-run `cortex import <backup>` if it stalls (upsert-by-id).
+
+The migration targets ONE tenant (the bootstrap admin). Redistributing data across
+multiple users is a manual/out-of-scope operation.
+
+**Integration test gate:** `CORTEX_TEST_WEAVIATE_REST` + `CORTEX_TEST_WEAVIATE_GRPC`
+without `CORTEX_TEST_MULTI_TENANT` (migration starts from a non-MT Weaviate).
+
+```bash
+# Typical migration workflow (local dev stack):
+# 1. Set CORTEX_MULTI_TENANT=true in docker-compose.yml for server + worker.
+# 2. docker compose up -d server worker
+# 3. cortex --server http://localhost:8088 migrate-mt --yes
+# 4. Watch the indexing queue drain (cortex status / Indexing UI tab).
+```
+
 ## 5. The `cortex` CLI (so you don't re-explore it)
 
 `./bin/cortex` (after `make build`) is a thin RPC client — handy for inspection
@@ -184,6 +221,8 @@ and scripting without going through Claude. Global flags: `--server`
 | `export [-n '*'] [-o file]` | Dump memories (text+metadata, no vectors) to JSON (stdout by default). |
 | `import <file> [--batch N]` | Restore a dump via the NATS ingest queue (worker re-embeds). Preserves ids/links. **This is how you load seed data** — point `--server` at the target. |
 | `reindex [-n '*'] [--yes]` | Server snapshots then republishes all memories for re-embed. `--yes` allows a destructive class rebuild on an embedding-dimension change. |
+| `migrate-mt [--yes]` | One-shot migration: snapshot + drop non-MT classes + recreate as MT + re-import to the calling admin's tenant. Admin-only; requires `CORTEX_MULTI_TENANT=true`. |
+| `users list\|get\|add\|delete\|set-role\|reset-password` | Manage users from the CLI (MT mode; needs an admin `--token`). Break-glass for fixing accounts without the UI. |
 | `dead [--requeue \| --purge]` | List dead-lettered (failed-to-index) memories; requeue or purge them. |
 | `status` | Server health + store size (nats/weaviate/ollama/model/count). |
 | `doctor` | Per-check diagnostics. |

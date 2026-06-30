@@ -238,7 +238,7 @@ func main() {
 		pf.StringVar(s.target, s.key, s.def, s.usage)
 	}
 
-	root.AddCommand(saveCmd(), editCmd(), listCmd(), searchCmd(), deleteCmd(), exportCmd(), importCmd(), reindexCmd(), deadCmd(), statusCmd(), doctorCmd(), summarizeCmd(), summariesCmd(), recallCmd(), candidatesCmd(), consolidateCmd(), hashPasswordCmd(), configCmd())
+	root.AddCommand(saveCmd(), editCmd(), listCmd(), searchCmd(), deleteCmd(), exportCmd(), importCmd(), reindexCmd(), deadCmd(), statusCmd(), doctorCmd(), summarizeCmd(), summariesCmd(), recallCmd(), candidatesCmd(), consolidateCmd(), hashPasswordCmd(), configCmd(), migrateMTCmd(), usersCmd())
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -910,6 +910,80 @@ func consolidateCmd() *cobra.Command {
 	return cmd
 }
 
+// migrateMTCmd implements `cortex migrate-mt`: a one-shot conversion of an
+// existing non-MT Cortex store into a multi-tenant store. All work happens
+// server-side via the MigrateMT RPC — the CLI is a thin wrapper that calls it
+// and prints the results.
+//
+// Prerequisites:
+//   - CORTEX_MULTI_TENANT=true must be set on the server and the server restarted.
+//   - The server must be able to reach Weaviate and NATS.
+//   - The worker must be running so it can process the re-import queue.
+//
+// What the server does:
+//  1. Snapshots ALL memories + summaries to a backup JSON file (same format as
+//     `cortex export`) — the safety net. Note: chunks are NOT exported; they
+//     regenerate automatically when the worker processes the re-import queue.
+//  2. Drops the three non-MT classes (Memory, MemoryChunk, ConversationSummary)
+//     and recreates them with multi-tenancy enabled.
+//  3. Re-queues every snapshotted memory and summary for re-import into the
+//     bootstrap admin's tenant via the normal NATS index queue. The worker
+//     re-embeds and rechunks each one.
+//
+// Safety / idempotency:
+//   - Refuses if CORTEX_MULTI_TENANT is off (set the flag and restart first).
+//   - Refuses if the classes are already MT (nothing to migrate).
+//   - Safe to retry after a partial failure: re-import is upsert-by-id, so
+//     re-running `cortex import <backup>` completes a half-migrated store.
+func migrateMTCmd() *cobra.Command {
+	var yes bool
+	cmd := &cobra.Command{
+		Use:   "migrate-mt",
+		Short: "Migrate an existing non-MT store to multi-tenancy (one-shot, irreversible)",
+		Long: "Converts a non-multi-tenant Cortex store into a multi-tenant one by:\n" +
+			"  1. Snapshotting all memories + summaries to a backup file (chunks are NOT\n" +
+			"     exported; they regenerate automatically on re-import).\n" +
+			"  2. Dropping and recreating the Memory, MemoryChunk, and ConversationSummary\n" +
+			"     classes with multi-tenancy enabled.\n" +
+			"  3. Re-queuing every snapshotted record for re-import into the bootstrap\n" +
+			"     admin's tenant via the normal NATS ingest queue.\n\n" +
+			"Prerequisites:\n" +
+			"  - Set CORTEX_MULTI_TENANT=true on the server and restart it.\n" +
+			"  - Keep the worker running so it processes the re-import queue.\n\n" +
+			"This operation is irreversible once the classes are dropped. The backup file\n" +
+			"written by the server is the recovery path if something goes wrong.\n\n" +
+			"Pass --yes to confirm and skip the interactive prompt.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if !yes {
+				fmt.Fprintln(os.Stderr, "WARNING: migrate-mt drops and recreates the Memory, MemoryChunk, and")
+				fmt.Fprintln(os.Stderr, "ConversationSummary classes. This is irreversible.")
+				fmt.Fprintln(os.Stderr, "The server will write a backup before proceeding.")
+				fmt.Fprint(os.Stderr, "Type 'yes' to continue: ")
+				var answer string
+				if _, err := fmt.Fscan(os.Stdin, &answer); err != nil || answer != "yes" {
+					return fmt.Errorf("aborted")
+				}
+			}
+			resp, err := client().MigrateMT(cmd.Context(), connect.NewRequest(&cortexv1.MigrateMTRequest{}))
+			if err != nil {
+				return err
+			}
+			m := resp.Msg
+			fmt.Printf("backup written to:   %s\n", m.GetBackupPath())
+			fmt.Printf("memories exported:   %d\n", m.GetMemoriesExported())
+			fmt.Printf("summaries exported:  %d\n", m.GetSummariesExported())
+			fmt.Printf("memories queued:     %d\n", m.GetMemoriesQueued())
+			fmt.Printf("summaries queued:    %d\n", m.GetSummariesQueued())
+			fmt.Printf("tenant:              %s\n", m.GetTenant())
+			fmt.Printf("\n%s\n", m.GetMessage())
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&yes, "yes", false, "skip the confirmation prompt")
+	return cmd
+}
+
 // allLimit caps a full-store fetch (export). Matches the server-side cap.
 const allLimit = 10000
 
@@ -939,6 +1013,175 @@ func toExportRecord(m *cortexv1.Memory) exportRecord {
 func printSummary(s *cortexv1.ConversationSummary) {
 	updated := s.GetUpdatedAt().AsTime().UTC().Format(time.RFC3339)
 	fmt.Printf("[%s] %s\n   conversation=%s updated=%s\n", s.GetNamespace(), s.GetText(), s.GetConversationId(), updated)
+}
+
+// usersCmd groups the multi-tenant user-administration commands. All of them are
+// admin-only server-side, so the CLI must be pointed at the server with an admin
+// credential (--token = an admin API key, or the legacy CORTEX_AUTH_TOKEN which
+// maps to the bootstrap admin). They are the break-glass path to fix accounts
+// without the web UI; they require CORTEX_MULTI_TENANT=true on the server.
+func usersCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "users",
+		Short: "Manage users (multi-tenant mode; needs an admin token)",
+		Args:  cobra.NoArgs,
+	}
+	cmd.AddCommand(usersListCmd(), usersGetCmd(), usersAddCmd(), usersDeleteCmd(), usersSetRoleCmd(), usersResetPasswordCmd())
+	return cmd
+}
+
+func usersListCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "list",
+		Short: "List all users",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			resp, err := client().ListUsers(cmd.Context(), connect.NewRequest(&cortexv1.ListUsersRequest{}))
+			if err != nil {
+				return err
+			}
+			users := resp.Msg.GetUsers()
+			if len(users) == 0 {
+				fmt.Println("No users.")
+				return nil
+			}
+			for _, u := range users {
+				printUser(u)
+			}
+			return nil
+		},
+	}
+}
+
+func usersGetCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "get <username>",
+		Short: "Show one user's info",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			resp, err := client().ListUsers(cmd.Context(), connect.NewRequest(&cortexv1.ListUsersRequest{}))
+			if err != nil {
+				return err
+			}
+			for _, u := range resp.Msg.GetUsers() {
+				if u.GetUsername() == args[0] {
+					printUser(u)
+					return nil
+				}
+			}
+			return fmt.Errorf("user %q not found", args[0])
+		},
+	}
+}
+
+func usersAddCmd() *cobra.Command {
+	var role, password string
+	cmd := &cobra.Command{
+		Use:   "add <username>",
+		Short: "Create a user (prompts for password unless --password given)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			pw := password
+			if pw == "" {
+				p, err := readSecret()
+				if err != nil {
+					return err
+				}
+				pw = p
+			}
+			if pw == "" {
+				return fmt.Errorf("password must not be empty")
+			}
+			resp, err := client().CreateUser(cmd.Context(), connect.NewRequest(&cortexv1.CreateUserRequest{
+				Username: strings.TrimSpace(args[0]), Password: pw, Role: role,
+			}))
+			if err != nil {
+				return err
+			}
+			fmt.Print("created: ")
+			printUser(resp.Msg.GetUser())
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&role, "role", "user", "role: admin or user")
+	cmd.Flags().StringVar(&password, "password", "", "password (omit to be prompted, no echo)")
+	return cmd
+}
+
+func usersDeleteCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "delete <username>",
+		Short: "Delete a user, their API keys, and their memory tenant (irreversible)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if _, err := client().DeleteUser(cmd.Context(), connect.NewRequest(&cortexv1.DeleteUserRequest{
+				Username: strings.TrimSpace(args[0]),
+			})); err != nil {
+				return err
+			}
+			fmt.Println("deleted", args[0])
+			return nil
+		},
+	}
+}
+
+func usersSetRoleCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "set-role <username> <admin|user>",
+		Short: "Change a user's role",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			resp, err := client().SetUserRole(cmd.Context(), connect.NewRequest(&cortexv1.SetUserRoleRequest{
+				Username: strings.TrimSpace(args[0]), Role: strings.TrimSpace(args[1]),
+			}))
+			if err != nil {
+				return err
+			}
+			fmt.Print("updated: ")
+			printUser(resp.Msg.GetUser())
+			return nil
+		},
+	}
+}
+
+func usersResetPasswordCmd() *cobra.Command {
+	var password string
+	cmd := &cobra.Command{
+		Use:   "reset-password <username>",
+		Short: "Set a new password for a user (prompts unless --password given)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			pw := password
+			if pw == "" {
+				p, err := readSecret()
+				if err != nil {
+					return err
+				}
+				pw = p
+			}
+			if pw == "" {
+				return fmt.Errorf("password must not be empty")
+			}
+			if _, err := client().ResetUserPassword(cmd.Context(), connect.NewRequest(&cortexv1.ResetUserPasswordRequest{
+				Username: strings.TrimSpace(args[0]), NewPassword: pw,
+			})); err != nil {
+				return err
+			}
+			fmt.Println("password updated for", args[0])
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&password, "password", "", "new password (omit to be prompted, no echo)")
+	return cmd
+}
+
+// printUser renders one user row for the users commands.
+func printUser(u *cortexv1.UserInfo) {
+	created := ""
+	if u.GetCreatedAt() != nil {
+		created = u.GetCreatedAt().AsTime().UTC().Format(time.RFC3339)
+	}
+	fmt.Printf("%-20s role=%-5s id=%s created=%s\n", u.GetUsername(), u.GetRole(), u.GetId(), created)
 }
 
 func printMemory(m *cortexv1.Memory) {

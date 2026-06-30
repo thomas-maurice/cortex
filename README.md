@@ -565,6 +565,8 @@ authenticate with `--token` / `CORTEX_AUTH_TOKEN`.
 | `cortex export -o backup.json` | Dump all memories (text + metadata, no vectors) to JSON. |
 | `cortex import backup.json` | Restore a dump into the target via its NATS ingest queue (worker re-embeds). Preserves ids/links; point `--server` at the target. See [docs/PROD_TO_DEV.md](docs/PROD_TO_DEV.md). |
 | `cortex reindex --yes` | Re-embed every memory through the worker (see below). |
+| `cortex migrate-mt [--yes]` | Migrate a non-MT store to multi-tenancy (one-shot; requires `CORTEX_MULTI_TENANT=true` on the server). |
+| `cortex users list \| get <u> \| add <u> [--role] \| delete <u> \| set-role <u> <role> \| reset-password <u>` | Manage users (multi-tenant mode; needs an **admin** `--token`). The break-glass path to fix accounts without the web UI. |
 | `cortex status` | Server health + store size (nats/weaviate/ollama/model/count). |
 | `cortex doctor` | Per-check diagnostics from the server. |
 | `cortex summarize "<text>" --conversation <id>` | Save/update a conversation summary (unique per `--conversation`). |
@@ -594,6 +596,58 @@ Point the **worker** at the new model first (`OLLAMA_MODEL` in `docker-compose.y
 then `docker compose up -d worker`), and make sure the CLI uses the same model,
 before running `reindex`. Every memory records which model embedded it — visible
 in `cortex list` and used by reindex to decide whether a rebuild is needed.
+
+## Multi-tenancy and migration (`cortex migrate-mt`)
+
+Cortex isolates each user's memories via Weaviate native multi-tenancy, gated by
+`CORTEX_MULTI_TENANT` — **on by default**. Every user's memories live in their own
+Weaviate tenant; the authenticated user ID (from a JWT or API key) is the isolation
+boundary — a client can never read or write another user's data. Set
+`CORTEX_MULTI_TENANT=false` (on server **and** worker) for the legacy single-user
+mode.
+
+**Fresh install (default):** the schema is created with MT enabled automatically.
+A **bootstrap admin** is created from `CORTEX_BOOTSTRAP_USER`/`CORTEX_BOOTSTRAP_PASSWORD`,
+falling back to `CORTEX_UI_USER`/`CORTEX_UI_PASSWORD` (so the bundled compose works
+out of the box with `admin`/`admin`); `CORTEX_AUTH_TOKEN` is registered as that
+admin's API key, so existing MCP/CLI configs keep working. Because MT requires
+authentication, **a deployment with no admin and no `CORTEX_AUTH_TOKEN` is locked
+out** — set at least the UI creds or a token. Add more users in the UI (admin →
+Users) or via `cortex users add`.
+
+**Migrating an existing (non-MT) store:**
+
+Weaviate cannot enable multi-tenancy on an existing class — the classes must be
+dropped and recreated. `cortex migrate-mt` does this safely:
+
+1. **Snapshot**: exports all memories + summaries to a server-side backup JSON file
+   (same format as `cortex export`) before anything destructive. Chunks are NOT
+   exported — they regenerate when the worker processes the re-import queue.
+2. **Rebuild**: drops `Memory`, `MemoryChunk`, and `ConversationSummary` and
+   recreates them with MT enabled.
+3. **Re-import**: re-queues every snapshotted record for re-import into the
+   **bootstrap admin's tenant** (`cortex-bootstrap`) via the normal NATS ingest
+   queue. The worker re-embeds and rechunks each one.
+
+```bash
+# 1. Set the flag on the server and worker and restart them:
+#    CORTEX_MULTI_TENANT=true  (docker-compose.yml or environment)
+#    docker compose up -d server worker
+
+# 2. Run the migration (server does all the work):
+cortex --server http://localhost:8088 migrate-mt --yes
+
+# The server reports the backup path, counts, and the tenant used.
+# Wait for the worker to drain the queue (watch cortex status / the Indexing UI).
+```
+
+**Safety:**
+- Refuses if `CORTEX_MULTI_TENANT` is off (set the flag first).
+- Refuses if the classes are already MT (one-shot operation, nothing to redo).
+- Re-running `cortex import <backup-file>` against the now-MT server completes a
+  half-migrated store safely (re-import is upsert-by-id).
+- All migrated data lands in the bootstrap admin's tenant. Redistributing data
+  across multiple users is out of scope; this is a single-tenant-to-MT bootstrap.
 
 ## Embedding model
 

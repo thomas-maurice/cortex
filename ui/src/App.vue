@@ -26,14 +26,31 @@
         <li class="nav-item">
           <router-link class="nav-link" :to="{ name: 'backup' }">Backup</router-link>
         </li>
-        <li class="nav-item">
+        <!-- Indexing / Queue is a shared-queue concern (global across all
+             tenants) so it is shown only to admins in MT mode. In single-user
+             mode (multiTenant=false) it always shows. The server enforces this
+             regardless (Dead + IndexQueue are admin-only when MT is on). -->
+        <li v-if="!auth.multiTenant || auth.isAdmin" class="nav-item">
           <router-link class="nav-link" :to="{ name: 'queue' }">Indexing</router-link>
         </li>
         <li class="nav-item">
           <router-link class="nav-link" :to="{ name: 'status' }">Status</router-link>
         </li>
+        <!-- P6: API keys — shown only when multi-tenancy is enabled (single-user
+             mode uses CORTEX_AUTH_TOKEN, not per-user keys). -->
+        <li v-if="auth.multiTenant" class="nav-item">
+          <router-link class="nav-link" :to="{ name: 'apikeys' }">API Keys</router-link>
+        </li>
+        <!-- P5: user management — admin-only, MT mode only. -->
+        <li v-if="auth.multiTenant && auth.isAdmin" class="nav-item">
+          <router-link class="nav-link" :to="{ name: 'users' }">Users</router-link>
+        </li>
       </ul>
-      <span class="navbar-text me-3 small">{{ auth.username }}</span>
+      <!-- P7: show the authenticated username so users know who they are. -->
+      <span v-if="auth.username" class="navbar-text me-3 small text-muted">
+        <font-awesome-icon :icon="['fas', 'user']" class="me-1" />{{ auth.username }}
+        <span v-if="auth.isAdmin" class="badge bg-warning text-dark ms-1 small">admin</span>
+      </span>
       <button class="btn btn-outline-light btn-sm" @click="logout">
         <font-awesome-icon :icon="['fas', 'right-from-bracket']" class="me-1" />Logout
       </button>

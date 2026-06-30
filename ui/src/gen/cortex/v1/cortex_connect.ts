@@ -3,7 +3,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { ConsolidateRequest, ConsolidateResponse, DeadRequest, DeadResponse, DeleteNamespaceRequest, DeleteNamespaceResponse, DeleteRequest, DeleteResponse, DismissDuplicateRequest, DismissDuplicateResponse, DoctorRequest, DoctorResponse, IndexQueueRequest, IndexQueueResponse, LinkRequest, LinkResponse, ListDuplicateCandidatesRequest, ListDuplicateCandidatesResponse, ListNamespacesRequest, ListNamespacesResponse, ListRequest, ListResponse, ListSummariesRequest, ListSummariesResponse, PullModelRequest, PullModelResponse, RecallSessionRequest, RecallSessionResponse, ReindexRequest, ReindexResponse, RenameNamespaceRequest, RenameNamespaceResponse, RestoreMemoriesRequest, RestoreMemoriesResponse, SaveRequest, SaveResponse, SearchRequest, SearchResponse, SearchSimilarRequest, StatusRequest, StatusResponse, SummarizeSessionRequest, SummarizeSessionResponse, UnlinkRequest, UnlinkResponse, UpdateMemoryRequest, UpdateMemoryResponse } from "./cortex_pb.js";
+import { ConsolidateRequest, ConsolidateResponse, CreateApiKeyRequest, CreateApiKeyResponse, CreateUserRequest, CreateUserResponse, DeadRequest, DeadResponse, DeleteApiKeyRequest, DeleteApiKeyResponse, DeleteNamespaceRequest, DeleteNamespaceResponse, DeleteRequest, DeleteResponse, DeleteUserRequest, DeleteUserResponse, DismissDuplicateRequest, DismissDuplicateResponse, DoctorRequest, DoctorResponse, IndexQueueRequest, IndexQueueResponse, LinkRequest, LinkResponse, ListApiKeysRequest, ListApiKeysResponse, ListDuplicateCandidatesRequest, ListDuplicateCandidatesResponse, ListNamespacesRequest, ListNamespacesResponse, ListRequest, ListResponse, ListSummariesRequest, ListSummariesResponse, ListUsersRequest, ListUsersResponse, MigrateMTRequest, MigrateMTResponse, PullModelRequest, PullModelResponse, RecallSessionRequest, RecallSessionResponse, ReindexRequest, ReindexResponse, RenameNamespaceRequest, RenameNamespaceResponse, ResetUserPasswordRequest, ResetUserPasswordResponse, RestoreMemoriesRequest, RestoreMemoriesResponse, SaveRequest, SaveResponse, SearchRequest, SearchResponse, SearchSimilarRequest, SetUserRoleRequest, SetUserRoleResponse, StatusRequest, StatusResponse, SummarizeSessionRequest, SummarizeSessionResponse, UnlinkRequest, UnlinkResponse, UpdateMemoryRequest, UpdateMemoryResponse } from "./cortex_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -306,6 +306,119 @@ export const MemoryService = {
       name: "DeleteNamespace",
       I: DeleteNamespaceRequest,
       O: DeleteNamespaceResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * MigrateMT performs a one-shot migration from a non-MT store to a
+     * multi-tenant store: it snapshots all memories and summaries, drops the
+     * three memory classes, recreates them with MT enabled, and re-imports every
+     * record into the bootstrap admin's tenant via the NATS index queue (the
+     * worker re-embeds and rechunks on import). Refuses if CORTEX_MULTI_TENANT is
+     * off or if the classes are already MT (nothing to migrate). Safe to retry
+     * after a partial failure — re-import is upsert-by-id.
+     *
+     * @generated from rpc cortex.v1.MemoryService.MigrateMT
+     */
+    migrateMT: {
+      name: "MigrateMT",
+      I: MigrateMTRequest,
+      O: MigrateMTResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * ---- Admin: User management (P5) ----
+     * ListUsers returns all users. Admin-only; returns PermissionDenied for
+     * non-admins and FailedPrecondition when multi-tenancy is disabled.
+     *
+     * @generated from rpc cortex.v1.MemoryService.ListUsers
+     */
+    listUsers: {
+      name: "ListUsers",
+      I: ListUsersRequest,
+      O: ListUsersResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * CreateUser creates a new user account. Admin-only.
+     *
+     * @generated from rpc cortex.v1.MemoryService.CreateUser
+     */
+    createUser: {
+      name: "CreateUser",
+      I: CreateUserRequest,
+      O: CreateUserResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * DeleteUser deletes a user, cascading to their API keys and memory tenant.
+     * Refuses to delete the last admin or the bootstrap admin. Admin-only.
+     *
+     * @generated from rpc cortex.v1.MemoryService.DeleteUser
+     */
+    deleteUser: {
+      name: "DeleteUser",
+      I: DeleteUserRequest,
+      O: DeleteUserResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * SetUserRole promotes or demotes a user. Admin-only.
+     *
+     * @generated from rpc cortex.v1.MemoryService.SetUserRole
+     */
+    setUserRole: {
+      name: "SetUserRole",
+      I: SetUserRoleRequest,
+      O: SetUserRoleResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * ResetUserPassword sets a new password for a user. Admin-only.
+     *
+     * @generated from rpc cortex.v1.MemoryService.ResetUserPassword
+     */
+    resetUserPassword: {
+      name: "ResetUserPassword",
+      I: ResetUserPasswordRequest,
+      O: ResetUserPasswordResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * ---- Per-user: API key management (P6) ----
+     * CreateApiKey mints a new API key for the authenticated caller. Returns the
+     * raw key exactly once. Available to any authenticated user; returns
+     * FailedPrecondition when multi-tenancy is disabled.
+     *
+     * @generated from rpc cortex.v1.MemoryService.CreateApiKey
+     */
+    createApiKey: {
+      name: "CreateApiKey",
+      I: CreateApiKeyRequest,
+      O: CreateApiKeyResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * ListApiKeys returns the caller's API keys (label, prefix, timestamps —
+     * never the secret). Scoped to the authenticated caller.
+     *
+     * @generated from rpc cortex.v1.MemoryService.ListApiKeys
+     */
+    listApiKeys: {
+      name: "ListApiKeys",
+      I: ListApiKeysRequest,
+      O: ListApiKeysResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * DeleteApiKey removes one of the caller's API keys. Returns NotFound for
+     * keys that do not exist or belong to another user (existence not revealed).
+     *
+     * @generated from rpc cortex.v1.MemoryService.DeleteApiKey
+     */
+    deleteApiKey: {
+      name: "DeleteApiKey",
+      I: DeleteApiKeyRequest,
+      O: DeleteApiKeyResponse,
       kind: MethodKind.Unary,
     },
   }

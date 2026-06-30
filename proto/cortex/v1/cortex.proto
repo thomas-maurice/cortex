@@ -86,6 +86,40 @@ service MemoryService {
   // DeleteNamespace permanently deletes every memory AND conversation summary in
   // a namespace.
   rpc DeleteNamespace(DeleteNamespaceRequest) returns (DeleteNamespaceResponse) {}
+  // MigrateMT performs a one-shot migration from a non-MT store to a
+  // multi-tenant store: it snapshots all memories and summaries, drops the
+  // three memory classes, recreates them with MT enabled, and re-imports every
+  // record into the bootstrap admin's tenant via the NATS index queue (the
+  // worker re-embeds and rechunks on import). Refuses if CORTEX_MULTI_TENANT is
+  // off or if the classes are already MT (nothing to migrate). Safe to retry
+  // after a partial failure — re-import is upsert-by-id.
+  rpc MigrateMT(MigrateMTRequest) returns (MigrateMTResponse) {}
+
+  // ---- Admin: User management (P5) ----
+  // ListUsers returns all users. Admin-only; returns PermissionDenied for
+  // non-admins and FailedPrecondition when multi-tenancy is disabled.
+  rpc ListUsers(ListUsersRequest) returns (ListUsersResponse) {}
+  // CreateUser creates a new user account. Admin-only.
+  rpc CreateUser(CreateUserRequest) returns (CreateUserResponse) {}
+  // DeleteUser deletes a user, cascading to their API keys and memory tenant.
+  // Refuses to delete the last admin or the bootstrap admin. Admin-only.
+  rpc DeleteUser(DeleteUserRequest) returns (DeleteUserResponse) {}
+  // SetUserRole promotes or demotes a user. Admin-only.
+  rpc SetUserRole(SetUserRoleRequest) returns (SetUserRoleResponse) {}
+  // ResetUserPassword sets a new password for a user. Admin-only.
+  rpc ResetUserPassword(ResetUserPasswordRequest) returns (ResetUserPasswordResponse) {}
+
+  // ---- Per-user: API key management (P6) ----
+  // CreateApiKey mints a new API key for the authenticated caller. Returns the
+  // raw key exactly once. Available to any authenticated user; returns
+  // FailedPrecondition when multi-tenancy is disabled.
+  rpc CreateApiKey(CreateApiKeyRequest) returns (CreateApiKeyResponse) {}
+  // ListApiKeys returns the caller's API keys (label, prefix, timestamps —
+  // never the secret). Scoped to the authenticated caller.
+  rpc ListApiKeys(ListApiKeysRequest) returns (ListApiKeysResponse) {}
+  // DeleteApiKey removes one of the caller's API keys. Returns NotFound for
+  // keys that do not exist or belong to another user (existence not revealed).
+  rpc DeleteApiKey(DeleteApiKeyRequest) returns (DeleteApiKeyResponse) {}
 }
 
 // Memory is one stored memory. Only `text` is ever embedded; every other field
@@ -456,6 +490,25 @@ message DeleteNamespaceResponse {
   int32 summaries_deleted = 2;
 }
 
+message MigrateMTRequest {}
+
+message MigrateMTResponse {
+  // backup_path is the server-side snapshot written before the destructive rebuild.
+  string backup_path = 1;
+  // memories_exported is the count of memories captured in the snapshot.
+  int32 memories_exported = 2;
+  // summaries_exported is the count of summaries captured in the snapshot.
+  int32 summaries_exported = 3;
+  // memories_queued is the count of memories re-queued for re-import (equal to
+  // memories_exported unless some had empty text and were skipped).
+  int32 memories_queued = 4;
+  // summaries_queued is the count of summaries re-queued for re-import.
+  int32 summaries_queued = 5;
+  // tenant is the bootstrap admin tenant all data was migrated into.
+  string tenant = 6;
+  string message = 7;
+}
+
 message ConsolidateResponse {
   // cluster is the gathered memories: the topic's vector matches first (most
   // relevant), then their linked and duplicate-candidate neighbours, deduped and
@@ -465,4 +518,93 @@ message ConsolidateResponse {
   // manifest is the ids in cluster, the exact set eligible to be superseded. A
   // compiled memory's SaveRequest.supersedes should only reference ids from here.
   repeated string manifest = 2;
+}
+
+// ---- P5: User management messages ----
+
+// UserInfo is a safe, read-only view of a user record (no password hash).
+message UserInfo {
+  string id = 1;
+  string username = 2;
+  string role = 3;
+  google.protobuf.Timestamp created_at = 4;
+  google.protobuf.Timestamp updated_at = 5;
+}
+
+message ListUsersRequest {}
+
+message ListUsersResponse {
+  repeated UserInfo users = 1;
+}
+
+message CreateUserRequest {
+  string username = 1;   // required
+  string password = 2;   // required; hashed server-side
+  string role = 3;       // "admin" or "user"; defaults to "user" when empty
+}
+
+message CreateUserResponse {
+  UserInfo user = 1;
+}
+
+message DeleteUserRequest {
+  string username = 1; // the user to delete (target, not the caller)
+}
+
+message DeleteUserResponse {
+  string status = 1; // "deleted"
+}
+
+message SetUserRoleRequest {
+  string username = 1; // the target user
+  string role = 2;     // "admin" or "user"
+}
+
+message SetUserRoleResponse {
+  UserInfo user = 1;
+}
+
+message ResetUserPasswordRequest {
+  string username = 1;     // the target user
+  string new_password = 2; // hashed server-side; never stored in plaintext
+}
+
+message ResetUserPasswordResponse {
+  string status = 1; // "updated"
+}
+
+// ---- P6: API key management messages ----
+
+// ApiKeyInfo is a safe, read-only view of an API key (no secret).
+message ApiKeyInfo {
+  string id = 1;
+  string label = 2;
+  string prefix = 3;                          // non-secret identifier (~12 chars)
+  google.protobuf.Timestamp created_at = 4;
+  google.protobuf.Timestamp last_used_at = 5; // zero if never used
+}
+
+message CreateApiKeyRequest {
+  string label = 1; // human label ("laptop", "ci"); optional
+}
+
+message CreateApiKeyResponse {
+  // raw_key is the full API key, returned EXACTLY ONCE. Store it now; it
+  // cannot be retrieved again. Present only on creation.
+  string raw_key = 1;
+  ApiKeyInfo key = 2;
+}
+
+message ListApiKeysRequest {}
+
+message ListApiKeysResponse {
+  repeated ApiKeyInfo keys = 1;
+}
+
+message DeleteApiKeyRequest {
+  string id = 1; // the API key object id to delete
+}
+
+message DeleteApiKeyResponse {
+  string status = 1; // "deleted"
 }

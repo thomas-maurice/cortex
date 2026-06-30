@@ -94,6 +94,31 @@ const (
 	// MemoryServiceDeleteNamespaceProcedure is the fully-qualified name of the MemoryService's
 	// DeleteNamespace RPC.
 	MemoryServiceDeleteNamespaceProcedure = "/cortex.v1.MemoryService/DeleteNamespace"
+	// MemoryServiceMigrateMTProcedure is the fully-qualified name of the MemoryService's MigrateMT RPC.
+	MemoryServiceMigrateMTProcedure = "/cortex.v1.MemoryService/MigrateMT"
+	// MemoryServiceListUsersProcedure is the fully-qualified name of the MemoryService's ListUsers RPC.
+	MemoryServiceListUsersProcedure = "/cortex.v1.MemoryService/ListUsers"
+	// MemoryServiceCreateUserProcedure is the fully-qualified name of the MemoryService's CreateUser
+	// RPC.
+	MemoryServiceCreateUserProcedure = "/cortex.v1.MemoryService/CreateUser"
+	// MemoryServiceDeleteUserProcedure is the fully-qualified name of the MemoryService's DeleteUser
+	// RPC.
+	MemoryServiceDeleteUserProcedure = "/cortex.v1.MemoryService/DeleteUser"
+	// MemoryServiceSetUserRoleProcedure is the fully-qualified name of the MemoryService's SetUserRole
+	// RPC.
+	MemoryServiceSetUserRoleProcedure = "/cortex.v1.MemoryService/SetUserRole"
+	// MemoryServiceResetUserPasswordProcedure is the fully-qualified name of the MemoryService's
+	// ResetUserPassword RPC.
+	MemoryServiceResetUserPasswordProcedure = "/cortex.v1.MemoryService/ResetUserPassword"
+	// MemoryServiceCreateApiKeyProcedure is the fully-qualified name of the MemoryService's
+	// CreateApiKey RPC.
+	MemoryServiceCreateApiKeyProcedure = "/cortex.v1.MemoryService/CreateApiKey"
+	// MemoryServiceListApiKeysProcedure is the fully-qualified name of the MemoryService's ListApiKeys
+	// RPC.
+	MemoryServiceListApiKeysProcedure = "/cortex.v1.MemoryService/ListApiKeys"
+	// MemoryServiceDeleteApiKeyProcedure is the fully-qualified name of the MemoryService's
+	// DeleteApiKey RPC.
+	MemoryServiceDeleteApiKeyProcedure = "/cortex.v1.MemoryService/DeleteApiKey"
 )
 
 // MemoryServiceClient is a client for the cortex.v1.MemoryService service.
@@ -173,6 +198,38 @@ type MemoryServiceClient interface {
 	// DeleteNamespace permanently deletes every memory AND conversation summary in
 	// a namespace.
 	DeleteNamespace(context.Context, *connect.Request[v1.DeleteNamespaceRequest]) (*connect.Response[v1.DeleteNamespaceResponse], error)
+	// MigrateMT performs a one-shot migration from a non-MT store to a
+	// multi-tenant store: it snapshots all memories and summaries, drops the
+	// three memory classes, recreates them with MT enabled, and re-imports every
+	// record into the bootstrap admin's tenant via the NATS index queue (the
+	// worker re-embeds and rechunks on import). Refuses if CORTEX_MULTI_TENANT is
+	// off or if the classes are already MT (nothing to migrate). Safe to retry
+	// after a partial failure — re-import is upsert-by-id.
+	MigrateMT(context.Context, *connect.Request[v1.MigrateMTRequest]) (*connect.Response[v1.MigrateMTResponse], error)
+	// ---- Admin: User management (P5) ----
+	// ListUsers returns all users. Admin-only; returns PermissionDenied for
+	// non-admins and FailedPrecondition when multi-tenancy is disabled.
+	ListUsers(context.Context, *connect.Request[v1.ListUsersRequest]) (*connect.Response[v1.ListUsersResponse], error)
+	// CreateUser creates a new user account. Admin-only.
+	CreateUser(context.Context, *connect.Request[v1.CreateUserRequest]) (*connect.Response[v1.CreateUserResponse], error)
+	// DeleteUser deletes a user, cascading to their API keys and memory tenant.
+	// Refuses to delete the last admin or the bootstrap admin. Admin-only.
+	DeleteUser(context.Context, *connect.Request[v1.DeleteUserRequest]) (*connect.Response[v1.DeleteUserResponse], error)
+	// SetUserRole promotes or demotes a user. Admin-only.
+	SetUserRole(context.Context, *connect.Request[v1.SetUserRoleRequest]) (*connect.Response[v1.SetUserRoleResponse], error)
+	// ResetUserPassword sets a new password for a user. Admin-only.
+	ResetUserPassword(context.Context, *connect.Request[v1.ResetUserPasswordRequest]) (*connect.Response[v1.ResetUserPasswordResponse], error)
+	// ---- Per-user: API key management (P6) ----
+	// CreateApiKey mints a new API key for the authenticated caller. Returns the
+	// raw key exactly once. Available to any authenticated user; returns
+	// FailedPrecondition when multi-tenancy is disabled.
+	CreateApiKey(context.Context, *connect.Request[v1.CreateApiKeyRequest]) (*connect.Response[v1.CreateApiKeyResponse], error)
+	// ListApiKeys returns the caller's API keys (label, prefix, timestamps —
+	// never the secret). Scoped to the authenticated caller.
+	ListApiKeys(context.Context, *connect.Request[v1.ListApiKeysRequest]) (*connect.Response[v1.ListApiKeysResponse], error)
+	// DeleteApiKey removes one of the caller's API keys. Returns NotFound for
+	// keys that do not exist or belong to another user (existence not revealed).
+	DeleteApiKey(context.Context, *connect.Request[v1.DeleteApiKeyRequest]) (*connect.Response[v1.DeleteApiKeyResponse], error)
 }
 
 // NewMemoryServiceClient constructs a client for the cortex.v1.MemoryService service. By default,
@@ -330,6 +387,60 @@ func NewMemoryServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(memoryServiceMethods.ByName("DeleteNamespace")),
 			connect.WithClientOptions(opts...),
 		),
+		migrateMT: connect.NewClient[v1.MigrateMTRequest, v1.MigrateMTResponse](
+			httpClient,
+			baseURL+MemoryServiceMigrateMTProcedure,
+			connect.WithSchema(memoryServiceMethods.ByName("MigrateMT")),
+			connect.WithClientOptions(opts...),
+		),
+		listUsers: connect.NewClient[v1.ListUsersRequest, v1.ListUsersResponse](
+			httpClient,
+			baseURL+MemoryServiceListUsersProcedure,
+			connect.WithSchema(memoryServiceMethods.ByName("ListUsers")),
+			connect.WithClientOptions(opts...),
+		),
+		createUser: connect.NewClient[v1.CreateUserRequest, v1.CreateUserResponse](
+			httpClient,
+			baseURL+MemoryServiceCreateUserProcedure,
+			connect.WithSchema(memoryServiceMethods.ByName("CreateUser")),
+			connect.WithClientOptions(opts...),
+		),
+		deleteUser: connect.NewClient[v1.DeleteUserRequest, v1.DeleteUserResponse](
+			httpClient,
+			baseURL+MemoryServiceDeleteUserProcedure,
+			connect.WithSchema(memoryServiceMethods.ByName("DeleteUser")),
+			connect.WithClientOptions(opts...),
+		),
+		setUserRole: connect.NewClient[v1.SetUserRoleRequest, v1.SetUserRoleResponse](
+			httpClient,
+			baseURL+MemoryServiceSetUserRoleProcedure,
+			connect.WithSchema(memoryServiceMethods.ByName("SetUserRole")),
+			connect.WithClientOptions(opts...),
+		),
+		resetUserPassword: connect.NewClient[v1.ResetUserPasswordRequest, v1.ResetUserPasswordResponse](
+			httpClient,
+			baseURL+MemoryServiceResetUserPasswordProcedure,
+			connect.WithSchema(memoryServiceMethods.ByName("ResetUserPassword")),
+			connect.WithClientOptions(opts...),
+		),
+		createApiKey: connect.NewClient[v1.CreateApiKeyRequest, v1.CreateApiKeyResponse](
+			httpClient,
+			baseURL+MemoryServiceCreateApiKeyProcedure,
+			connect.WithSchema(memoryServiceMethods.ByName("CreateApiKey")),
+			connect.WithClientOptions(opts...),
+		),
+		listApiKeys: connect.NewClient[v1.ListApiKeysRequest, v1.ListApiKeysResponse](
+			httpClient,
+			baseURL+MemoryServiceListApiKeysProcedure,
+			connect.WithSchema(memoryServiceMethods.ByName("ListApiKeys")),
+			connect.WithClientOptions(opts...),
+		),
+		deleteApiKey: connect.NewClient[v1.DeleteApiKeyRequest, v1.DeleteApiKeyResponse](
+			httpClient,
+			baseURL+MemoryServiceDeleteApiKeyProcedure,
+			connect.WithSchema(memoryServiceMethods.ByName("DeleteApiKey")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -359,6 +470,15 @@ type memoryServiceClient struct {
 	listNamespaces          *connect.Client[v1.ListNamespacesRequest, v1.ListNamespacesResponse]
 	renameNamespace         *connect.Client[v1.RenameNamespaceRequest, v1.RenameNamespaceResponse]
 	deleteNamespace         *connect.Client[v1.DeleteNamespaceRequest, v1.DeleteNamespaceResponse]
+	migrateMT               *connect.Client[v1.MigrateMTRequest, v1.MigrateMTResponse]
+	listUsers               *connect.Client[v1.ListUsersRequest, v1.ListUsersResponse]
+	createUser              *connect.Client[v1.CreateUserRequest, v1.CreateUserResponse]
+	deleteUser              *connect.Client[v1.DeleteUserRequest, v1.DeleteUserResponse]
+	setUserRole             *connect.Client[v1.SetUserRoleRequest, v1.SetUserRoleResponse]
+	resetUserPassword       *connect.Client[v1.ResetUserPasswordRequest, v1.ResetUserPasswordResponse]
+	createApiKey            *connect.Client[v1.CreateApiKeyRequest, v1.CreateApiKeyResponse]
+	listApiKeys             *connect.Client[v1.ListApiKeysRequest, v1.ListApiKeysResponse]
+	deleteApiKey            *connect.Client[v1.DeleteApiKeyRequest, v1.DeleteApiKeyResponse]
 }
 
 // Save calls cortex.v1.MemoryService.Save.
@@ -481,6 +601,51 @@ func (c *memoryServiceClient) DeleteNamespace(ctx context.Context, req *connect.
 	return c.deleteNamespace.CallUnary(ctx, req)
 }
 
+// MigrateMT calls cortex.v1.MemoryService.MigrateMT.
+func (c *memoryServiceClient) MigrateMT(ctx context.Context, req *connect.Request[v1.MigrateMTRequest]) (*connect.Response[v1.MigrateMTResponse], error) {
+	return c.migrateMT.CallUnary(ctx, req)
+}
+
+// ListUsers calls cortex.v1.MemoryService.ListUsers.
+func (c *memoryServiceClient) ListUsers(ctx context.Context, req *connect.Request[v1.ListUsersRequest]) (*connect.Response[v1.ListUsersResponse], error) {
+	return c.listUsers.CallUnary(ctx, req)
+}
+
+// CreateUser calls cortex.v1.MemoryService.CreateUser.
+func (c *memoryServiceClient) CreateUser(ctx context.Context, req *connect.Request[v1.CreateUserRequest]) (*connect.Response[v1.CreateUserResponse], error) {
+	return c.createUser.CallUnary(ctx, req)
+}
+
+// DeleteUser calls cortex.v1.MemoryService.DeleteUser.
+func (c *memoryServiceClient) DeleteUser(ctx context.Context, req *connect.Request[v1.DeleteUserRequest]) (*connect.Response[v1.DeleteUserResponse], error) {
+	return c.deleteUser.CallUnary(ctx, req)
+}
+
+// SetUserRole calls cortex.v1.MemoryService.SetUserRole.
+func (c *memoryServiceClient) SetUserRole(ctx context.Context, req *connect.Request[v1.SetUserRoleRequest]) (*connect.Response[v1.SetUserRoleResponse], error) {
+	return c.setUserRole.CallUnary(ctx, req)
+}
+
+// ResetUserPassword calls cortex.v1.MemoryService.ResetUserPassword.
+func (c *memoryServiceClient) ResetUserPassword(ctx context.Context, req *connect.Request[v1.ResetUserPasswordRequest]) (*connect.Response[v1.ResetUserPasswordResponse], error) {
+	return c.resetUserPassword.CallUnary(ctx, req)
+}
+
+// CreateApiKey calls cortex.v1.MemoryService.CreateApiKey.
+func (c *memoryServiceClient) CreateApiKey(ctx context.Context, req *connect.Request[v1.CreateApiKeyRequest]) (*connect.Response[v1.CreateApiKeyResponse], error) {
+	return c.createApiKey.CallUnary(ctx, req)
+}
+
+// ListApiKeys calls cortex.v1.MemoryService.ListApiKeys.
+func (c *memoryServiceClient) ListApiKeys(ctx context.Context, req *connect.Request[v1.ListApiKeysRequest]) (*connect.Response[v1.ListApiKeysResponse], error) {
+	return c.listApiKeys.CallUnary(ctx, req)
+}
+
+// DeleteApiKey calls cortex.v1.MemoryService.DeleteApiKey.
+func (c *memoryServiceClient) DeleteApiKey(ctx context.Context, req *connect.Request[v1.DeleteApiKeyRequest]) (*connect.Response[v1.DeleteApiKeyResponse], error) {
+	return c.deleteApiKey.CallUnary(ctx, req)
+}
+
 // MemoryServiceHandler is an implementation of the cortex.v1.MemoryService service.
 type MemoryServiceHandler interface {
 	// Save queues a memory for asynchronous, durable indexing (NATS JetStream).
@@ -558,6 +723,38 @@ type MemoryServiceHandler interface {
 	// DeleteNamespace permanently deletes every memory AND conversation summary in
 	// a namespace.
 	DeleteNamespace(context.Context, *connect.Request[v1.DeleteNamespaceRequest]) (*connect.Response[v1.DeleteNamespaceResponse], error)
+	// MigrateMT performs a one-shot migration from a non-MT store to a
+	// multi-tenant store: it snapshots all memories and summaries, drops the
+	// three memory classes, recreates them with MT enabled, and re-imports every
+	// record into the bootstrap admin's tenant via the NATS index queue (the
+	// worker re-embeds and rechunks on import). Refuses if CORTEX_MULTI_TENANT is
+	// off or if the classes are already MT (nothing to migrate). Safe to retry
+	// after a partial failure — re-import is upsert-by-id.
+	MigrateMT(context.Context, *connect.Request[v1.MigrateMTRequest]) (*connect.Response[v1.MigrateMTResponse], error)
+	// ---- Admin: User management (P5) ----
+	// ListUsers returns all users. Admin-only; returns PermissionDenied for
+	// non-admins and FailedPrecondition when multi-tenancy is disabled.
+	ListUsers(context.Context, *connect.Request[v1.ListUsersRequest]) (*connect.Response[v1.ListUsersResponse], error)
+	// CreateUser creates a new user account. Admin-only.
+	CreateUser(context.Context, *connect.Request[v1.CreateUserRequest]) (*connect.Response[v1.CreateUserResponse], error)
+	// DeleteUser deletes a user, cascading to their API keys and memory tenant.
+	// Refuses to delete the last admin or the bootstrap admin. Admin-only.
+	DeleteUser(context.Context, *connect.Request[v1.DeleteUserRequest]) (*connect.Response[v1.DeleteUserResponse], error)
+	// SetUserRole promotes or demotes a user. Admin-only.
+	SetUserRole(context.Context, *connect.Request[v1.SetUserRoleRequest]) (*connect.Response[v1.SetUserRoleResponse], error)
+	// ResetUserPassword sets a new password for a user. Admin-only.
+	ResetUserPassword(context.Context, *connect.Request[v1.ResetUserPasswordRequest]) (*connect.Response[v1.ResetUserPasswordResponse], error)
+	// ---- Per-user: API key management (P6) ----
+	// CreateApiKey mints a new API key for the authenticated caller. Returns the
+	// raw key exactly once. Available to any authenticated user; returns
+	// FailedPrecondition when multi-tenancy is disabled.
+	CreateApiKey(context.Context, *connect.Request[v1.CreateApiKeyRequest]) (*connect.Response[v1.CreateApiKeyResponse], error)
+	// ListApiKeys returns the caller's API keys (label, prefix, timestamps —
+	// never the secret). Scoped to the authenticated caller.
+	ListApiKeys(context.Context, *connect.Request[v1.ListApiKeysRequest]) (*connect.Response[v1.ListApiKeysResponse], error)
+	// DeleteApiKey removes one of the caller's API keys. Returns NotFound for
+	// keys that do not exist or belong to another user (existence not revealed).
+	DeleteApiKey(context.Context, *connect.Request[v1.DeleteApiKeyRequest]) (*connect.Response[v1.DeleteApiKeyResponse], error)
 }
 
 // NewMemoryServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -711,6 +908,60 @@ func NewMemoryServiceHandler(svc MemoryServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(memoryServiceMethods.ByName("DeleteNamespace")),
 		connect.WithHandlerOptions(opts...),
 	)
+	memoryServiceMigrateMTHandler := connect.NewUnaryHandler(
+		MemoryServiceMigrateMTProcedure,
+		svc.MigrateMT,
+		connect.WithSchema(memoryServiceMethods.ByName("MigrateMT")),
+		connect.WithHandlerOptions(opts...),
+	)
+	memoryServiceListUsersHandler := connect.NewUnaryHandler(
+		MemoryServiceListUsersProcedure,
+		svc.ListUsers,
+		connect.WithSchema(memoryServiceMethods.ByName("ListUsers")),
+		connect.WithHandlerOptions(opts...),
+	)
+	memoryServiceCreateUserHandler := connect.NewUnaryHandler(
+		MemoryServiceCreateUserProcedure,
+		svc.CreateUser,
+		connect.WithSchema(memoryServiceMethods.ByName("CreateUser")),
+		connect.WithHandlerOptions(opts...),
+	)
+	memoryServiceDeleteUserHandler := connect.NewUnaryHandler(
+		MemoryServiceDeleteUserProcedure,
+		svc.DeleteUser,
+		connect.WithSchema(memoryServiceMethods.ByName("DeleteUser")),
+		connect.WithHandlerOptions(opts...),
+	)
+	memoryServiceSetUserRoleHandler := connect.NewUnaryHandler(
+		MemoryServiceSetUserRoleProcedure,
+		svc.SetUserRole,
+		connect.WithSchema(memoryServiceMethods.ByName("SetUserRole")),
+		connect.WithHandlerOptions(opts...),
+	)
+	memoryServiceResetUserPasswordHandler := connect.NewUnaryHandler(
+		MemoryServiceResetUserPasswordProcedure,
+		svc.ResetUserPassword,
+		connect.WithSchema(memoryServiceMethods.ByName("ResetUserPassword")),
+		connect.WithHandlerOptions(opts...),
+	)
+	memoryServiceCreateApiKeyHandler := connect.NewUnaryHandler(
+		MemoryServiceCreateApiKeyProcedure,
+		svc.CreateApiKey,
+		connect.WithSchema(memoryServiceMethods.ByName("CreateApiKey")),
+		connect.WithHandlerOptions(opts...),
+	)
+	memoryServiceListApiKeysHandler := connect.NewUnaryHandler(
+		MemoryServiceListApiKeysProcedure,
+		svc.ListApiKeys,
+		connect.WithSchema(memoryServiceMethods.ByName("ListApiKeys")),
+		connect.WithHandlerOptions(opts...),
+	)
+	memoryServiceDeleteApiKeyHandler := connect.NewUnaryHandler(
+		MemoryServiceDeleteApiKeyProcedure,
+		svc.DeleteApiKey,
+		connect.WithSchema(memoryServiceMethods.ByName("DeleteApiKey")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/cortex.v1.MemoryService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case MemoryServiceSaveProcedure:
@@ -761,6 +1012,24 @@ func NewMemoryServiceHandler(svc MemoryServiceHandler, opts ...connect.HandlerOp
 			memoryServiceRenameNamespaceHandler.ServeHTTP(w, r)
 		case MemoryServiceDeleteNamespaceProcedure:
 			memoryServiceDeleteNamespaceHandler.ServeHTTP(w, r)
+		case MemoryServiceMigrateMTProcedure:
+			memoryServiceMigrateMTHandler.ServeHTTP(w, r)
+		case MemoryServiceListUsersProcedure:
+			memoryServiceListUsersHandler.ServeHTTP(w, r)
+		case MemoryServiceCreateUserProcedure:
+			memoryServiceCreateUserHandler.ServeHTTP(w, r)
+		case MemoryServiceDeleteUserProcedure:
+			memoryServiceDeleteUserHandler.ServeHTTP(w, r)
+		case MemoryServiceSetUserRoleProcedure:
+			memoryServiceSetUserRoleHandler.ServeHTTP(w, r)
+		case MemoryServiceResetUserPasswordProcedure:
+			memoryServiceResetUserPasswordHandler.ServeHTTP(w, r)
+		case MemoryServiceCreateApiKeyProcedure:
+			memoryServiceCreateApiKeyHandler.ServeHTTP(w, r)
+		case MemoryServiceListApiKeysProcedure:
+			memoryServiceListApiKeysHandler.ServeHTTP(w, r)
+		case MemoryServiceDeleteApiKeyProcedure:
+			memoryServiceDeleteApiKeyHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -864,4 +1133,40 @@ func (UnimplementedMemoryServiceHandler) RenameNamespace(context.Context, *conne
 
 func (UnimplementedMemoryServiceHandler) DeleteNamespace(context.Context, *connect.Request[v1.DeleteNamespaceRequest]) (*connect.Response[v1.DeleteNamespaceResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cortex.v1.MemoryService.DeleteNamespace is not implemented"))
+}
+
+func (UnimplementedMemoryServiceHandler) MigrateMT(context.Context, *connect.Request[v1.MigrateMTRequest]) (*connect.Response[v1.MigrateMTResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cortex.v1.MemoryService.MigrateMT is not implemented"))
+}
+
+func (UnimplementedMemoryServiceHandler) ListUsers(context.Context, *connect.Request[v1.ListUsersRequest]) (*connect.Response[v1.ListUsersResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cortex.v1.MemoryService.ListUsers is not implemented"))
+}
+
+func (UnimplementedMemoryServiceHandler) CreateUser(context.Context, *connect.Request[v1.CreateUserRequest]) (*connect.Response[v1.CreateUserResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cortex.v1.MemoryService.CreateUser is not implemented"))
+}
+
+func (UnimplementedMemoryServiceHandler) DeleteUser(context.Context, *connect.Request[v1.DeleteUserRequest]) (*connect.Response[v1.DeleteUserResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cortex.v1.MemoryService.DeleteUser is not implemented"))
+}
+
+func (UnimplementedMemoryServiceHandler) SetUserRole(context.Context, *connect.Request[v1.SetUserRoleRequest]) (*connect.Response[v1.SetUserRoleResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cortex.v1.MemoryService.SetUserRole is not implemented"))
+}
+
+func (UnimplementedMemoryServiceHandler) ResetUserPassword(context.Context, *connect.Request[v1.ResetUserPasswordRequest]) (*connect.Response[v1.ResetUserPasswordResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cortex.v1.MemoryService.ResetUserPassword is not implemented"))
+}
+
+func (UnimplementedMemoryServiceHandler) CreateApiKey(context.Context, *connect.Request[v1.CreateApiKeyRequest]) (*connect.Response[v1.CreateApiKeyResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cortex.v1.MemoryService.CreateApiKey is not implemented"))
+}
+
+func (UnimplementedMemoryServiceHandler) ListApiKeys(context.Context, *connect.Request[v1.ListApiKeysRequest]) (*connect.Response[v1.ListApiKeysResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cortex.v1.MemoryService.ListApiKeys is not implemented"))
+}
+
+func (UnimplementedMemoryServiceHandler) DeleteApiKey(context.Context, *connect.Request[v1.DeleteApiKeyRequest]) (*connect.Response[v1.DeleteApiKeyResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cortex.v1.MemoryService.DeleteApiKey is not implemented"))
 }

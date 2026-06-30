@@ -22,7 +22,8 @@ import (
 
 // Store wraps the Weaviate client.
 type Store struct {
-	client *weaviate.Client
+	client      *weaviate.Client
+	multiTenant bool // set via SetMultiTenant; governs MT schema and .WithTenant calls
 }
 
 // SearchOpts configures a nearVector search. The zero value searches the
@@ -99,23 +100,36 @@ func New(restHost, grpcHost string) (*Store, error) {
 	return &Store{client: client}, nil
 }
 
+// SetMultiTenant gates the multi-tenancy code path. Call it before EnsureSchema
+// when CORTEX_MULTI_TENANT is on. When false (the default) the store behaves
+// identically to the pre-MT code: no .WithTenant calls, non-MT class schema.
+func (s *Store) SetMultiTenant(enabled bool) {
+	s.multiTenant = enabled
+}
+
 // EnsureSchema creates the Memory and ConversationSummary classes if absent, or
-// additively brings existing ones up to the current property set.
+// additively brings existing ones up to the current property set. When the Store
+// was configured with SetMultiTenant(true) the three memory classes are created
+// with MultiTenancyConfig{Enabled:true, AutoTenantCreation:true}. EnsureSchema
+// never tries to flip an existing non-MT class to MT — that is detected by
+// VerifySchema and points at `cortex migrate-mt`.
 func (s *Store) EnsureSchema(ctx context.Context) error {
-	if err := s.ensureClass(ctx, memoryClass(), memoryProperties()); err != nil {
+	if err := s.ensureClass(ctx, memoryClass(s.multiTenant), memoryProperties()); err != nil {
 		return err
 	}
-	if err := s.ensureClass(ctx, chunkClass(), chunkProperties()); err != nil {
+	if err := s.ensureClass(ctx, chunkClass(s.multiTenant), chunkProperties()); err != nil {
 		return err
 	}
-	if err := s.ensureClass(ctx, summaryClass(), summaryProperties()); err != nil {
+	if err := s.ensureClass(ctx, summaryClass(s.multiTenant), summaryProperties()); err != nil {
 		return err
 	}
 	return nil
 }
 
 // ensureClass creates the class if it is absent, else adds any missing
-// properties (non-destructive), so upgrades don't require a wipe.
+// properties (non-destructive), so upgrades don't require a wipe. When the
+// class already exists its MT config is NOT touched — EnsureSchema is additive
+// and Weaviate forbids flipping MT on an existing class anyway.
 func (s *Store) ensureClass(ctx context.Context, class *models.Class, props []*models.Property) error {
 	exists, err := s.client.Schema().ClassExistenceChecker().
 		WithClassName(class.Class).Do(ctx)
@@ -141,13 +155,20 @@ func (s *Store) ensureClass(ctx context.Context, class *models.Class, props []*m
 // can never participate in semantic similarity. Do not set a vectorizer module
 // here without also restricting it to the `text` property, or metadata will
 // start polluting the vector space. TestMemoryClassVectorizerNone pins this.
-func memoryClass() *models.Class {
-	return &models.Class{
+func memoryClass(multiTenant bool) *models.Class {
+	c := &models.Class{
 		Class:       memory.ClassName,
 		Description: "A single stored memory in the Cortex second brain",
 		Vectorizer:  "none",
 		Properties:  memoryProperties(),
 	}
+	if multiTenant {
+		c.MultiTenancyConfig = &models.MultiTenancyConfig{
+			Enabled:            true,
+			AutoTenantCreation: true,
+		}
+	}
+	return c
 }
 
 // memoryProperties is the full property set for the Memory class.
@@ -176,13 +197,20 @@ func memoryProperties() []*models.Property {
 
 // summaryClass is the authoritative ConversationSummary class definition. Same
 // vectorization invariant as memoryClass: only `text` is ever embedded.
-func summaryClass() *models.Class {
-	return &models.Class{
+func summaryClass(multiTenant bool) *models.Class {
+	c := &models.Class{
 		Class:       memory.SummaryClassName,
 		Description: "An ever-current digest of one conversation, unique per conversationId",
 		Vectorizer:  "none",
 		Properties:  summaryProperties(),
 	}
+	if multiTenant {
+		c.MultiTenancyConfig = &models.MultiTenancyConfig{
+			Enabled:            true,
+			AutoTenantCreation: true,
+		}
+	}
+	return c
 }
 
 // summaryProperties is the full property set for the ConversationSummary class.
@@ -236,13 +264,13 @@ func expectedFieldTokenized() map[string][]string {
 }
 
 // VerifySchema checks, on boot, that every class Cortex relies on exists with its
-// full property set and that exact-match keys use "field" tokenization. It returns
-// a list of human-readable problems (empty = healthy); a hard error is returned
-// only if Weaviate itself can't be queried. The problems are advisory — search
-// keeps working (a missing MemoryChunk class degrades to the whole-memory
-// fallback) — so callers LOG them loudly rather than crash, except they signal
-// that a reindex/rebuild is needed. Run it AFTER EnsureSchema (which creates
-// classes and adds missing properties); VerifySchema catches the rest.
+// full property set and that exact-match keys use "field" tokenization. When the
+// Store was configured with SetMultiTenant(true) it also asserts that the three
+// memory classes have MT enabled — a mismatch (non-MT class with MT flag on, or
+// vice versa) is surfaced as a loud, actionable problem pointing at
+// `cortex migrate-mt`. A hard error is returned only if Weaviate itself can't be
+// queried. Problems are advisory — search keeps working — so callers log them
+// loudly rather than crash.
 func (s *Store) VerifySchema(ctx context.Context) ([]string, error) {
 	expectProps := map[string][]*models.Property{
 		memory.ClassName:        memoryProperties(),
@@ -281,6 +309,23 @@ func (s *Store) VerifySchema(ctx context.Context) ([]string, error) {
 					className, key, p.Tokenization))
 			}
 		}
+
+		// MT assertion: flag ON → class must have MT enabled; flag OFF → class must not.
+		if s.multiTenant {
+			enabled := class.MultiTenancyConfig != nil && class.MultiTenancyConfig.Enabled
+			if !enabled {
+				problems = append(problems, fmt.Sprintf(
+					"class %s is NOT multi-tenant but CORTEX_MULTI_TENANT=true — run `cortex migrate-mt` to rebuild the store with multi-tenancy enabled",
+					className))
+			}
+		} else {
+			enabled := class.MultiTenancyConfig != nil && class.MultiTenancyConfig.Enabled
+			if enabled {
+				problems = append(problems, fmt.Sprintf(
+					"class %s IS multi-tenant but CORTEX_MULTI_TENANT=false — set CORTEX_MULTI_TENANT=true or run `cortex migrate-mt` to reset",
+					className))
+			}
+		}
 	}
 	return problems, nil
 }
@@ -290,6 +335,10 @@ func (s *Store) VerifySchema(ctx context.Context) ([]string, error) {
 // the classes must be rebuilt — both are dropped so their stored vectors stay
 // dimension-consistent. Facts are then republished by reindex; summaries start
 // empty and are rebuilt as the agent re-summarises.
+//
+// WARNING: in multi-tenant mode this drops ALL tenants' data. Per-tenant reindex
+// must NOT call this — it only republishes within the tenant. A dimension-change
+// rebuild in MT mode is an admin-wide operation.
 func (s *Store) DeleteClass(ctx context.Context) error {
 	for _, name := range []string{memory.ClassName, memory.ChunkClassName, memory.SummaryClassName} {
 		if err := s.client.Schema().ClassDeleter().WithClassName(name).Do(ctx); err != nil {
@@ -299,8 +348,122 @@ func (s *Store) DeleteClass(ctx context.Context) error {
 	return nil
 }
 
+// IsClassMultiTenant reports whether className currently has MT enabled in
+// Weaviate. Used by the migration guard: if all three classes already have MT
+// on, there is nothing to migrate. Returns (false, nil) when the class does not
+// exist.
+func (s *Store) IsClassMultiTenant(ctx context.Context, className string) (bool, error) {
+	exists, err := s.client.Schema().ClassExistenceChecker().WithClassName(className).Do(ctx)
+	if err != nil {
+		return false, fmt.Errorf("check class %s: %w", className, err)
+	}
+	if !exists {
+		return false, nil
+	}
+	class, err := s.client.Schema().ClassGetter().WithClassName(className).Do(ctx)
+	if err != nil {
+		return false, fmt.Errorf("get class %s: %w", className, err)
+	}
+	return class.MultiTenancyConfig != nil && class.MultiTenancyConfig.Enabled, nil
+}
+
+// ListAllRecords scans the Memory class without any tenant scope — used by the
+// migration snapshot BEFORE the classes are dropped, when the store is still
+// non-MT. It must not be called against an MT-enabled class (which requires a
+// tenant). Returns up to allCount records.
+func (s *Store) ListAllRecords(ctx context.Context) ([]memory.Record, error) {
+	res, err := s.client.Experimental().Search().
+		WithCollection(memory.ClassName).
+		WithProperties(memoryProps...).
+		WithMetadata(&graphql.Metadata{ID: true}).
+		WithLimit(allCount).
+		Do(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list all records: %w", err)
+	}
+	recs := make([]memory.Record, 0, len(res))
+	for _, r := range res {
+		recs = append(recs, resultToRecord(r))
+	}
+	return recs, nil
+}
+
+// ListAllSummaries scans the ConversationSummary class without any tenant scope
+// — used by the migration snapshot before the classes are dropped. Same caveat
+// as ListAllRecords: call only on non-MT classes.
+func (s *Store) ListAllSummaries(ctx context.Context) ([]memory.Summary, error) {
+	res, err := s.client.Experimental().Search().
+		WithCollection(memory.SummaryClassName).
+		WithProperties(summaryProps...).
+		WithMetadata(&graphql.Metadata{ID: true}).
+		WithLimit(allCount).
+		Do(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list all summaries: %w", err)
+	}
+	sums := make([]memory.Summary, 0, len(res))
+	for _, r := range res {
+		sums = append(sums, resultToSummary(r))
+	}
+	return sums, nil
+}
+
+// Ready reports whether Weaviate is up and serving. Used by Status/Doctor.
+func (s *Store) Ready(ctx context.Context) error {
+	ok, err := s.client.Misc().ReadyChecker().Do(ctx)
+	if err != nil {
+		return fmt.Errorf("weaviate ready: %w", err)
+	}
+	if !ok {
+		return fmt.Errorf("weaviate not ready")
+	}
+	return nil
+}
+
+// allCount caps the Count scan. Weaviate's default QUERY_MAXIMUM_RESULTS is
+// 10000; a personal store stays well under it.
+const allCount = 10000
+
+// ---- TenantStore — all memory-class operations ----
+
+// upsertObject writes props+vector under id in className. It is create-or-replace
+// with NO check-then-act window, so it is safe under CONCURRENT workers (multiple
+// JetStream consumers): it attempts a create, and on ANY failure — most commonly
+// the object already existing (a concurrent worker, redelivery, reindex, or a
+// summary update) — it replaces the object via PUT. Two workers racing to create
+// the same id can't both "win the exists-check": the loser's create fails and it
+// falls through to the idempotent PUT. A genuine non-"already exists" error still
+// surfaces, because the PUT then fails too and its error is returned. PUT replaces
+// the whole object (no WithMerge), refreshing vector + props.
+func (ts *TenantStore) upsertObject(ctx context.Context, className, id string, props map[string]interface{}, vector []float32) error {
+	creator := ts.s.client.Data().Creator().
+		WithClassName(className).
+		WithID(id).
+		WithProperties(props).
+		WithVector(vector)
+	if ts.t != "" {
+		creator = creator.WithTenant(ts.t)
+	}
+	_, err := creator.Do(ctx)
+	if err == nil {
+		return nil
+	}
+	updater := ts.s.client.Data().Updater().
+		WithClassName(className).
+		WithID(id).
+		WithProperties(props).
+		WithVector(vector)
+	if ts.t != "" {
+		updater = updater.WithTenant(ts.t)
+	}
+	if uerr := updater.Do(ctx); uerr != nil {
+		return fmt.Errorf("upsert object %s/%s (create failed: %v): %w", className, id, err, uerr)
+	}
+	return nil
+}
+
 // Upsert writes a record with its precomputed vector into the Memory class.
-func (s *Store) Upsert(ctx context.Context, rec memory.Record, vector []float32) error {
+func (ts *TenantStore) Upsert(ctx context.Context, rec memory.Record, vector []float32) error {
 	props := map[string]interface{}{
 		"text":           rec.Text,
 		"namespace":      rec.Namespace,
@@ -321,7 +484,7 @@ func (s *Store) Upsert(ctx context.Context, rec memory.Record, vector []float32)
 	if !rec.LastAccessedAt.IsZero() {
 		props["lastAccessedAt"] = formatDate(rec.LastAccessedAt)
 	}
-	return s.upsertObject(ctx, memory.ClassName, rec.ID, props, vector)
+	return ts.upsertObject(ctx, memory.ClassName, rec.ID, props, vector)
 }
 
 // formatDate renders a time for a Weaviate date property, returning "" for the
@@ -337,8 +500,8 @@ func formatDate(t time.Time) string {
 // UpsertSummary writes a conversation summary into the ConversationSummary
 // class, keyed by the deterministic SummaryID so each conversation has exactly
 // one, ever-current summary. Re-saving the same conversation replaces it.
-func (s *Store) UpsertSummary(ctx context.Context, sum memory.Summary, vector []float32) error {
-	return s.upsertObject(ctx, memory.SummaryClassName, memory.SummaryID(sum.ConversationID), map[string]interface{}{
+func (ts *TenantStore) UpsertSummary(ctx context.Context, sum memory.Summary, vector []float32) error {
+	return ts.upsertObject(ctx, memory.SummaryClassName, memory.SummaryID(sum.ConversationID), map[string]interface{}{
 		"text":           sum.Text,
 		"conversationId": sum.ConversationID,
 		"namespace":      sum.Namespace,
@@ -350,48 +513,24 @@ func (s *Store) UpsertSummary(ctx context.Context, sum memory.Summary, vector []
 	}, vector)
 }
 
-// upsertObject writes props+vector under id in className. It is create-or-replace
-// with NO check-then-act window, so it is safe under CONCURRENT workers (multiple
-// JetStream consumers): it attempts a create, and on ANY failure — most commonly
-// the object already existing (a concurrent worker, redelivery, reindex, or a
-// summary update) — it replaces the object via PUT. Two workers racing to create
-// the same id can't both "win the exists-check": the loser's create fails and it
-// falls through to the idempotent PUT. A genuine non-"already exists" error still
-// surfaces, because the PUT then fails too and its error is returned. PUT replaces
-// the whole object (no WithMerge), refreshing vector + props.
-func (s *Store) upsertObject(ctx context.Context, className, id string, props map[string]interface{}, vector []float32) error {
-	_, err := s.client.Data().Creator().
-		WithClassName(className).
-		WithID(id).
-		WithProperties(props).
-		WithVector(vector).
-		Do(ctx)
-	if err == nil {
-		return nil
-	}
-	if uerr := s.client.Data().Updater().
-		WithClassName(className).
-		WithID(id).
-		WithProperties(props).
-		WithVector(vector).
-		Do(ctx); uerr != nil {
-		return fmt.Errorf("upsert object %s/%s (create failed: %v): %w", className, id, err, uerr)
-	}
-	return nil
-}
-
 // Delete removes a memory by ID, cascading to its chunks so no orphaned chunks
 // are left behind to surface in search. Chunks are deleted first: if the memory
 // delete then fails the caller retries, whereas the reverse order could leave the
 // memory present but unsearchable-via-its-own-chunks momentarily.
-func (s *Store) Delete(ctx context.Context, id string) error {
-	if err := s.deleteChunksByMemory(ctx, id); err != nil {
+func (ts *TenantStore) Delete(ctx context.Context, id string) error {
+	if err := ts.deleteChunksByMemory(ctx, id); err != nil {
 		return err
 	}
-	err := s.client.Data().Deleter().
+	deleter := ts.s.client.Data().Deleter().
 		WithClassName(memory.ClassName).
-		WithID(id).Do(ctx)
-	if err != nil {
+		WithID(id)
+	if ts.t != "" {
+		deleter = deleter.WithTenant(ts.t)
+	}
+	if err := deleter.Do(ctx); err != nil {
+		if isTenantNotFound(err) {
+			return nil
+		}
 		return fmt.Errorf("delete object: %w", err)
 	}
 	return nil
@@ -399,18 +538,32 @@ func (s *Store) Delete(ctx context.Context, id string) error {
 
 // Get fetches a single memory by ID over REST. found is false if it does not
 // exist. Used by Link/Unlink to read the current link set before updating it.
-func (s *Store) Get(ctx context.Context, id string) (memory.Record, bool, error) {
-	exists, err := s.client.Data().Checker().
-		WithClassName(memory.ClassName).WithID(id).Do(ctx)
+func (ts *TenantStore) Get(ctx context.Context, id string) (memory.Record, bool, error) {
+	checker := ts.s.client.Data().Checker().
+		WithClassName(memory.ClassName).WithID(id)
+	if ts.t != "" {
+		checker = checker.WithTenant(ts.t)
+	}
+	exists, err := checker.Do(ctx)
 	if err != nil {
+		if isTenantNotFound(err) {
+			return memory.Record{}, false, nil
+		}
 		return memory.Record{}, false, fmt.Errorf("check object: %w", err)
 	}
 	if !exists {
 		return memory.Record{}, false, nil
 	}
-	objs, err := s.client.Data().ObjectsGetter().
-		WithClassName(memory.ClassName).WithID(id).Do(ctx)
+	getter := ts.s.client.Data().ObjectsGetter().
+		WithClassName(memory.ClassName).WithID(id)
+	if ts.t != "" {
+		getter = getter.WithTenant(ts.t)
+	}
+	objs, err := getter.Do(ctx)
 	if err != nil {
+		if isTenantNotFound(err) {
+			return memory.Record{}, false, nil
+		}
 		return memory.Record{}, false, fmt.Errorf("get object: %w", err)
 	}
 	if len(objs) == 0 {
@@ -422,17 +575,19 @@ func (s *Store) Get(ctx context.Context, id string) (memory.Record, bool, error)
 // SetLinks replaces a memory's linkedIds via a Weaviate merge (PATCH), leaving
 // the vector and all other properties untouched — links never trigger a
 // re-embed.
-func (s *Store) SetLinks(ctx context.Context, id string, links []string) error {
+func (ts *TenantStore) SetLinks(ctx context.Context, id string, links []string) error {
 	if links == nil {
 		links = []string{}
 	}
-	err := s.client.Data().Updater().
+	updater := ts.s.client.Data().Updater().
 		WithMerge().
 		WithClassName(memory.ClassName).
 		WithID(id).
-		WithProperties(map[string]interface{}{"linkedIds": links}).
-		Do(ctx)
-	if err != nil {
+		WithProperties(map[string]interface{}{"linkedIds": links})
+	if ts.t != "" {
+		updater = updater.WithTenant(ts.t)
+	}
+	if err := updater.Do(ctx); err != nil {
 		return fmt.Errorf("set links: %w", err)
 	}
 	return nil
@@ -442,17 +597,19 @@ func (s *Store) SetLinks(ctx context.Context, id string, links []string) error {
 // (PATCH), leaving the vector and all other properties untouched. Used by
 // DismissDuplicate to record the bidirectional "confirmed not a duplicate"
 // decision that the worker consults when recomputing candidates.
-func (s *Store) SetNotDuplicateOf(ctx context.Context, id string, ids []string) error {
+func (ts *TenantStore) SetNotDuplicateOf(ctx context.Context, id string, ids []string) error {
 	if ids == nil {
 		ids = []string{}
 	}
-	err := s.client.Data().Updater().
+	updater := ts.s.client.Data().Updater().
 		WithMerge().
 		WithClassName(memory.ClassName).
 		WithID(id).
-		WithProperties(map[string]interface{}{"notDuplicateOf": ids}).
-		Do(ctx)
-	if err != nil {
+		WithProperties(map[string]interface{}{"notDuplicateOf": ids})
+	if ts.t != "" {
+		updater = updater.WithTenant(ts.t)
+	}
+	if err := updater.Do(ctx); err != nil {
 		return fmt.Errorf("set notDuplicateOf: %w", err)
 	}
 	return nil
@@ -462,17 +619,19 @@ func (s *Store) SetNotDuplicateOf(ctx context.Context, id string, ids []string) 
 // (PATCH), leaving the vector and other properties untouched. Used by
 // DismissDuplicate to drop a now-adjudicated pair from the review list
 // immediately, without waiting for the next reindex to recompute it.
-func (s *Store) SetDupCandidates(ctx context.Context, id string, ids []string) error {
+func (ts *TenantStore) SetDupCandidates(ctx context.Context, id string, ids []string) error {
 	if ids == nil {
 		ids = []string{}
 	}
-	err := s.client.Data().Updater().
+	updater := ts.s.client.Data().Updater().
 		WithMerge().
 		WithClassName(memory.ClassName).
 		WithID(id).
-		WithProperties(map[string]interface{}{"dupCandidates": ids}).
-		Do(ctx)
-	if err != nil {
+		WithProperties(map[string]interface{}{"dupCandidates": ids})
+	if ts.t != "" {
+		updater = updater.WithTenant(ts.t)
+	}
+	if err := updater.Do(ctx); err != nil {
 		return fmt.Errorf("set dupCandidates: %w", err)
 	}
 	return nil
@@ -485,52 +644,44 @@ func (s *Store) SetDupCandidates(ctx context.Context, id string, ids []string) e
 // freshened recency/frequency float the memory up in future searches. count is
 // the NEW absolute access count (caller computes prev+1); the caller serialises
 // concurrent reinforcements of the same id so the increment is not lost.
-func (s *Store) Reinforce(ctx context.Context, id string, count int, at time.Time) error {
-	err := s.client.Data().Updater().
+func (ts *TenantStore) Reinforce(ctx context.Context, id string, count int, at time.Time) error {
+	updater := ts.s.client.Data().Updater().
 		WithMerge().
 		WithClassName(memory.ClassName).
 		WithID(id).
 		WithProperties(map[string]interface{}{
 			"accessCount":    count,
 			"lastAccessedAt": formatDate(at),
-		}).
-		Do(ctx)
-	if err != nil {
+		})
+	if ts.t != "" {
+		updater = updater.WithTenant(ts.t)
+	}
+	if err := updater.Do(ctx); err != nil {
 		return fmt.Errorf("reinforce: %w", err)
 	}
 	return nil
 }
 
-// Ready reports whether Weaviate is up and serving. Used by Status/Doctor.
-func (s *Store) Ready(ctx context.Context) error {
-	ok, err := s.client.Misc().ReadyChecker().Do(ctx)
-	if err != nil {
-		return fmt.Errorf("weaviate ready: %w", err)
-	}
-	if !ok {
-		return fmt.Errorf("weaviate not ready")
-	}
-	return nil
-}
-
-// allCount caps the Count scan. Weaviate's default QUERY_MAXIMUM_RESULTS is
-// 10000; a personal store stays well under it.
-const allCount = 10000
-
-// Count returns the number of stored memories, optionally scoped to a namespace
-// ("" counts all). It runs an id-only gRPC query and counts the rows — there is
-// no gRPC Aggregate in the stable client, and a personal store is small enough
-// that scanning ids is cheap.
-func (s *Store) Count(ctx context.Context, namespace string) (int, error) {
-	q := s.client.Experimental().Search().
+// Count returns the number of stored memories for this tenant, optionally scoped
+// to a namespace ("" counts all). It runs an id-only gRPC query and counts the
+// rows — there is no gRPC Aggregate in the stable client, and a personal store is
+// small enough that scanning ids is cheap.
+func (ts *TenantStore) Count(ctx context.Context, namespace string) (int, error) {
+	q := ts.s.client.Experimental().Search().
 		WithCollection(memory.ClassName).
 		WithLimit(allCount).
 		WithMetadata(&graphql.Metadata{ID: true})
+	if ts.t != "" {
+		q = q.WithTenant(ts.t)
+	}
 	if where := buildWhere(namespace, "", nil, nil); where != nil {
 		q = q.WithWhere(where)
 	}
 	res, err := q.Do(ctx)
 	if err != nil {
+		if isTenantNotFound(err) {
+			return 0, nil
+		}
 		return 0, fmt.Errorf("count query: %w", err)
 	}
 	return len(res), nil
@@ -615,7 +766,7 @@ func excludeTagged[T any](items []T, tagsOf func(T) []string, exclude []string) 
 // method is retained for the worker's duplicate-candidate detection, which
 // genuinely wants whole-memory similarity (is this new memory a near-duplicate of
 // an existing one?), not chunk-level matches.
-func (s *Store) SearchMemoryVectors(ctx context.Context, vector []float32, opts SearchOpts) ([]memory.Hit, error) {
+func (ts *TenantStore) SearchMemoryVectors(ctx context.Context, vector []float32, opts SearchOpts) ([]memory.Hit, error) {
 	limit := opts.Limit
 	if limit <= 0 {
 		limit = 5
@@ -631,10 +782,13 @@ func (s *Store) SearchMemoryVectors(ctx context.Context, vector []float32, opts 
 		fetchLimit = limit * rerankOverfetch
 	}
 
-	query := s.client.Experimental().Search().
+	query := ts.s.client.Experimental().Search().
 		WithCollection(memory.ClassName).
 		WithProperties(memoryProps...).
 		WithLimit(fetchLimit)
+	if ts.t != "" {
+		query = query.WithTenant(ts.t)
+	}
 
 	hybrid := strings.TrimSpace(opts.Query) != ""
 	if hybrid {
@@ -669,6 +823,9 @@ func (s *Store) SearchMemoryVectors(ctx context.Context, vector []float32, opts 
 
 	res, err := query.Do(ctx)
 	if err != nil {
+		if isTenantNotFound(err) {
+			return nil, nil
+		}
 		return nil, searchError(err, len(vector))
 	}
 
@@ -800,7 +957,7 @@ func hybridDistance(score float32) float32 {
 // the "find similar to this one" primitive; it must be preferred over embedding a
 // memory's own text back into a query. The seed memory itself (distance 0) is
 // excluded from the results.
-func (s *Store) SearchByID(ctx context.Context, id string, opts SearchOpts) ([]memory.Hit, error) {
+func (ts *TenantStore) SearchByID(ctx context.Context, id string, opts SearchOpts) ([]memory.Hit, error) {
 	limit := opts.Limit
 	if limit <= 0 {
 		limit = 5
@@ -813,12 +970,15 @@ func (s *Store) SearchByID(ctx context.Context, id string, opts SearchOpts) ([]m
 
 	// Request one extra so the seed object (always the closest hit) can be dropped
 	// without shrinking the result set below the caller's limit.
-	query := s.client.Experimental().Search().
+	query := ts.s.client.Experimental().Search().
 		WithCollection(memory.ClassName).
 		WithProperties(memoryProps...).
 		WithMetadata(&graphql.Metadata{ID: true, Distance: true}).
 		WithNearObject(nearObject).
 		WithLimit(limit + 1)
+	if ts.t != "" {
+		query = query.WithTenant(ts.t)
+	}
 
 	if opts.Autocut > 0 {
 		query = query.WithAutocut(opts.Autocut)
@@ -829,6 +989,9 @@ func (s *Store) SearchByID(ctx context.Context, id string, opts SearchOpts) ([]m
 
 	res, err := query.Do(ctx)
 	if err != nil {
+		if isTenantNotFound(err) {
+			return nil, nil
+		}
 		return nil, fmt.Errorf("near-object search: %w", err)
 	}
 
@@ -848,18 +1011,21 @@ func (s *Store) SearchByID(ctx context.Context, id string, opts SearchOpts) ([]m
 // List returns stored memories newest-first with optional namespace/tag
 // filtering. Unlike Search it runs no vector query (still over gRPC), so results
 // carry no distance.
-func (s *Store) List(ctx context.Context, opts ListOpts) ([]memory.Record, error) {
+func (ts *TenantStore) List(ctx context.Context, opts ListOpts) ([]memory.Record, error) {
 	limit := opts.Limit
 	if limit <= 0 {
 		limit = 20
 	}
 
-	query := s.client.Experimental().Search().
+	query := ts.s.client.Experimental().Search().
 		WithCollection(memory.ClassName).
 		WithProperties(memoryProps...).
 		WithMetadata(&graphql.Metadata{ID: true}).
 		WithSort(graphql.Sort{Path: []string{"createdAt"}, Order: graphql.Desc}).
 		WithLimit(limit)
+	if ts.t != "" {
+		query = query.WithTenant(ts.t)
+	}
 
 	if where := buildWhere(opts.Namespace, opts.ConversationID, opts.IncludeTags, opts.AnyTags); where != nil {
 		query = query.WithWhere(where)
@@ -867,6 +1033,9 @@ func (s *Store) List(ctx context.Context, opts ListOpts) ([]memory.Record, error
 
 	res, err := query.Do(ctx)
 	if err != nil {
+		if isTenantNotFound(err) {
+			return nil, nil
+		}
 		return nil, fmt.Errorf("list query: %w", err)
 	}
 
@@ -886,23 +1055,29 @@ func (s *Store) List(ctx context.Context, opts ListOpts) ([]memory.Record, error
 // with indexNullState=true (not the case for existing deployments). A personal
 // store is small enough that scanning is cheap — the same assumption Count and
 // reindex already rely on. No vector query, so results carry no distance.
-func (s *Store) ListWithCandidates(ctx context.Context, namespace string, limit int) ([]memory.Record, error) {
+func (ts *TenantStore) ListWithCandidates(ctx context.Context, namespace string, limit int) ([]memory.Record, error) {
 	if limit <= 0 {
 		limit = 50
 	}
 
-	query := s.client.Experimental().Search().
+	query := ts.s.client.Experimental().Search().
 		WithCollection(memory.ClassName).
 		WithProperties(memoryProps...).
 		WithMetadata(&graphql.Metadata{ID: true}).
 		WithSort(graphql.Sort{Path: []string{"createdAt"}, Order: graphql.Desc}).
 		WithLimit(allCount)
+	if ts.t != "" {
+		query = query.WithTenant(ts.t)
+	}
 	if where := buildWhere(namespace, "", nil, nil); where != nil {
 		query = query.WithWhere(where)
 	}
 
 	res, err := query.Do(ctx)
 	if err != nil {
+		if isTenantNotFound(err) {
+			return nil, nil
+		}
 		return nil, fmt.Errorf("list candidates query: %w", err)
 	}
 
@@ -926,7 +1101,7 @@ var summaryProps = []string{"text", "conversationId", "namespace", "source", "cr
 // SearchSummaries runs a nearVector query (over gRPC) over conversation
 // summaries, newest match first by relevance. Used as the first hop of session
 // recall: a hit yields a conversationId to fan out to its facts.
-func (s *Store) SearchSummaries(ctx context.Context, vector []float32, opts SummarySearchOpts) ([]memory.SummaryHit, error) {
+func (ts *TenantStore) SearchSummaries(ctx context.Context, vector []float32, opts SummarySearchOpts) ([]memory.SummaryHit, error) {
 	limit := opts.Limit
 	if limit <= 0 {
 		limit = 5
@@ -937,12 +1112,15 @@ func (s *Store) SearchSummaries(ctx context.Context, vector []float32, opts Summ
 		nearVector = nearVector.WithDistance(opts.MaxDistance)
 	}
 
-	query := s.client.Experimental().Search().
+	query := ts.s.client.Experimental().Search().
 		WithCollection(memory.SummaryClassName).
 		WithProperties(summaryProps...).
 		WithMetadata(&graphql.Metadata{ID: true, Distance: true}).
 		WithNearVector(nearVector).
 		WithLimit(limit)
+	if ts.t != "" {
+		query = query.WithTenant(ts.t)
+	}
 
 	if where := buildWhere(opts.Namespace, "", nil, nil); where != nil {
 		query = query.WithWhere(where)
@@ -950,6 +1128,9 @@ func (s *Store) SearchSummaries(ctx context.Context, vector []float32, opts Summ
 
 	res, err := query.Do(ctx)
 	if err != nil {
+		if isTenantNotFound(err) {
+			return nil, nil
+		}
 		return nil, searchError(err, len(vector))
 	}
 
@@ -962,18 +1143,21 @@ func (s *Store) SearchSummaries(ctx context.Context, vector []float32, opts Summ
 
 // ListSummaries returns stored conversation summaries, most-recently-updated
 // first, with optional namespace filtering. No vector query (still over gRPC).
-func (s *Store) ListSummaries(ctx context.Context, opts SummaryListOpts) ([]memory.Summary, error) {
+func (ts *TenantStore) ListSummaries(ctx context.Context, opts SummaryListOpts) ([]memory.Summary, error) {
 	limit := opts.Limit
 	if limit <= 0 {
 		limit = 20
 	}
 
-	query := s.client.Experimental().Search().
+	query := ts.s.client.Experimental().Search().
 		WithCollection(memory.SummaryClassName).
 		WithProperties(summaryProps...).
 		WithMetadata(&graphql.Metadata{ID: true}).
 		WithSort(graphql.Sort{Path: []string{"updatedAt"}, Order: graphql.Desc}).
 		WithLimit(limit)
+	if ts.t != "" {
+		query = query.WithTenant(ts.t)
+	}
 
 	if where := buildWhere(opts.Namespace, "", nil, nil); where != nil {
 		query = query.WithWhere(where)
@@ -981,6 +1165,9 @@ func (s *Store) ListSummaries(ctx context.Context, opts SummaryListOpts) ([]memo
 
 	res, err := query.Do(ctx)
 	if err != nil {
+		if isTenantNotFound(err) {
+			return nil, nil
+		}
 		return nil, fmt.Errorf("list summaries query: %w", err)
 	}
 

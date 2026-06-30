@@ -26,7 +26,7 @@ type NamespaceStat struct {
 // per-namespace counts plus the most recent activity timestamp. There is no gRPC
 // Aggregate in the stable client, so it scans the (small) store in Go — the same
 // assumption Count and reindex already rely on.
-func (s *Store) ListNamespaces(ctx context.Context) ([]NamespaceStat, error) {
+func (ts *TenantStore) ListNamespaces(ctx context.Context) ([]NamespaceStat, error) {
 	stats := map[string]*NamespaceStat{}
 	get := func(name string) *NamespaceStat {
 		st := stats[name]
@@ -45,14 +45,20 @@ func (s *Store) ListNamespaces(ctx context.Context) ([]NamespaceStat, error) {
 		}
 	}
 
-	memRes, err := s.client.Experimental().Search().
+	memQ := ts.s.client.Experimental().Search().
 		WithCollection(memory.ClassName).
 		WithProperties("namespace", "createdAt").
 		WithMetadata(&graphql.Metadata{ID: true}).
-		WithLimit(allCount).
-		Do(ctx)
+		WithLimit(allCount)
+	if ts.t != "" {
+		memQ = memQ.WithTenant(ts.t)
+	}
+	memRes, err := memQ.Do(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("scan memories: %w", err)
+		if !isTenantNotFound(err) {
+			return nil, fmt.Errorf("scan memories: %w", err)
+		}
+		// tenant not found → empty; memRes stays nil, no entries added
 	}
 	for _, r := range memRes {
 		st := get(propString(r.Properties, "namespace"))
@@ -60,14 +66,20 @@ func (s *Store) ListNamespaces(ctx context.Context) ([]NamespaceStat, error) {
 		bump(st, propString(r.Properties, "createdAt"))
 	}
 
-	sumRes, err := s.client.Experimental().Search().
+	sumQ := ts.s.client.Experimental().Search().
 		WithCollection(memory.SummaryClassName).
 		WithProperties("namespace", "updatedAt").
 		WithMetadata(&graphql.Metadata{ID: true}).
-		WithLimit(allCount).
-		Do(ctx)
+		WithLimit(allCount)
+	if ts.t != "" {
+		sumQ = sumQ.WithTenant(ts.t)
+	}
+	sumRes, err := sumQ.Do(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("scan summaries: %w", err)
+		if !isTenantNotFound(err) {
+			return nil, fmt.Errorf("scan summaries: %w", err)
+		}
+		// tenant not found → empty; sumRes stays nil, no entries added
 	}
 	for _, r := range sumRes {
 		st := get(propString(r.Properties, "namespace"))
@@ -94,18 +106,18 @@ func (s *Store) ListNamespaces(ctx context.Context) ([]NamespaceStat, error) {
 // per-object merge (PATCH) that never re-embeds — the same reasoning as SetLinks.
 // Renaming into an existing namespace merges the two. Returns the number of
 // memories and summaries updated.
-func (s *Store) RenameNamespace(ctx context.Context, from, to string) (int, int, error) {
-	mem, err := s.renameInClass(ctx, memory.ClassName, from, to)
+func (ts *TenantStore) RenameNamespace(ctx context.Context, from, to string) (int, int, error) {
+	mem, err := ts.renameInClass(ctx, memory.ClassName, from, to)
 	if err != nil {
 		return mem, 0, err
 	}
 	// Chunks carry their parent's namespace so namespace filters push down to the
 	// chunk query; they must move too, or a chunk would keep the old namespace and
 	// be missed by a namespace-scoped search. Not reported in the user-facing count.
-	if _, err := s.renameInClass(ctx, memory.ChunkClassName, from, to); err != nil {
+	if _, err := ts.renameInClass(ctx, memory.ChunkClassName, from, to); err != nil {
 		return mem, 0, err
 	}
-	sum, err := s.renameInClass(ctx, memory.SummaryClassName, from, to)
+	sum, err := ts.renameInClass(ctx, memory.SummaryClassName, from, to)
 	if err != nil {
 		return mem, sum, err
 	}
@@ -114,19 +126,22 @@ func (s *Store) RenameNamespace(ctx context.Context, from, to string) (int, int,
 
 // renameInClass sets the namespace property of every object in className that
 // currently has namespace `from` to `to`, via a per-object merge.
-func (s *Store) renameInClass(ctx context.Context, className, from, to string) (int, error) {
-	ids, err := s.idsInNamespace(ctx, className, from)
+func (ts *TenantStore) renameInClass(ctx context.Context, className, from, to string) (int, error) {
+	ids, err := ts.idsInNamespace(ctx, className, from)
 	if err != nil {
 		return 0, err
 	}
 	updated := 0
 	for _, id := range ids {
-		if err := s.client.Data().Updater().
+		updater := ts.s.client.Data().Updater().
 			WithMerge().
 			WithClassName(className).
 			WithID(id).
-			WithProperties(map[string]interface{}{"namespace": to}).
-			Do(ctx); err != nil {
+			WithProperties(map[string]interface{}{"namespace": to})
+		if ts.t != "" {
+			updater = updater.WithTenant(ts.t)
+		}
+		if err := updater.Do(ctx); err != nil {
 			return updated, fmt.Errorf("rename %s/%s: %w", className, id, err)
 		}
 		updated++
@@ -136,17 +151,23 @@ func (s *Store) renameInClass(ctx context.Context, className, from, to string) (
 
 // idsInNamespace returns the ids of every object in className whose namespace is
 // exactly the given value.
-func (s *Store) idsInNamespace(ctx context.Context, className, namespace string) ([]string, error) {
-	res, err := s.client.Experimental().Search().
+func (ts *TenantStore) idsInNamespace(ctx context.Context, className, namespace string) ([]string, error) {
+	q := ts.s.client.Experimental().Search().
 		WithCollection(className).
 		WithMetadata(&graphql.Metadata{ID: true}).
 		WithLimit(allCount).
 		WithWhere(filters.Where().
 			WithPath([]string{"namespace"}).
 			WithOperator(filters.Equal).
-			WithValueText(namespace)).
-		Do(ctx)
+			WithValueText(namespace))
+	if ts.t != "" {
+		q = q.WithTenant(ts.t)
+	}
+	res, err := q.Do(ctx)
 	if err != nil {
+		if isTenantNotFound(err) {
+			return nil, nil
+		}
 		return nil, fmt.Errorf("scan %s namespace %q: %w", className, namespace, err)
 	}
 	ids := make([]string, 0, len(res))
@@ -159,17 +180,17 @@ func (s *Store) idsInNamespace(ctx context.Context, className, namespace string)
 // DeleteNamespace permanently deletes every memory AND conversation summary in a
 // namespace via Weaviate batch delete (by namespace filter). Returns the number
 // of memories and summaries deleted.
-func (s *Store) DeleteNamespace(ctx context.Context, namespace string) (int, int, error) {
-	mem, err := s.deleteInClass(ctx, memory.ClassName, namespace)
+func (ts *TenantStore) DeleteNamespace(ctx context.Context, namespace string) (int, int, error) {
+	mem, err := ts.deleteInClass(ctx, memory.ClassName, namespace)
 	if err != nil {
 		return mem, 0, err
 	}
 	// The namespace's chunks carry the same namespace; delete them too so no
 	// orphaned chunks survive a namespace wipe. Not reported in the user count.
-	if _, err := s.deleteInClass(ctx, memory.ChunkClassName, namespace); err != nil {
+	if _, err := ts.deleteInClass(ctx, memory.ChunkClassName, namespace); err != nil {
 		return mem, 0, err
 	}
-	sum, err := s.deleteInClass(ctx, memory.SummaryClassName, namespace)
+	sum, err := ts.deleteInClass(ctx, memory.SummaryClassName, namespace)
 	if err != nil {
 		return mem, sum, err
 	}
@@ -178,15 +199,21 @@ func (s *Store) DeleteNamespace(ctx context.Context, namespace string) (int, int
 
 // deleteInClass batch-deletes every object in className whose namespace is the
 // given value, returning the count actually deleted.
-func (s *Store) deleteInClass(ctx context.Context, className, namespace string) (int, error) {
-	res, err := s.client.Batch().ObjectsBatchDeleter().
+func (ts *TenantStore) deleteInClass(ctx context.Context, className, namespace string) (int, error) {
+	deleter := ts.s.client.Batch().ObjectsBatchDeleter().
 		WithClassName(className).
 		WithWhere(filters.Where().
 			WithPath([]string{"namespace"}).
 			WithOperator(filters.Equal).
-			WithValueText(namespace)).
-		Do(ctx)
+			WithValueText(namespace))
+	if ts.t != "" {
+		deleter = deleter.WithTenant(ts.t)
+	}
+	res, err := deleter.Do(ctx)
 	if err != nil {
+		if isTenantNotFound(err) {
+			return 0, nil
+		}
 		return 0, fmt.Errorf("batch delete %s namespace %q: %w", className, namespace, err)
 	}
 	if res != nil && res.Results != nil {
