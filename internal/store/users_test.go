@@ -24,6 +24,20 @@ func TestMintAPIKey(t *testing.T) {
 	assert.NotContains(t, hash1, raw1[apiKeyPrefixLen:], "the secret tail must not be recoverable from the hash")
 }
 
+// IsPasswordHash must recognise the same hash formats the login handler's
+// verifyPassword accepts (argon2id + bcrypt), and must treat a plaintext password
+// as NOT a hash — otherwise the bootstrap would store a plaintext verbatim and
+// login could never match it.
+func TestIsPasswordHash(t *testing.T) {
+	assert.True(t, IsPasswordHash("$argon2id$v=19$m=65536,t=1,p=10$abc$def"))
+	assert.True(t, IsPasswordHash("$2a$10$abcdefghijklmnopqrstuv"))
+	assert.True(t, IsPasswordHash("$2b$12$abc"))
+	assert.True(t, IsPasswordHash("$2y$10$abc"))
+	assert.False(t, IsPasswordHash("just-a-plaintext-password"))
+	assert.False(t, IsPasswordHash("admin123"))
+	assert.False(t, IsPasswordHash(""))
+}
+
 // HashAPIKey must be deterministic (same key → same hash, for O(1) lookup) and
 // collision-free across different keys.
 func TestHashAPIKeyDeterministic(t *testing.T) {

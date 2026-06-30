@@ -56,6 +56,18 @@ func TestUserAndApiKeyCRUD(t *testing.T) {
 		assert.ErrorIs(t, err, ErrUserExists, "a duplicate username must be rejected")
 	})
 
+	t.Run("CreateUserWithHash stores the hash verbatim (no double-hash)", func(t *testing.T) {
+		// A realistic argon2id PHC hash (as CORTEX_UI_PASSWORD would hold).
+		const phc = "$argon2id$v=19$m=65536,t=1,p=10$c29tZXNhbHQ$c29tZWhhc2hvdXRwdXR2YWx1ZQ"
+		u, err := st.CreateUserWithHash(ctx, "hashed-admin", phc, identity.RoleAdmin)
+		require.NoError(t, err)
+		got, ok, err := st.GetUserByID(ctx, u.ID)
+		require.NoError(t, err)
+		require.True(t, ok)
+		assert.Equal(t, phc, got.PasswordHash, "a pre-hashed password must be stored verbatim, never re-hashed")
+		require.NoError(t, st.DeleteUser(ctx, u.ID))
+	})
+
 	t.Run("update role + password", func(t *testing.T) {
 		u, _, err := st.GetUserByUsername(ctx, "alice")
 		require.NoError(t, err)

@@ -58,7 +58,7 @@ services:
   # Indexing worker: NATS -> Ollama embed -> Weaviate. The only writer.
   worker:
     container_name: cortex-worker
-    image: ghcr.io/thomas-maurice/cortex:latest
+    image: ghcr.io/thomas-maurice/cortex:latest # pin a version tag (e.g. :0.1.0) for prod
     user: '568:568'
     entrypoint: ['/usr/local/bin/cortex-worker']
     environment:
@@ -67,6 +67,8 @@ services:
       OLLAMA_MODEL: qwen3-embedding:0.6b
       WEAVIATE_HOST: weaviate:8080
       WEAVIATE_GRPC_HOST: weaviate:50051
+      # Multi-tenancy is ON BY DEFAULT; set CORTEX_MULTI_TENANT=false to disable it
+      # (must match the server).
     depends_on:
       - nats
       - weaviate
@@ -77,7 +79,7 @@ services:
   # since it is reachable off-host.
   server:
     container_name: cortex-server
-    image: ghcr.io/thomas-maurice/cortex:latest
+    image: ghcr.io/thomas-maurice/cortex:latest # pin a version tag (e.g. :0.1.0) for prod
     user: '568:568'
     entrypoint: ['/usr/local/bin/cortex-server']
     environment:
@@ -87,6 +89,20 @@ services:
       OLLAMA_MODEL: qwen3-embedding:0.6b
       WEAVIATE_HOST: weaviate:8080
       WEAVIATE_GRPC_HOST: weaviate:50051
+      # --- Multi-tenancy (per-user isolation) is ON BY DEFAULT ---
+      # Set CORTEX_MULTI_TENANT=false on BOTH server and worker for legacy
+      # single-user mode. The bootstrap ADMIN is created from CORTEX_UI_USER /
+      # CORTEX_UI_PASSWORD below — the password may be PLAINTEXT or an argon2id/
+      # bcrypt hash, both work. CORTEX_AUTH_TOKEN is auto-registered as the admin's
+      # API key and maps to the admin identity, so existing MCP/CLI keep working.
+      #
+      # >>> EXISTING (pre-MT) store — ONE-TIME MIGRATION <<<
+      # A populated single-user store cannot flip in place. After this stack is up
+      # on a multi-tenancy build, run once from a host with the cortex CLI:
+      #   cortex --server https://cortex.<domain> --token "<CORTEX_AUTH_TOKEN>" migrate-mt --yes
+      # It backs up, rebuilds the 3 classes as multi-tenant, and re-imports every
+      # memory into the admin's tenant (re-embeds + re-chunks). One-shot; refuses
+      # once already MT. Until you run it, search/save error (classes non-MT, MT on).
       # "Living memory": usage-aware re-ranking + hit reinforcement. RERANK_WEIGHT
       # is the usage share vs relevance — 0 disables the whole feature (no
       # re-ordering, no reinforcement writes); 0.3 makes it visible while relevance

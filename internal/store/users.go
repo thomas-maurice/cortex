@@ -104,16 +104,47 @@ func apiKeyProperties() []*models.Property {
 
 // ---- Users ----
 
-// CreateUser creates a user with an argon2id-hashed password. It rejects a
-// duplicate username (ErrUserExists) — the deterministic object id makes the
-// collision detectable. role defaults to "user" when empty.
+// IsPasswordHash reports whether s is ALREADY a password hash (argon2id PHC or
+// bcrypt), matching the detection in the login handler's verifyPassword. The
+// bootstrap uses it to decide whether to store a value directly or hash a
+// plaintext — so a pre-hashed CORTEX_UI_PASSWORD / CORTEX_BOOTSTRAP_PASSWORD is
+// stored as-is rather than hashed a second time (which would make login fail).
+func IsPasswordHash(s string) bool {
+	return strings.HasPrefix(s, "$argon2") ||
+		strings.HasPrefix(s, "$2a$") || strings.HasPrefix(s, "$2b$") || strings.HasPrefix(s, "$2y$")
+}
+
+// CreateUser creates a user with an argon2id-hashed password (the password is
+// PLAINTEXT and hashed here). It rejects a duplicate username (ErrUserExists) —
+// the deterministic object id makes the collision detectable. role defaults to
+// "user" when empty.
 func (s *Store) CreateUser(ctx context.Context, username, password, role string) (User, error) {
+	if password == "" {
+		return User{}, errors.New("password must not be empty")
+	}
+	hash, err := argon2id.CreateHash(password, argon2id.DefaultParams)
+	if err != nil {
+		return User{}, fmt.Errorf("hash password: %w", err)
+	}
+	return s.createUser(ctx, username, hash, role)
+}
+
+// CreateUserWithHash creates a user whose password is ALREADY hashed (a PHC
+// argon2id/bcrypt string). It stores the hash verbatim — used by the bootstrap so
+// a pre-hashed admin password works (login then verifies the original plaintext
+// against it). Use IsPasswordHash to choose between this and CreateUser.
+func (s *Store) CreateUserWithHash(ctx context.Context, username, passwordHash, role string) (User, error) {
+	if passwordHash == "" {
+		return User{}, errors.New("password hash must not be empty")
+	}
+	return s.createUser(ctx, username, passwordHash, role)
+}
+
+// createUser writes a user record with an already-prepared password hash.
+func (s *Store) createUser(ctx context.Context, username, passwordHash, role string) (User, error) {
 	username = strings.TrimSpace(username)
 	if username == "" {
 		return User{}, errors.New("username must not be empty")
-	}
-	if password == "" {
-		return User{}, errors.New("password must not be empty")
 	}
 	if role == "" {
 		role = identity.RoleUser
@@ -126,12 +157,8 @@ func (s *Store) CreateUser(ctx context.Context, username, password, role string)
 	if exists {
 		return User{}, ErrUserExists
 	}
-	hash, err := argon2id.CreateHash(password, argon2id.DefaultParams)
-	if err != nil {
-		return User{}, fmt.Errorf("hash password: %w", err)
-	}
 	now := time.Now().UTC()
-	u := User{ID: id, Username: username, PasswordHash: hash, Role: role, CreatedAt: now, UpdatedAt: now}
+	u := User{ID: id, Username: username, PasswordHash: passwordHash, Role: role, CreatedAt: now, UpdatedAt: now}
 	props := map[string]interface{}{
 		"username":     u.Username,
 		"passwordHash": u.PasswordHash,

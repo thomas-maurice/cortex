@@ -294,7 +294,15 @@ func bootstrapMultiTenant(ctx context.Context, log *slog.Logger, st *store.Store
 		return
 	}
 	if !found {
-		u, err = st.CreateUser(ctx, user, pass, identity.RoleAdmin)
+		// The bootstrap password may be PLAINTEXT or an already-hashed
+		// (argon2id/bcrypt) value — e.g. when it falls back to a hashed
+		// CORTEX_UI_PASSWORD. Store a hash verbatim; hash a plaintext once. Either
+		// way the admin logs in with their plaintext password.
+		if store.IsPasswordHash(pass) {
+			u, err = st.CreateUserWithHash(ctx, user, pass, identity.RoleAdmin)
+		} else {
+			u, err = st.CreateUser(ctx, user, pass, identity.RoleAdmin)
+		}
 		if err != nil {
 			log.Error("bootstrap: create admin failed", "err", err)
 			return
