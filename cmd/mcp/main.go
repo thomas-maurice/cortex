@@ -196,11 +196,18 @@ func main() {
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "cortex_memory_search",
-		Description: "Semantic search over the user's stored memories. Consult this PROACTIVELY at the " +
-			"start of a task or when the user refers to past work, preferences, or decisions, to recall " +
-			"context from previous sessions before answering. Returns the most relevant memories for a " +
-			"natural-language query, optionally filtered by namespace, required/excluded tags, and a " +
-			"relevance cutoff (maxDistance) that drops weak matches.",
+		Description: "Semantic search over the user's stored memories — their second brain of facts, " +
+			"preferences, decisions, conventions, and past work. SEARCH IT BEFORE YOU ANSWER OR ACT: it is " +
+			"the FIRST step of a task, not a fallback. Default to searching at the start of essentially every " +
+			"non-trivial task, and ALWAYS the moment the user references anything that could carry prior " +
+			"context — a system/service/host, a project or repo, a person, a tool or library choice, a past " +
+			"decision/convention/preference, an error or symptom, or phrasing like 'how did we', 'last time', " +
+			"'as usual', 'the normal way', 'remember', or a name/term you don't recognise. When unsure whether " +
+			"something is in memory, SEARCH ANYWAY — a cheap empty result beats answering without the user's own " +
+			"context or contradicting a stored decision/preference. Only skip it for a pure greeting or a fully " +
+			"self-contained mechanical step. Returns the most relevant memories for a natural-language query, " +
+			"optionally filtered by namespace, required/excluded tags, and a relevance cutoff (maxDistance) that " +
+			"drops weak matches.",
 	}, d.search)
 
 	mcp.AddTool(server, &mcp.Tool{
@@ -258,9 +265,12 @@ func main() {
 		Name: "cortex_recall_session",
 		Description: "Recall a PAST conversation by describing it in natural language (e.g. \"when we debugged " +
 			"the WireGuard MTU on my router\"). Returns the best-matching conversation summary AND the " +
-			"individual facts/memories saved during that session. Use this when the user refers to a previous " +
-			"session or asks \"remember when we…\" — it reconstructs the context of that whole conversation, " +
-			"not just isolated facts.",
+			"individual facts/memories saved during that session — it reconstructs a whole prior effort, not " +
+			"isolated facts. Use it PROACTIVELY whenever the user resumes or references earlier work: " +
+			"\"remember when\", \"last time\", \"we were working on\", \"continue\", \"pick up where we left " +
+			"off\", \"the X we set up\", or any time you are resuming a project and broader prior context would " +
+			"help. Prefer it over cortex_memory_search when the user points at a whole conversation rather than " +
+			"a single fact. When unsure whether a past session is relevant, recall it.",
 	}, d.recall)
 
 	mcp.AddTool(server, &mcp.Tool{

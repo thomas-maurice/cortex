@@ -255,13 +255,19 @@ every project) so Claude treats the second brain as a reflex, not an afterthough
 
 You have a persistent memory via the `cortex` MCP server. Use it actively:
 
-- **Recall first.** At the start of a task, or whenever I reference past work,
-  preferences, or decisions, call `cortex_memory_search` before answering. This
-  applies even when the task looks like writing a doc, summary, or notes: a
-  request to "summarise", "write up", "remember", or "explain what you learned"
-  about a repo/system/decision IS a memory write — route it to cortex, and only
-  create a repo file (`SUMMARY.md`, `docs/`) when explicitly asked for a tracked
-  file. When both apply, cortex is the source of truth and the file is a copy.
+- **Recall first — search before you answer or act.** `cortex_memory_search` is the
+  FIRST step of a task, not a fallback. Search at the start of essentially every
+  non-trivial task, and the moment I reference anything that might carry prior
+  context — a system, project, person, tool choice, past decision, convention,
+  preference, error, or phrasing like "how did we", "last time", "as usual",
+  "remember", or a term you don't recognise. When unsure whether it's in memory,
+  search anyway — a cheap miss beats contradicting a stored decision. Only skip it
+  for a pure greeting or a fully self-contained mechanical step. This applies even
+  when the task looks like writing a doc, summary, or notes: a request to
+  "summarise", "write up", "remember", or "explain what you learned" about a
+  repo/system/decision IS a memory write — route it to cortex, and only create a
+  repo file (`SUMMARY.md`, `docs/`) when explicitly asked for a tracked file. When
+  both apply, cortex is the source of truth and the file is a copy.
 - **Transient failures get one retry, not a silent skip.** If a cortex call
   fails on network/DNS (e.g. the VPN is down), retry once before continuing. If
   it still fails, say so explicitly and note the memory was not saved — never let
