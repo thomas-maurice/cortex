@@ -79,6 +79,12 @@ const router = createRouter({
       component: () => import('@/views/ApiKeysView.vue'),
       meta: { requiresAuth: true },
     },
+    {
+      path: '/documentation',
+      name: 'documentation',
+      component: () => import('@/views/DocumentationView.vue'),
+      meta: { requiresAuth: true },
+    },
   ],
 })
 

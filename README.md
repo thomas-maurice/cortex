@@ -188,6 +188,9 @@ port as the Connect API; open the server's address in a browser. Views:
   dead-lettered) and the failed-memory list, with requeue/purge. Auto-refreshes
   while open, so a burst of ingestion is actually visible as it drains.
 - **Status** — backing-service health and memory count.
+- **Docs** — in-app setup guide: install the `cortex-mcp` binary and wire it into
+  Claude Code and Claude Desktop, with copy-paste config snippets pre-filled with
+  this server's address.
 
 Sign in with `CORTEX_UI_USER` / `CORTEX_UI_PASSWORD`. Login mints a short-lived
 JWT; the API then accepts **either** that JWT (browser) **or** the static

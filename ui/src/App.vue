@@ -36,6 +36,9 @@
         <li class="nav-item">
           <router-link class="nav-link" :to="{ name: 'status' }">Status</router-link>
         </li>
+        <li class="nav-item">
+          <router-link class="nav-link" :to="{ name: 'documentation' }">Docs</router-link>
+        </li>
         <!-- P6: API keys — shown only when multi-tenancy is enabled (single-user
              mode uses CORTEX_AUTH_TOKEN, not per-user keys). -->
         <li v-if="auth.multiTenant" class="nav-item">
