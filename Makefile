@@ -34,6 +34,10 @@ build: ui ## Build the server (with embedded UI), mcp, worker, and cli into ./bi
 	go build -o $(BIN)/cortex-mcp ./cmd/mcp
 	go build -o $(BIN)/cortex-worker ./cmd/worker
 	go build -o $(BIN)/cortex ./cmd/cli
+	@if [ "$$(uname -s)" = "Darwin" ]; then \
+		echo "re-signing binaries ad-hoc (macOS AMFI SIGKILLs Go linker-signed binaries)"; \
+		codesign --force --sign - $(BIN)/cortex-server $(BIN)/cortex-mcp $(BIN)/cortex-worker $(BIN)/cortex; \
+	fi
 	@echo "built $(BIN)/cortex-server, $(BIN)/cortex-mcp, $(BIN)/cortex-worker and $(BIN)/cortex"
 
 .PHONY: image
