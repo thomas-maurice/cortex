@@ -462,6 +462,78 @@ func (h *adminHandlers) deleteApiKey(ctx context.Context, keyID string) (*cortex
 	return &cortexv1.DeleteApiKeyResponse{Status: "deleted"}, nil
 }
 
+// P5b handler mirrors (admin key management for other users)
+
+func (h *adminHandlers) resolveTargetUser(ctx context.Context, username string) (store.User, error) {
+	if err := h.svc.requireMT(); err != nil {
+		return store.User{}, err
+	}
+	if err := requireAdmin(ctx); err != nil {
+		return store.User{}, err
+	}
+	target, found, err := h.f.GetUserByUsername(ctx, username)
+	if err != nil {
+		return store.User{}, err
+	}
+	if !found {
+		return store.User{}, connect.NewError(connect.CodeNotFound, fmt.Errorf("user %q not found", username))
+	}
+	return target, nil
+}
+
+func (h *adminHandlers) adminCreateApiKey(ctx context.Context, username, label string) (*cortexv1.AdminCreateApiKeyResponse, error) {
+	target, err := h.resolveTargetUser(ctx, username)
+	if err != nil {
+		return nil, err
+	}
+	raw, k, err := h.f.CreateApiKey(ctx, target.ID, label)
+	if err != nil {
+		return nil, err
+	}
+	return &cortexv1.AdminCreateApiKeyResponse{RawKey: raw, Key: apiKeyToProto(k)}, nil
+}
+
+func (h *adminHandlers) adminListApiKeys(ctx context.Context, username string) (*cortexv1.AdminListApiKeysResponse, error) {
+	target, err := h.resolveTargetUser(ctx, username)
+	if err != nil {
+		return nil, err
+	}
+	keys, err := h.f.ListApiKeysForUser(ctx, target.ID)
+	if err != nil {
+		return nil, err
+	}
+	out := &cortexv1.AdminListApiKeysResponse{Keys: make([]*cortexv1.ApiKeyInfo, 0, len(keys))}
+	for _, k := range keys {
+		out.Keys = append(out.Keys, apiKeyToProto(k))
+	}
+	return out, nil
+}
+
+func (h *adminHandlers) adminDeleteApiKey(ctx context.Context, username, keyID string) (*cortexv1.AdminDeleteApiKeyResponse, error) {
+	target, err := h.resolveTargetUser(ctx, username)
+	if err != nil {
+		return nil, err
+	}
+	keys, err := h.f.ListApiKeysForUser(ctx, target.ID)
+	if err != nil {
+		return nil, err
+	}
+	var found bool
+	for _, k := range keys {
+		if k.ID == keyID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("api key %q not found for user %q", keyID, target.Username))
+	}
+	if err := h.f.DeleteApiKey(ctx, keyID); err != nil {
+		return nil, err
+	}
+	return &cortexv1.AdminDeleteApiKeyResponse{Status: "deleted"}, nil
+}
+
 func newAdminHandlers(mt bool) *adminHandlers {
 	return &adminHandlers{
 		svc: &Service{cfg: Config{MultiTenant: mt}},
@@ -730,4 +802,111 @@ func TestDeleteApiKeyFlagOff(t *testing.T) {
 	var ce *connect.Error
 	require.True(t, errors.As(err, &ce))
 	assert.Equal(t, connect.CodeFailedPrecondition, ce.Code())
+}
+
+// ---- P5b: Admin API key management tests ----
+
+// TestAdminCreateApiKeyRejectsNonAdmin is the load-bearing gate: the whole point
+// of these RPCs is minting a key for ANOTHER user, so a non-admin reaching them
+// would let any user forge credentials for anyone. Must be PermissionDenied.
+func TestAdminCreateApiKeyRejectsNonAdmin(t *testing.T) {
+	h := newAdminHandlers(true)
+	h.f.addUser(store.User{ID: "uid-bob", Username: "bob", Role: identity.RoleUser})
+	_, err := h.adminCreateApiKey(userCtx("uid-bob", "bob"), "bob", "laptop")
+	require.Error(t, err)
+	var ce *connect.Error
+	require.True(t, errors.As(err, &ce))
+	assert.Equal(t, connect.CodePermissionDenied, ce.Code())
+}
+
+func TestAdminCreateApiKeyFlagOff(t *testing.T) {
+	h := newAdminHandlers(false)
+	_, err := h.adminCreateApiKey(adminCtx(), "bob", "laptop")
+	require.Error(t, err)
+	var ce *connect.Error
+	require.True(t, errors.As(err, &ce))
+	assert.Equal(t, connect.CodeFailedPrecondition, ce.Code())
+}
+
+func TestAdminCreateApiKeyUnknownUser(t *testing.T) {
+	h := newAdminHandlers(true)
+	_, err := h.adminCreateApiKey(adminCtx(), "ghost", "laptop")
+	require.Error(t, err)
+	var ce *connect.Error
+	require.True(t, errors.As(err, &ce))
+	assert.Equal(t, connect.CodeNotFound, ce.Code())
+}
+
+// TestAdminCreateApiKeyMintsForTarget verifies the key is created for the NAMED
+// user, not for the admin caller — the reason this RPC exists. If it minted for
+// the caller it would silently be an admin self-service RPC.
+func TestAdminCreateApiKeyMintsForTarget(t *testing.T) {
+	h := newAdminHandlers(true)
+	h.f.addUser(store.User{ID: "uid-bob", Username: "bob", Role: identity.RoleUser})
+
+	resp, err := h.adminCreateApiKey(adminCtx(), "bob", "ci")
+	require.NoError(t, err)
+	assert.NotEmpty(t, resp.RawKey, "raw key must be returned exactly once on create")
+
+	// The minted key must be owned by bob, not by the admin caller.
+	bobKeys, _ := h.f.ListApiKeysForUser(context.Background(), "uid-bob")
+	require.Len(t, bobKeys, 1, "key must be stored under the target user")
+	assert.Equal(t, resp.Key.Id, bobKeys[0].ID)
+	adminKeys, _ := h.f.ListApiKeysForUser(context.Background(), "uid-admin")
+	assert.Empty(t, adminKeys, "key must NOT be minted for the admin caller")
+}
+
+func TestAdminListApiKeysReturnsTargetKeys(t *testing.T) {
+	h := newAdminHandlers(true)
+	h.f.addUser(store.User{ID: "uid-bob", Username: "bob", Role: identity.RoleUser})
+	h.f.addKey(store.ApiKey{ID: "key-bob", UserID: "uid-bob", KeyHash: "hb", Prefix: "ctx_bob"})
+	h.f.addKey(store.ApiKey{ID: "key-alice", UserID: "uid-alice", KeyHash: "ha", Prefix: "ctx_alice"})
+
+	resp, err := h.adminListApiKeys(adminCtx(), "bob")
+	require.NoError(t, err)
+	require.Len(t, resp.Keys, 1, "admin list must return only the named user's keys")
+	assert.Equal(t, "key-bob", resp.Keys[0].Id)
+}
+
+// TestAdminDeleteApiKeyCrossUserNotFound guards against an admin deleting user
+// A's key by naming user B: ownership is checked against the named user, so a
+// mismatch is NotFound rather than a silent wrong-key deletion.
+func TestAdminDeleteApiKeyCrossUserNotFound(t *testing.T) {
+	h := newAdminHandlers(true)
+	h.f.addUser(store.User{ID: "uid-bob", Username: "bob", Role: identity.RoleUser})
+	h.f.addKey(store.ApiKey{ID: "key-alice", UserID: "uid-alice", KeyHash: "ha", Prefix: "ctx_alice"})
+
+	// Admin names bob but passes alice's key id.
+	_, err := h.adminDeleteApiKey(adminCtx(), "bob", "key-alice")
+	require.Error(t, err)
+	var ce *connect.Error
+	require.True(t, errors.As(err, &ce))
+	assert.Equal(t, connect.CodeNotFound, ce.Code())
+
+	// Alice's key must still exist.
+	aliceKeys, _ := h.f.ListApiKeysForUser(context.Background(), "uid-alice")
+	assert.Len(t, aliceKeys, 1, "mismatched delete must not remove the key")
+}
+
+func TestAdminDeleteApiKeySucceeds(t *testing.T) {
+	h := newAdminHandlers(true)
+	h.f.addUser(store.User{ID: "uid-bob", Username: "bob", Role: identity.RoleUser})
+	h.f.addKey(store.ApiKey{ID: "key-bob", UserID: "uid-bob", KeyHash: "hb", Prefix: "ctx_bob"})
+
+	resp, err := h.adminDeleteApiKey(adminCtx(), "bob", "key-bob")
+	require.NoError(t, err)
+	assert.Equal(t, "deleted", resp.Status)
+
+	remaining, _ := h.f.ListApiKeysForUser(context.Background(), "uid-bob")
+	assert.Empty(t, remaining)
+}
+
+func TestAdminDeleteApiKeyRejectsNonAdmin(t *testing.T) {
+	h := newAdminHandlers(true)
+	h.f.addUser(store.User{ID: "uid-bob", Username: "bob", Role: identity.RoleUser})
+	_, err := h.adminDeleteApiKey(userCtx("uid-bob", "bob"), "bob", "key-bob")
+	require.Error(t, err)
+	var ce *connect.Error
+	require.True(t, errors.As(err, &ce))
+	assert.Equal(t, connect.CodePermissionDenied, ce.Code())
 }

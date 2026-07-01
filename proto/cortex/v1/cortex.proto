@@ -120,6 +120,19 @@ service MemoryService {
   // DeleteApiKey removes one of the caller's API keys. Returns NotFound for
   // keys that do not exist or belong to another user (existence not revealed).
   rpc DeleteApiKey(DeleteApiKeyRequest) returns (DeleteApiKeyResponse) {}
+
+  // ---- Admin: API key management for other users (P5b) ----
+  // These mirror the P6 self-service RPCs but target an arbitrary user by
+  // username, letting an admin provision keys for headless/service accounts
+  // without the web UI. Admin-only; FailedPrecondition when MT is disabled.
+  // AdminCreateApiKey mints a new key for the named user. Returns the raw key
+  // exactly once.
+  rpc AdminCreateApiKey(AdminCreateApiKeyRequest) returns (AdminCreateApiKeyResponse) {}
+  // AdminListApiKeys returns the named user's API keys (never the secret).
+  rpc AdminListApiKeys(AdminListApiKeysRequest) returns (AdminListApiKeysResponse) {}
+  // AdminDeleteApiKey removes one of the named user's API keys. Returns NotFound
+  // when the key does not exist or belongs to a different user.
+  rpc AdminDeleteApiKey(AdminDeleteApiKeyRequest) returns (AdminDeleteApiKeyResponse) {}
 }
 
 // Memory is one stored memory. Only `text` is ever embedded; every other field
@@ -606,5 +619,36 @@ message DeleteApiKeyRequest {
 }
 
 message DeleteApiKeyResponse {
+  string status = 1; // "deleted"
+}
+
+// ---- P5b: Admin API key management messages ----
+
+message AdminCreateApiKeyRequest {
+  string username = 1; // the target user the key is minted for
+  string label = 2;    // human label ("laptop", "ci"); optional
+}
+
+message AdminCreateApiKeyResponse {
+  // raw_key is the full API key, returned EXACTLY ONCE. Hand it to the user now;
+  // it cannot be retrieved again.
+  string raw_key = 1;
+  ApiKeyInfo key = 2;
+}
+
+message AdminListApiKeysRequest {
+  string username = 1; // the target user whose keys to list
+}
+
+message AdminListApiKeysResponse {
+  repeated ApiKeyInfo keys = 1;
+}
+
+message AdminDeleteApiKeyRequest {
+  string username = 1; // the target user who owns the key
+  string id = 2;       // the API key object id to delete
+}
+
+message AdminDeleteApiKeyResponse {
   string status = 1; // "deleted"
 }

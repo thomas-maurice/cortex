@@ -119,6 +119,15 @@ const (
 	// MemoryServiceDeleteApiKeyProcedure is the fully-qualified name of the MemoryService's
 	// DeleteApiKey RPC.
 	MemoryServiceDeleteApiKeyProcedure = "/cortex.v1.MemoryService/DeleteApiKey"
+	// MemoryServiceAdminCreateApiKeyProcedure is the fully-qualified name of the MemoryService's
+	// AdminCreateApiKey RPC.
+	MemoryServiceAdminCreateApiKeyProcedure = "/cortex.v1.MemoryService/AdminCreateApiKey"
+	// MemoryServiceAdminListApiKeysProcedure is the fully-qualified name of the MemoryService's
+	// AdminListApiKeys RPC.
+	MemoryServiceAdminListApiKeysProcedure = "/cortex.v1.MemoryService/AdminListApiKeys"
+	// MemoryServiceAdminDeleteApiKeyProcedure is the fully-qualified name of the MemoryService's
+	// AdminDeleteApiKey RPC.
+	MemoryServiceAdminDeleteApiKeyProcedure = "/cortex.v1.MemoryService/AdminDeleteApiKey"
 )
 
 // MemoryServiceClient is a client for the cortex.v1.MemoryService service.
@@ -230,6 +239,18 @@ type MemoryServiceClient interface {
 	// DeleteApiKey removes one of the caller's API keys. Returns NotFound for
 	// keys that do not exist or belong to another user (existence not revealed).
 	DeleteApiKey(context.Context, *connect.Request[v1.DeleteApiKeyRequest]) (*connect.Response[v1.DeleteApiKeyResponse], error)
+	// ---- Admin: API key management for other users (P5b) ----
+	// These mirror the P6 self-service RPCs but target an arbitrary user by
+	// username, letting an admin provision keys for headless/service accounts
+	// without the web UI. Admin-only; FailedPrecondition when MT is disabled.
+	// AdminCreateApiKey mints a new key for the named user. Returns the raw key
+	// exactly once.
+	AdminCreateApiKey(context.Context, *connect.Request[v1.AdminCreateApiKeyRequest]) (*connect.Response[v1.AdminCreateApiKeyResponse], error)
+	// AdminListApiKeys returns the named user's API keys (never the secret).
+	AdminListApiKeys(context.Context, *connect.Request[v1.AdminListApiKeysRequest]) (*connect.Response[v1.AdminListApiKeysResponse], error)
+	// AdminDeleteApiKey removes one of the named user's API keys. Returns NotFound
+	// when the key does not exist or belongs to a different user.
+	AdminDeleteApiKey(context.Context, *connect.Request[v1.AdminDeleteApiKeyRequest]) (*connect.Response[v1.AdminDeleteApiKeyResponse], error)
 }
 
 // NewMemoryServiceClient constructs a client for the cortex.v1.MemoryService service. By default,
@@ -441,6 +462,24 @@ func NewMemoryServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(memoryServiceMethods.ByName("DeleteApiKey")),
 			connect.WithClientOptions(opts...),
 		),
+		adminCreateApiKey: connect.NewClient[v1.AdminCreateApiKeyRequest, v1.AdminCreateApiKeyResponse](
+			httpClient,
+			baseURL+MemoryServiceAdminCreateApiKeyProcedure,
+			connect.WithSchema(memoryServiceMethods.ByName("AdminCreateApiKey")),
+			connect.WithClientOptions(opts...),
+		),
+		adminListApiKeys: connect.NewClient[v1.AdminListApiKeysRequest, v1.AdminListApiKeysResponse](
+			httpClient,
+			baseURL+MemoryServiceAdminListApiKeysProcedure,
+			connect.WithSchema(memoryServiceMethods.ByName("AdminListApiKeys")),
+			connect.WithClientOptions(opts...),
+		),
+		adminDeleteApiKey: connect.NewClient[v1.AdminDeleteApiKeyRequest, v1.AdminDeleteApiKeyResponse](
+			httpClient,
+			baseURL+MemoryServiceAdminDeleteApiKeyProcedure,
+			connect.WithSchema(memoryServiceMethods.ByName("AdminDeleteApiKey")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -479,6 +518,9 @@ type memoryServiceClient struct {
 	createApiKey            *connect.Client[v1.CreateApiKeyRequest, v1.CreateApiKeyResponse]
 	listApiKeys             *connect.Client[v1.ListApiKeysRequest, v1.ListApiKeysResponse]
 	deleteApiKey            *connect.Client[v1.DeleteApiKeyRequest, v1.DeleteApiKeyResponse]
+	adminCreateApiKey       *connect.Client[v1.AdminCreateApiKeyRequest, v1.AdminCreateApiKeyResponse]
+	adminListApiKeys        *connect.Client[v1.AdminListApiKeysRequest, v1.AdminListApiKeysResponse]
+	adminDeleteApiKey       *connect.Client[v1.AdminDeleteApiKeyRequest, v1.AdminDeleteApiKeyResponse]
 }
 
 // Save calls cortex.v1.MemoryService.Save.
@@ -646,6 +688,21 @@ func (c *memoryServiceClient) DeleteApiKey(ctx context.Context, req *connect.Req
 	return c.deleteApiKey.CallUnary(ctx, req)
 }
 
+// AdminCreateApiKey calls cortex.v1.MemoryService.AdminCreateApiKey.
+func (c *memoryServiceClient) AdminCreateApiKey(ctx context.Context, req *connect.Request[v1.AdminCreateApiKeyRequest]) (*connect.Response[v1.AdminCreateApiKeyResponse], error) {
+	return c.adminCreateApiKey.CallUnary(ctx, req)
+}
+
+// AdminListApiKeys calls cortex.v1.MemoryService.AdminListApiKeys.
+func (c *memoryServiceClient) AdminListApiKeys(ctx context.Context, req *connect.Request[v1.AdminListApiKeysRequest]) (*connect.Response[v1.AdminListApiKeysResponse], error) {
+	return c.adminListApiKeys.CallUnary(ctx, req)
+}
+
+// AdminDeleteApiKey calls cortex.v1.MemoryService.AdminDeleteApiKey.
+func (c *memoryServiceClient) AdminDeleteApiKey(ctx context.Context, req *connect.Request[v1.AdminDeleteApiKeyRequest]) (*connect.Response[v1.AdminDeleteApiKeyResponse], error) {
+	return c.adminDeleteApiKey.CallUnary(ctx, req)
+}
+
 // MemoryServiceHandler is an implementation of the cortex.v1.MemoryService service.
 type MemoryServiceHandler interface {
 	// Save queues a memory for asynchronous, durable indexing (NATS JetStream).
@@ -755,6 +812,18 @@ type MemoryServiceHandler interface {
 	// DeleteApiKey removes one of the caller's API keys. Returns NotFound for
 	// keys that do not exist or belong to another user (existence not revealed).
 	DeleteApiKey(context.Context, *connect.Request[v1.DeleteApiKeyRequest]) (*connect.Response[v1.DeleteApiKeyResponse], error)
+	// ---- Admin: API key management for other users (P5b) ----
+	// These mirror the P6 self-service RPCs but target an arbitrary user by
+	// username, letting an admin provision keys for headless/service accounts
+	// without the web UI. Admin-only; FailedPrecondition when MT is disabled.
+	// AdminCreateApiKey mints a new key for the named user. Returns the raw key
+	// exactly once.
+	AdminCreateApiKey(context.Context, *connect.Request[v1.AdminCreateApiKeyRequest]) (*connect.Response[v1.AdminCreateApiKeyResponse], error)
+	// AdminListApiKeys returns the named user's API keys (never the secret).
+	AdminListApiKeys(context.Context, *connect.Request[v1.AdminListApiKeysRequest]) (*connect.Response[v1.AdminListApiKeysResponse], error)
+	// AdminDeleteApiKey removes one of the named user's API keys. Returns NotFound
+	// when the key does not exist or belongs to a different user.
+	AdminDeleteApiKey(context.Context, *connect.Request[v1.AdminDeleteApiKeyRequest]) (*connect.Response[v1.AdminDeleteApiKeyResponse], error)
 }
 
 // NewMemoryServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -962,6 +1031,24 @@ func NewMemoryServiceHandler(svc MemoryServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(memoryServiceMethods.ByName("DeleteApiKey")),
 		connect.WithHandlerOptions(opts...),
 	)
+	memoryServiceAdminCreateApiKeyHandler := connect.NewUnaryHandler(
+		MemoryServiceAdminCreateApiKeyProcedure,
+		svc.AdminCreateApiKey,
+		connect.WithSchema(memoryServiceMethods.ByName("AdminCreateApiKey")),
+		connect.WithHandlerOptions(opts...),
+	)
+	memoryServiceAdminListApiKeysHandler := connect.NewUnaryHandler(
+		MemoryServiceAdminListApiKeysProcedure,
+		svc.AdminListApiKeys,
+		connect.WithSchema(memoryServiceMethods.ByName("AdminListApiKeys")),
+		connect.WithHandlerOptions(opts...),
+	)
+	memoryServiceAdminDeleteApiKeyHandler := connect.NewUnaryHandler(
+		MemoryServiceAdminDeleteApiKeyProcedure,
+		svc.AdminDeleteApiKey,
+		connect.WithSchema(memoryServiceMethods.ByName("AdminDeleteApiKey")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/cortex.v1.MemoryService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case MemoryServiceSaveProcedure:
@@ -1030,6 +1117,12 @@ func NewMemoryServiceHandler(svc MemoryServiceHandler, opts ...connect.HandlerOp
 			memoryServiceListApiKeysHandler.ServeHTTP(w, r)
 		case MemoryServiceDeleteApiKeyProcedure:
 			memoryServiceDeleteApiKeyHandler.ServeHTTP(w, r)
+		case MemoryServiceAdminCreateApiKeyProcedure:
+			memoryServiceAdminCreateApiKeyHandler.ServeHTTP(w, r)
+		case MemoryServiceAdminListApiKeysProcedure:
+			memoryServiceAdminListApiKeysHandler.ServeHTTP(w, r)
+		case MemoryServiceAdminDeleteApiKeyProcedure:
+			memoryServiceAdminDeleteApiKeyHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -1169,4 +1262,16 @@ func (UnimplementedMemoryServiceHandler) ListApiKeys(context.Context, *connect.R
 
 func (UnimplementedMemoryServiceHandler) DeleteApiKey(context.Context, *connect.Request[v1.DeleteApiKeyRequest]) (*connect.Response[v1.DeleteApiKeyResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cortex.v1.MemoryService.DeleteApiKey is not implemented"))
+}
+
+func (UnimplementedMemoryServiceHandler) AdminCreateApiKey(context.Context, *connect.Request[v1.AdminCreateApiKeyRequest]) (*connect.Response[v1.AdminCreateApiKeyResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cortex.v1.MemoryService.AdminCreateApiKey is not implemented"))
+}
+
+func (UnimplementedMemoryServiceHandler) AdminListApiKeys(context.Context, *connect.Request[v1.AdminListApiKeysRequest]) (*connect.Response[v1.AdminListApiKeysResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cortex.v1.MemoryService.AdminListApiKeys is not implemented"))
+}
+
+func (UnimplementedMemoryServiceHandler) AdminDeleteApiKey(context.Context, *connect.Request[v1.AdminDeleteApiKeyRequest]) (*connect.Response[v1.AdminDeleteApiKeyResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cortex.v1.MemoryService.AdminDeleteApiKey is not implemented"))
 }

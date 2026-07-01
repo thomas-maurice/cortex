@@ -223,6 +223,7 @@ and scripting without going through Claude. Global flags: `--server`
 | `reindex [-n '*'] [--yes]` | Server snapshots then republishes all memories for re-embed. `--yes` allows a destructive class rebuild on an embedding-dimension change. |
 | `migrate-mt [--yes]` | One-shot migration: snapshot + drop non-MT classes + recreate as MT + re-import to the calling admin's tenant. Admin-only; requires `CORTEX_MULTI_TENANT=true`. |
 | `users list\|get\|add\|delete\|set-role\|reset-password` | Manage users from the CLI (MT mode; needs an admin `--token`). Break-glass for fixing accounts without the UI. |
+| `users apikey create\|list\|delete <username>` | Admin-provision API keys for another user (MT mode; admin `--token`). `create` prints the raw secret once — use to bootstrap headless/service accounts that can't reach the web UI to self-mint. |
 | `dead [--requeue \| --purge]` | List dead-lettered (failed-to-index) memories; requeue or purge them. |
 | `status` | Server health + store size (nats/weaviate/ollama/model/count). |
 | `doctor` | Per-check diagnostics. |
@@ -232,6 +233,7 @@ and scripting without going through Claude. Global flags: `--server`
 | `candidates [-n '*'] [-l N]` | List memories flagged as likely duplicates. `candidates dismiss <id> <target-id>` marks a pair NOT duplicates. |
 | `consolidate "<topic>" [-n '*'] [-l N] [-d D] [-t/-T/-x tag]` | Print the cluster of memories about a topic + manifest (read-only gather; the LLM merges). No tag flag = whole cluster, not "untagged only". |
 | `config init [--force]` / `config show` | Scaffold / print the effective `cortex.yaml`. |
+| `onboard [--force]` | Interactive first-run: prompts for server URL + API token (the only non-default values), writes `cortex.yaml` with defaults for everything else. Shares the config template with `config init`; token read no-echo. |
 | `hash-password` | Print an argon2id hash for `CORTEX_UI_PASSWORD`. |
 
 There is **no** namespace-management CLI command — rename/delete a namespace is a

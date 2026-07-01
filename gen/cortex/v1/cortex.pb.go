@@ -4330,6 +4330,296 @@ func (x *DeleteApiKeyResponse) GetStatus() string {
 	return ""
 }
 
+type AdminCreateApiKeyRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Username      string                 `protobuf:"bytes,1,opt,name=username,proto3" json:"username,omitempty"` // the target user the key is minted for
+	Label         string                 `protobuf:"bytes,2,opt,name=label,proto3" json:"label,omitempty"`       // human label ("laptop", "ci"); optional
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AdminCreateApiKeyRequest) Reset() {
+	*x = AdminCreateApiKeyRequest{}
+	mi := &file_cortex_v1_cortex_proto_msgTypes[74]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AdminCreateApiKeyRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AdminCreateApiKeyRequest) ProtoMessage() {}
+
+func (x *AdminCreateApiKeyRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_cortex_v1_cortex_proto_msgTypes[74]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AdminCreateApiKeyRequest.ProtoReflect.Descriptor instead.
+func (*AdminCreateApiKeyRequest) Descriptor() ([]byte, []int) {
+	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{74}
+}
+
+func (x *AdminCreateApiKeyRequest) GetUsername() string {
+	if x != nil {
+		return x.Username
+	}
+	return ""
+}
+
+func (x *AdminCreateApiKeyRequest) GetLabel() string {
+	if x != nil {
+		return x.Label
+	}
+	return ""
+}
+
+type AdminCreateApiKeyResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// raw_key is the full API key, returned EXACTLY ONCE. Hand it to the user now;
+	// it cannot be retrieved again.
+	RawKey        string      `protobuf:"bytes,1,opt,name=raw_key,json=rawKey,proto3" json:"raw_key,omitempty"`
+	Key           *ApiKeyInfo `protobuf:"bytes,2,opt,name=key,proto3" json:"key,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AdminCreateApiKeyResponse) Reset() {
+	*x = AdminCreateApiKeyResponse{}
+	mi := &file_cortex_v1_cortex_proto_msgTypes[75]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AdminCreateApiKeyResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AdminCreateApiKeyResponse) ProtoMessage() {}
+
+func (x *AdminCreateApiKeyResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_cortex_v1_cortex_proto_msgTypes[75]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AdminCreateApiKeyResponse.ProtoReflect.Descriptor instead.
+func (*AdminCreateApiKeyResponse) Descriptor() ([]byte, []int) {
+	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{75}
+}
+
+func (x *AdminCreateApiKeyResponse) GetRawKey() string {
+	if x != nil {
+		return x.RawKey
+	}
+	return ""
+}
+
+func (x *AdminCreateApiKeyResponse) GetKey() *ApiKeyInfo {
+	if x != nil {
+		return x.Key
+	}
+	return nil
+}
+
+type AdminListApiKeysRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Username      string                 `protobuf:"bytes,1,opt,name=username,proto3" json:"username,omitempty"` // the target user whose keys to list
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AdminListApiKeysRequest) Reset() {
+	*x = AdminListApiKeysRequest{}
+	mi := &file_cortex_v1_cortex_proto_msgTypes[76]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AdminListApiKeysRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AdminListApiKeysRequest) ProtoMessage() {}
+
+func (x *AdminListApiKeysRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_cortex_v1_cortex_proto_msgTypes[76]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AdminListApiKeysRequest.ProtoReflect.Descriptor instead.
+func (*AdminListApiKeysRequest) Descriptor() ([]byte, []int) {
+	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{76}
+}
+
+func (x *AdminListApiKeysRequest) GetUsername() string {
+	if x != nil {
+		return x.Username
+	}
+	return ""
+}
+
+type AdminListApiKeysResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Keys          []*ApiKeyInfo          `protobuf:"bytes,1,rep,name=keys,proto3" json:"keys,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AdminListApiKeysResponse) Reset() {
+	*x = AdminListApiKeysResponse{}
+	mi := &file_cortex_v1_cortex_proto_msgTypes[77]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AdminListApiKeysResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AdminListApiKeysResponse) ProtoMessage() {}
+
+func (x *AdminListApiKeysResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_cortex_v1_cortex_proto_msgTypes[77]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AdminListApiKeysResponse.ProtoReflect.Descriptor instead.
+func (*AdminListApiKeysResponse) Descriptor() ([]byte, []int) {
+	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{77}
+}
+
+func (x *AdminListApiKeysResponse) GetKeys() []*ApiKeyInfo {
+	if x != nil {
+		return x.Keys
+	}
+	return nil
+}
+
+type AdminDeleteApiKeyRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Username      string                 `protobuf:"bytes,1,opt,name=username,proto3" json:"username,omitempty"` // the target user who owns the key
+	Id            string                 `protobuf:"bytes,2,opt,name=id,proto3" json:"id,omitempty"`             // the API key object id to delete
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AdminDeleteApiKeyRequest) Reset() {
+	*x = AdminDeleteApiKeyRequest{}
+	mi := &file_cortex_v1_cortex_proto_msgTypes[78]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AdminDeleteApiKeyRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AdminDeleteApiKeyRequest) ProtoMessage() {}
+
+func (x *AdminDeleteApiKeyRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_cortex_v1_cortex_proto_msgTypes[78]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AdminDeleteApiKeyRequest.ProtoReflect.Descriptor instead.
+func (*AdminDeleteApiKeyRequest) Descriptor() ([]byte, []int) {
+	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{78}
+}
+
+func (x *AdminDeleteApiKeyRequest) GetUsername() string {
+	if x != nil {
+		return x.Username
+	}
+	return ""
+}
+
+func (x *AdminDeleteApiKeyRequest) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+type AdminDeleteApiKeyResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Status        string                 `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"` // "deleted"
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AdminDeleteApiKeyResponse) Reset() {
+	*x = AdminDeleteApiKeyResponse{}
+	mi := &file_cortex_v1_cortex_proto_msgTypes[79]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AdminDeleteApiKeyResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AdminDeleteApiKeyResponse) ProtoMessage() {}
+
+func (x *AdminDeleteApiKeyResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_cortex_v1_cortex_proto_msgTypes[79]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AdminDeleteApiKeyResponse.ProtoReflect.Descriptor instead.
+func (*AdminDeleteApiKeyResponse) Descriptor() ([]byte, []int) {
+	return file_cortex_v1_cortex_proto_rawDescGZIP(), []int{79}
+}
+
+func (x *AdminDeleteApiKeyResponse) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
 var File_cortex_v1_cortex_proto protoreflect.FileDescriptor
 
 const file_cortex_v1_cortex_proto_rawDesc = "" +
@@ -4623,13 +4913,28 @@ const file_cortex_v1_cortex_proto_rawDesc = "" +
 	"\x13DeleteApiKeyRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\".\n" +
 	"\x14DeleteApiKeyResponse\x12\x16\n" +
+	"\x06status\x18\x01 \x01(\tR\x06status\"L\n" +
+	"\x18AdminCreateApiKeyRequest\x12\x1a\n" +
+	"\busername\x18\x01 \x01(\tR\busername\x12\x14\n" +
+	"\x05label\x18\x02 \x01(\tR\x05label\"]\n" +
+	"\x19AdminCreateApiKeyResponse\x12\x17\n" +
+	"\araw_key\x18\x01 \x01(\tR\x06rawKey\x12'\n" +
+	"\x03key\x18\x02 \x01(\v2\x15.cortex.v1.ApiKeyInfoR\x03key\"5\n" +
+	"\x17AdminListApiKeysRequest\x12\x1a\n" +
+	"\busername\x18\x01 \x01(\tR\busername\"E\n" +
+	"\x18AdminListApiKeysResponse\x12)\n" +
+	"\x04keys\x18\x01 \x03(\v2\x15.cortex.v1.ApiKeyInfoR\x04keys\"F\n" +
+	"\x18AdminDeleteApiKeyRequest\x12\x1a\n" +
+	"\busername\x18\x01 \x01(\tR\busername\x12\x0e\n" +
+	"\x02id\x18\x02 \x01(\tR\x02id\"3\n" +
+	"\x19AdminDeleteApiKeyResponse\x12\x16\n" +
 	"\x06status\x18\x01 \x01(\tR\x06status*o\n" +
 	"\n" +
 	"DeadAction\x12\x1b\n" +
 	"\x17DEAD_ACTION_UNSPECIFIED\x10\x00\x12\x14\n" +
 	"\x10DEAD_ACTION_LIST\x10\x01\x12\x17\n" +
 	"\x13DEAD_ACTION_REQUEUE\x10\x02\x12\x15\n" +
-	"\x11DEAD_ACTION_PURGE\x10\x032\xae\x14\n" +
+	"\x11DEAD_ACTION_PURGE\x10\x032\xd1\x16\n" +
 	"\rMemoryService\x129\n" +
 	"\x04Save\x12\x16.cortex.v1.SaveRequest\x1a\x17.cortex.v1.SaveResponse\"\x00\x12Q\n" +
 	"\fUpdateMemory\x12\x1e.cortex.v1.UpdateMemoryRequest\x1a\x1f.cortex.v1.UpdateMemoryResponse\"\x00\x12?\n" +
@@ -4666,7 +4971,10 @@ const file_cortex_v1_cortex_proto_rawDesc = "" +
 	"\x11ResetUserPassword\x12#.cortex.v1.ResetUserPasswordRequest\x1a$.cortex.v1.ResetUserPasswordResponse\"\x00\x12Q\n" +
 	"\fCreateApiKey\x12\x1e.cortex.v1.CreateApiKeyRequest\x1a\x1f.cortex.v1.CreateApiKeyResponse\"\x00\x12N\n" +
 	"\vListApiKeys\x12\x1d.cortex.v1.ListApiKeysRequest\x1a\x1e.cortex.v1.ListApiKeysResponse\"\x00\x12Q\n" +
-	"\fDeleteApiKey\x12\x1e.cortex.v1.DeleteApiKeyRequest\x1a\x1f.cortex.v1.DeleteApiKeyResponse\"\x00B9Z7github.com/thomas-maurice/cortex/gen/cortex/v1;cortexv1b\x06proto3"
+	"\fDeleteApiKey\x12\x1e.cortex.v1.DeleteApiKeyRequest\x1a\x1f.cortex.v1.DeleteApiKeyResponse\"\x00\x12`\n" +
+	"\x11AdminCreateApiKey\x12#.cortex.v1.AdminCreateApiKeyRequest\x1a$.cortex.v1.AdminCreateApiKeyResponse\"\x00\x12]\n" +
+	"\x10AdminListApiKeys\x12\".cortex.v1.AdminListApiKeysRequest\x1a#.cortex.v1.AdminListApiKeysResponse\"\x00\x12`\n" +
+	"\x11AdminDeleteApiKey\x12#.cortex.v1.AdminDeleteApiKeyRequest\x1a$.cortex.v1.AdminDeleteApiKeyResponse\"\x00B9Z7github.com/thomas-maurice/cortex/gen/cortex/v1;cortexv1b\x06proto3"
 
 var (
 	file_cortex_v1_cortex_proto_rawDescOnce sync.Once
@@ -4681,7 +4989,7 @@ func file_cortex_v1_cortex_proto_rawDescGZIP() []byte {
 }
 
 var file_cortex_v1_cortex_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_cortex_v1_cortex_proto_msgTypes = make([]protoimpl.MessageInfo, 74)
+var file_cortex_v1_cortex_proto_msgTypes = make([]protoimpl.MessageInfo, 80)
 var file_cortex_v1_cortex_proto_goTypes = []any{
 	(DeadAction)(0),                         // 0: cortex.v1.DeadAction
 	(*Memory)(nil),                          // 1: cortex.v1.Memory
@@ -4758,21 +5066,27 @@ var file_cortex_v1_cortex_proto_goTypes = []any{
 	(*ListApiKeysResponse)(nil),             // 72: cortex.v1.ListApiKeysResponse
 	(*DeleteApiKeyRequest)(nil),             // 73: cortex.v1.DeleteApiKeyRequest
 	(*DeleteApiKeyResponse)(nil),            // 74: cortex.v1.DeleteApiKeyResponse
-	(*timestamppb.Timestamp)(nil),           // 75: google.protobuf.Timestamp
+	(*AdminCreateApiKeyRequest)(nil),        // 75: cortex.v1.AdminCreateApiKeyRequest
+	(*AdminCreateApiKeyResponse)(nil),       // 76: cortex.v1.AdminCreateApiKeyResponse
+	(*AdminListApiKeysRequest)(nil),         // 77: cortex.v1.AdminListApiKeysRequest
+	(*AdminListApiKeysResponse)(nil),        // 78: cortex.v1.AdminListApiKeysResponse
+	(*AdminDeleteApiKeyRequest)(nil),        // 79: cortex.v1.AdminDeleteApiKeyRequest
+	(*AdminDeleteApiKeyResponse)(nil),       // 80: cortex.v1.AdminDeleteApiKeyResponse
+	(*timestamppb.Timestamp)(nil),           // 81: google.protobuf.Timestamp
 }
 var file_cortex_v1_cortex_proto_depIdxs = []int32{
-	75, // 0: cortex.v1.Memory.created_at:type_name -> google.protobuf.Timestamp
-	75, // 1: cortex.v1.Memory.last_accessed_at:type_name -> google.protobuf.Timestamp
+	81, // 0: cortex.v1.Memory.created_at:type_name -> google.protobuf.Timestamp
+	81, // 1: cortex.v1.Memory.last_accessed_at:type_name -> google.protobuf.Timestamp
 	1,  // 2: cortex.v1.Hit.memory:type_name -> cortex.v1.Memory
 	8,  // 3: cortex.v1.SearchResponse.hits:type_name -> cortex.v1.Hit
 	1,  // 4: cortex.v1.ListResponse.memories:type_name -> cortex.v1.Memory
 	17, // 5: cortex.v1.DoctorResponse.checks:type_name -> cortex.v1.Check
 	1,  // 6: cortex.v1.DeadLetter.record:type_name -> cortex.v1.Memory
-	75, // 7: cortex.v1.DeadLetter.failed_at:type_name -> google.protobuf.Timestamp
+	81, // 7: cortex.v1.DeadLetter.failed_at:type_name -> google.protobuf.Timestamp
 	0,  // 8: cortex.v1.DeadRequest.action:type_name -> cortex.v1.DeadAction
 	21, // 9: cortex.v1.DeadResponse.dead_letters:type_name -> cortex.v1.DeadLetter
-	75, // 10: cortex.v1.ConversationSummary.created_at:type_name -> google.protobuf.Timestamp
-	75, // 11: cortex.v1.ConversationSummary.updated_at:type_name -> google.protobuf.Timestamp
+	81, // 10: cortex.v1.ConversationSummary.created_at:type_name -> google.protobuf.Timestamp
+	81, // 11: cortex.v1.ConversationSummary.updated_at:type_name -> google.protobuf.Timestamp
 	28, // 12: cortex.v1.RecallSessionResponse.summary:type_name -> cortex.v1.ConversationSummary
 	1,  // 13: cortex.v1.RecallSessionResponse.facts:type_name -> cortex.v1.Memory
 	28, // 14: cortex.v1.ListSummariesResponse.summaries:type_name -> cortex.v1.ConversationSummary
@@ -4780,89 +5094,97 @@ var file_cortex_v1_cortex_proto_depIdxs = []int32{
 	1,  // 16: cortex.v1.DuplicateGroup.candidates:type_name -> cortex.v1.Memory
 	40, // 17: cortex.v1.ListDuplicateCandidatesResponse.groups:type_name -> cortex.v1.DuplicateGroup
 	1,  // 18: cortex.v1.RestoreMemoriesRequest.memories:type_name -> cortex.v1.Memory
-	75, // 19: cortex.v1.NamespaceInfo.last_updated:type_name -> google.protobuf.Timestamp
+	81, // 19: cortex.v1.NamespaceInfo.last_updated:type_name -> google.protobuf.Timestamp
 	47, // 20: cortex.v1.ListNamespacesResponse.namespaces:type_name -> cortex.v1.NamespaceInfo
 	1,  // 21: cortex.v1.ConsolidateResponse.cluster:type_name -> cortex.v1.Memory
-	75, // 22: cortex.v1.UserInfo.created_at:type_name -> google.protobuf.Timestamp
-	75, // 23: cortex.v1.UserInfo.updated_at:type_name -> google.protobuf.Timestamp
+	81, // 22: cortex.v1.UserInfo.created_at:type_name -> google.protobuf.Timestamp
+	81, // 23: cortex.v1.UserInfo.updated_at:type_name -> google.protobuf.Timestamp
 	57, // 24: cortex.v1.ListUsersResponse.users:type_name -> cortex.v1.UserInfo
 	57, // 25: cortex.v1.CreateUserResponse.user:type_name -> cortex.v1.UserInfo
 	57, // 26: cortex.v1.SetUserRoleResponse.user:type_name -> cortex.v1.UserInfo
-	75, // 27: cortex.v1.ApiKeyInfo.created_at:type_name -> google.protobuf.Timestamp
-	75, // 28: cortex.v1.ApiKeyInfo.last_used_at:type_name -> google.protobuf.Timestamp
+	81, // 27: cortex.v1.ApiKeyInfo.created_at:type_name -> google.protobuf.Timestamp
+	81, // 28: cortex.v1.ApiKeyInfo.last_used_at:type_name -> google.protobuf.Timestamp
 	68, // 29: cortex.v1.CreateApiKeyResponse.key:type_name -> cortex.v1.ApiKeyInfo
 	68, // 30: cortex.v1.ListApiKeysResponse.keys:type_name -> cortex.v1.ApiKeyInfo
-	2,  // 31: cortex.v1.MemoryService.Save:input_type -> cortex.v1.SaveRequest
-	4,  // 32: cortex.v1.MemoryService.UpdateMemory:input_type -> cortex.v1.UpdateMemoryRequest
-	6,  // 33: cortex.v1.MemoryService.Search:input_type -> cortex.v1.SearchRequest
-	7,  // 34: cortex.v1.MemoryService.SearchSimilar:input_type -> cortex.v1.SearchSimilarRequest
-	10, // 35: cortex.v1.MemoryService.List:input_type -> cortex.v1.ListRequest
-	12, // 36: cortex.v1.MemoryService.Delete:input_type -> cortex.v1.DeleteRequest
-	14, // 37: cortex.v1.MemoryService.Status:input_type -> cortex.v1.StatusRequest
-	16, // 38: cortex.v1.MemoryService.Doctor:input_type -> cortex.v1.DoctorRequest
-	19, // 39: cortex.v1.MemoryService.Reindex:input_type -> cortex.v1.ReindexRequest
-	22, // 40: cortex.v1.MemoryService.Dead:input_type -> cortex.v1.DeadRequest
-	24, // 41: cortex.v1.MemoryService.IndexQueue:input_type -> cortex.v1.IndexQueueRequest
-	26, // 42: cortex.v1.MemoryService.PullModel:input_type -> cortex.v1.PullModelRequest
-	29, // 43: cortex.v1.MemoryService.SummarizeSession:input_type -> cortex.v1.SummarizeSessionRequest
-	31, // 44: cortex.v1.MemoryService.RecallSession:input_type -> cortex.v1.RecallSessionRequest
-	33, // 45: cortex.v1.MemoryService.ListSummaries:input_type -> cortex.v1.ListSummariesRequest
-	35, // 46: cortex.v1.MemoryService.Link:input_type -> cortex.v1.LinkRequest
-	37, // 47: cortex.v1.MemoryService.Unlink:input_type -> cortex.v1.UnlinkRequest
-	39, // 48: cortex.v1.MemoryService.ListDuplicateCandidates:input_type -> cortex.v1.ListDuplicateCandidatesRequest
-	42, // 49: cortex.v1.MemoryService.DismissDuplicate:input_type -> cortex.v1.DismissDuplicateRequest
-	44, // 50: cortex.v1.MemoryService.Consolidate:input_type -> cortex.v1.ConsolidateRequest
-	45, // 51: cortex.v1.MemoryService.RestoreMemories:input_type -> cortex.v1.RestoreMemoriesRequest
-	48, // 52: cortex.v1.MemoryService.ListNamespaces:input_type -> cortex.v1.ListNamespacesRequest
-	50, // 53: cortex.v1.MemoryService.RenameNamespace:input_type -> cortex.v1.RenameNamespaceRequest
-	52, // 54: cortex.v1.MemoryService.DeleteNamespace:input_type -> cortex.v1.DeleteNamespaceRequest
-	54, // 55: cortex.v1.MemoryService.MigrateMT:input_type -> cortex.v1.MigrateMTRequest
-	58, // 56: cortex.v1.MemoryService.ListUsers:input_type -> cortex.v1.ListUsersRequest
-	60, // 57: cortex.v1.MemoryService.CreateUser:input_type -> cortex.v1.CreateUserRequest
-	62, // 58: cortex.v1.MemoryService.DeleteUser:input_type -> cortex.v1.DeleteUserRequest
-	64, // 59: cortex.v1.MemoryService.SetUserRole:input_type -> cortex.v1.SetUserRoleRequest
-	66, // 60: cortex.v1.MemoryService.ResetUserPassword:input_type -> cortex.v1.ResetUserPasswordRequest
-	69, // 61: cortex.v1.MemoryService.CreateApiKey:input_type -> cortex.v1.CreateApiKeyRequest
-	71, // 62: cortex.v1.MemoryService.ListApiKeys:input_type -> cortex.v1.ListApiKeysRequest
-	73, // 63: cortex.v1.MemoryService.DeleteApiKey:input_type -> cortex.v1.DeleteApiKeyRequest
-	3,  // 64: cortex.v1.MemoryService.Save:output_type -> cortex.v1.SaveResponse
-	5,  // 65: cortex.v1.MemoryService.UpdateMemory:output_type -> cortex.v1.UpdateMemoryResponse
-	9,  // 66: cortex.v1.MemoryService.Search:output_type -> cortex.v1.SearchResponse
-	9,  // 67: cortex.v1.MemoryService.SearchSimilar:output_type -> cortex.v1.SearchResponse
-	11, // 68: cortex.v1.MemoryService.List:output_type -> cortex.v1.ListResponse
-	13, // 69: cortex.v1.MemoryService.Delete:output_type -> cortex.v1.DeleteResponse
-	15, // 70: cortex.v1.MemoryService.Status:output_type -> cortex.v1.StatusResponse
-	18, // 71: cortex.v1.MemoryService.Doctor:output_type -> cortex.v1.DoctorResponse
-	20, // 72: cortex.v1.MemoryService.Reindex:output_type -> cortex.v1.ReindexResponse
-	23, // 73: cortex.v1.MemoryService.Dead:output_type -> cortex.v1.DeadResponse
-	25, // 74: cortex.v1.MemoryService.IndexQueue:output_type -> cortex.v1.IndexQueueResponse
-	27, // 75: cortex.v1.MemoryService.PullModel:output_type -> cortex.v1.PullModelResponse
-	30, // 76: cortex.v1.MemoryService.SummarizeSession:output_type -> cortex.v1.SummarizeSessionResponse
-	32, // 77: cortex.v1.MemoryService.RecallSession:output_type -> cortex.v1.RecallSessionResponse
-	34, // 78: cortex.v1.MemoryService.ListSummaries:output_type -> cortex.v1.ListSummariesResponse
-	36, // 79: cortex.v1.MemoryService.Link:output_type -> cortex.v1.LinkResponse
-	38, // 80: cortex.v1.MemoryService.Unlink:output_type -> cortex.v1.UnlinkResponse
-	41, // 81: cortex.v1.MemoryService.ListDuplicateCandidates:output_type -> cortex.v1.ListDuplicateCandidatesResponse
-	43, // 82: cortex.v1.MemoryService.DismissDuplicate:output_type -> cortex.v1.DismissDuplicateResponse
-	56, // 83: cortex.v1.MemoryService.Consolidate:output_type -> cortex.v1.ConsolidateResponse
-	46, // 84: cortex.v1.MemoryService.RestoreMemories:output_type -> cortex.v1.RestoreMemoriesResponse
-	49, // 85: cortex.v1.MemoryService.ListNamespaces:output_type -> cortex.v1.ListNamespacesResponse
-	51, // 86: cortex.v1.MemoryService.RenameNamespace:output_type -> cortex.v1.RenameNamespaceResponse
-	53, // 87: cortex.v1.MemoryService.DeleteNamespace:output_type -> cortex.v1.DeleteNamespaceResponse
-	55, // 88: cortex.v1.MemoryService.MigrateMT:output_type -> cortex.v1.MigrateMTResponse
-	59, // 89: cortex.v1.MemoryService.ListUsers:output_type -> cortex.v1.ListUsersResponse
-	61, // 90: cortex.v1.MemoryService.CreateUser:output_type -> cortex.v1.CreateUserResponse
-	63, // 91: cortex.v1.MemoryService.DeleteUser:output_type -> cortex.v1.DeleteUserResponse
-	65, // 92: cortex.v1.MemoryService.SetUserRole:output_type -> cortex.v1.SetUserRoleResponse
-	67, // 93: cortex.v1.MemoryService.ResetUserPassword:output_type -> cortex.v1.ResetUserPasswordResponse
-	70, // 94: cortex.v1.MemoryService.CreateApiKey:output_type -> cortex.v1.CreateApiKeyResponse
-	72, // 95: cortex.v1.MemoryService.ListApiKeys:output_type -> cortex.v1.ListApiKeysResponse
-	74, // 96: cortex.v1.MemoryService.DeleteApiKey:output_type -> cortex.v1.DeleteApiKeyResponse
-	64, // [64:97] is the sub-list for method output_type
-	31, // [31:64] is the sub-list for method input_type
-	31, // [31:31] is the sub-list for extension type_name
-	31, // [31:31] is the sub-list for extension extendee
-	0,  // [0:31] is the sub-list for field type_name
+	68, // 31: cortex.v1.AdminCreateApiKeyResponse.key:type_name -> cortex.v1.ApiKeyInfo
+	68, // 32: cortex.v1.AdminListApiKeysResponse.keys:type_name -> cortex.v1.ApiKeyInfo
+	2,  // 33: cortex.v1.MemoryService.Save:input_type -> cortex.v1.SaveRequest
+	4,  // 34: cortex.v1.MemoryService.UpdateMemory:input_type -> cortex.v1.UpdateMemoryRequest
+	6,  // 35: cortex.v1.MemoryService.Search:input_type -> cortex.v1.SearchRequest
+	7,  // 36: cortex.v1.MemoryService.SearchSimilar:input_type -> cortex.v1.SearchSimilarRequest
+	10, // 37: cortex.v1.MemoryService.List:input_type -> cortex.v1.ListRequest
+	12, // 38: cortex.v1.MemoryService.Delete:input_type -> cortex.v1.DeleteRequest
+	14, // 39: cortex.v1.MemoryService.Status:input_type -> cortex.v1.StatusRequest
+	16, // 40: cortex.v1.MemoryService.Doctor:input_type -> cortex.v1.DoctorRequest
+	19, // 41: cortex.v1.MemoryService.Reindex:input_type -> cortex.v1.ReindexRequest
+	22, // 42: cortex.v1.MemoryService.Dead:input_type -> cortex.v1.DeadRequest
+	24, // 43: cortex.v1.MemoryService.IndexQueue:input_type -> cortex.v1.IndexQueueRequest
+	26, // 44: cortex.v1.MemoryService.PullModel:input_type -> cortex.v1.PullModelRequest
+	29, // 45: cortex.v1.MemoryService.SummarizeSession:input_type -> cortex.v1.SummarizeSessionRequest
+	31, // 46: cortex.v1.MemoryService.RecallSession:input_type -> cortex.v1.RecallSessionRequest
+	33, // 47: cortex.v1.MemoryService.ListSummaries:input_type -> cortex.v1.ListSummariesRequest
+	35, // 48: cortex.v1.MemoryService.Link:input_type -> cortex.v1.LinkRequest
+	37, // 49: cortex.v1.MemoryService.Unlink:input_type -> cortex.v1.UnlinkRequest
+	39, // 50: cortex.v1.MemoryService.ListDuplicateCandidates:input_type -> cortex.v1.ListDuplicateCandidatesRequest
+	42, // 51: cortex.v1.MemoryService.DismissDuplicate:input_type -> cortex.v1.DismissDuplicateRequest
+	44, // 52: cortex.v1.MemoryService.Consolidate:input_type -> cortex.v1.ConsolidateRequest
+	45, // 53: cortex.v1.MemoryService.RestoreMemories:input_type -> cortex.v1.RestoreMemoriesRequest
+	48, // 54: cortex.v1.MemoryService.ListNamespaces:input_type -> cortex.v1.ListNamespacesRequest
+	50, // 55: cortex.v1.MemoryService.RenameNamespace:input_type -> cortex.v1.RenameNamespaceRequest
+	52, // 56: cortex.v1.MemoryService.DeleteNamespace:input_type -> cortex.v1.DeleteNamespaceRequest
+	54, // 57: cortex.v1.MemoryService.MigrateMT:input_type -> cortex.v1.MigrateMTRequest
+	58, // 58: cortex.v1.MemoryService.ListUsers:input_type -> cortex.v1.ListUsersRequest
+	60, // 59: cortex.v1.MemoryService.CreateUser:input_type -> cortex.v1.CreateUserRequest
+	62, // 60: cortex.v1.MemoryService.DeleteUser:input_type -> cortex.v1.DeleteUserRequest
+	64, // 61: cortex.v1.MemoryService.SetUserRole:input_type -> cortex.v1.SetUserRoleRequest
+	66, // 62: cortex.v1.MemoryService.ResetUserPassword:input_type -> cortex.v1.ResetUserPasswordRequest
+	69, // 63: cortex.v1.MemoryService.CreateApiKey:input_type -> cortex.v1.CreateApiKeyRequest
+	71, // 64: cortex.v1.MemoryService.ListApiKeys:input_type -> cortex.v1.ListApiKeysRequest
+	73, // 65: cortex.v1.MemoryService.DeleteApiKey:input_type -> cortex.v1.DeleteApiKeyRequest
+	75, // 66: cortex.v1.MemoryService.AdminCreateApiKey:input_type -> cortex.v1.AdminCreateApiKeyRequest
+	77, // 67: cortex.v1.MemoryService.AdminListApiKeys:input_type -> cortex.v1.AdminListApiKeysRequest
+	79, // 68: cortex.v1.MemoryService.AdminDeleteApiKey:input_type -> cortex.v1.AdminDeleteApiKeyRequest
+	3,  // 69: cortex.v1.MemoryService.Save:output_type -> cortex.v1.SaveResponse
+	5,  // 70: cortex.v1.MemoryService.UpdateMemory:output_type -> cortex.v1.UpdateMemoryResponse
+	9,  // 71: cortex.v1.MemoryService.Search:output_type -> cortex.v1.SearchResponse
+	9,  // 72: cortex.v1.MemoryService.SearchSimilar:output_type -> cortex.v1.SearchResponse
+	11, // 73: cortex.v1.MemoryService.List:output_type -> cortex.v1.ListResponse
+	13, // 74: cortex.v1.MemoryService.Delete:output_type -> cortex.v1.DeleteResponse
+	15, // 75: cortex.v1.MemoryService.Status:output_type -> cortex.v1.StatusResponse
+	18, // 76: cortex.v1.MemoryService.Doctor:output_type -> cortex.v1.DoctorResponse
+	20, // 77: cortex.v1.MemoryService.Reindex:output_type -> cortex.v1.ReindexResponse
+	23, // 78: cortex.v1.MemoryService.Dead:output_type -> cortex.v1.DeadResponse
+	25, // 79: cortex.v1.MemoryService.IndexQueue:output_type -> cortex.v1.IndexQueueResponse
+	27, // 80: cortex.v1.MemoryService.PullModel:output_type -> cortex.v1.PullModelResponse
+	30, // 81: cortex.v1.MemoryService.SummarizeSession:output_type -> cortex.v1.SummarizeSessionResponse
+	32, // 82: cortex.v1.MemoryService.RecallSession:output_type -> cortex.v1.RecallSessionResponse
+	34, // 83: cortex.v1.MemoryService.ListSummaries:output_type -> cortex.v1.ListSummariesResponse
+	36, // 84: cortex.v1.MemoryService.Link:output_type -> cortex.v1.LinkResponse
+	38, // 85: cortex.v1.MemoryService.Unlink:output_type -> cortex.v1.UnlinkResponse
+	41, // 86: cortex.v1.MemoryService.ListDuplicateCandidates:output_type -> cortex.v1.ListDuplicateCandidatesResponse
+	43, // 87: cortex.v1.MemoryService.DismissDuplicate:output_type -> cortex.v1.DismissDuplicateResponse
+	56, // 88: cortex.v1.MemoryService.Consolidate:output_type -> cortex.v1.ConsolidateResponse
+	46, // 89: cortex.v1.MemoryService.RestoreMemories:output_type -> cortex.v1.RestoreMemoriesResponse
+	49, // 90: cortex.v1.MemoryService.ListNamespaces:output_type -> cortex.v1.ListNamespacesResponse
+	51, // 91: cortex.v1.MemoryService.RenameNamespace:output_type -> cortex.v1.RenameNamespaceResponse
+	53, // 92: cortex.v1.MemoryService.DeleteNamespace:output_type -> cortex.v1.DeleteNamespaceResponse
+	55, // 93: cortex.v1.MemoryService.MigrateMT:output_type -> cortex.v1.MigrateMTResponse
+	59, // 94: cortex.v1.MemoryService.ListUsers:output_type -> cortex.v1.ListUsersResponse
+	61, // 95: cortex.v1.MemoryService.CreateUser:output_type -> cortex.v1.CreateUserResponse
+	63, // 96: cortex.v1.MemoryService.DeleteUser:output_type -> cortex.v1.DeleteUserResponse
+	65, // 97: cortex.v1.MemoryService.SetUserRole:output_type -> cortex.v1.SetUserRoleResponse
+	67, // 98: cortex.v1.MemoryService.ResetUserPassword:output_type -> cortex.v1.ResetUserPasswordResponse
+	70, // 99: cortex.v1.MemoryService.CreateApiKey:output_type -> cortex.v1.CreateApiKeyResponse
+	72, // 100: cortex.v1.MemoryService.ListApiKeys:output_type -> cortex.v1.ListApiKeysResponse
+	74, // 101: cortex.v1.MemoryService.DeleteApiKey:output_type -> cortex.v1.DeleteApiKeyResponse
+	76, // 102: cortex.v1.MemoryService.AdminCreateApiKey:output_type -> cortex.v1.AdminCreateApiKeyResponse
+	78, // 103: cortex.v1.MemoryService.AdminListApiKeys:output_type -> cortex.v1.AdminListApiKeysResponse
+	80, // 104: cortex.v1.MemoryService.AdminDeleteApiKey:output_type -> cortex.v1.AdminDeleteApiKeyResponse
+	69, // [69:105] is the sub-list for method output_type
+	33, // [33:69] is the sub-list for method input_type
+	33, // [33:33] is the sub-list for extension type_name
+	33, // [33:33] is the sub-list for extension extendee
+	0,  // [0:33] is the sub-list for field type_name
 }
 
 func init() { file_cortex_v1_cortex_proto_init() }
@@ -4876,7 +5198,7 @@ func file_cortex_v1_cortex_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_cortex_v1_cortex_proto_rawDesc), len(file_cortex_v1_cortex_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   74,
+			NumMessages:   80,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

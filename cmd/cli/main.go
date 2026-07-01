@@ -110,32 +110,81 @@ func hashPasswordCmd() *cobra.Command {
 	}
 }
 
+// stdinReader is the single buffered reader for all interactive prompts. It must
+// be shared: a fresh bufio.NewReader per prompt would buffer (and then discard)
+// any input beyond the current line, so a following prompt on piped input would
+// wrongly see EOF. term.ReadPassword reads the fd directly and bypasses this
+// buffer, which is safe because it is only used on a live terminal where the
+// next line has not been typed (and thus not buffered here) yet.
+var stdinReader = bufio.NewReader(os.Stdin)
+
 // readSecret reads a password without echoing when stdin is a terminal, or reads
 // the first line when piped (e.g. `echo -n pw | cortex hash-password`).
-func readSecret() (string, error) {
+func readSecret() (string, error) { return promptSecret("Password") }
+
+// promptSecret is readSecret with a caller-chosen label. It reads without
+// echoing on a terminal (the value is a credential), and reads the first piped
+// line otherwise.
+func promptSecret(label string) (string, error) {
 	fd := int(os.Stdin.Fd())
 	if term.IsTerminal(fd) {
-		fmt.Fprint(os.Stderr, "Password: ")
+		fmt.Fprintf(os.Stderr, "%s: ", label)
 		b, err := term.ReadPassword(fd)
 		fmt.Fprintln(os.Stderr)
 		return strings.TrimSpace(string(b)), err
 	}
-	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	line, err := stdinReader.ReadString('\n')
 	if err != nil && line == "" {
 		return "", err
 	}
 	return strings.TrimSpace(line), nil
 }
 
-// sampleConfig is the starter file written by `cortex config init`. Keys mirror
-// the persistent flags (shared with the MCP server); the mcp.* block holds the
-// MCP tool defaults applied when a call omits the field.
-const sampleConfig = `# Cortex configuration, shared by the CLI and the MCP server.
+// promptLine prints label (showing def in brackets when non-empty) and reads one
+// visible line, returning def when the user just presses enter.
+func promptLine(label, def string) (string, error) {
+	if def != "" {
+		fmt.Fprintf(os.Stderr, "%s [%s]: ", label, def)
+	} else {
+		fmt.Fprintf(os.Stderr, "%s: ", label)
+	}
+	line, err := stdinReader.ReadString('\n')
+	if err != nil && line == "" {
+		return "", err
+	}
+	if line = strings.TrimSpace(line); line != "" {
+		return line, nil
+	}
+	return def, nil
+}
+
+// promptYesNo asks a y/N question, defaulting to no on empty input.
+func promptYesNo(question string) (bool, error) {
+	fmt.Fprintf(os.Stderr, "%s [y/N]: ", question)
+	line, err := stdinReader.ReadString('\n')
+	if err != nil && line == "" {
+		return false, err
+	}
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "y", "yes":
+		return true, nil
+	default:
+		return false, nil
+	}
+}
+
+// configTemplate is the starter file written by `cortex config init` and
+// `cortex onboard`. Keys mirror the persistent flags (shared with the MCP
+// server); the mcp.* block holds the MCP tool defaults applied when a call omits
+// the field. The two %s placeholders are the server URL and the (YAML-quoted)
+// token — the only values onboarding fills in; everything else stays at the
+// documented default.
+const configTemplate = `# Cortex configuration, shared by the CLI and the MCP server.
 # Resolution order: command-line flag > environment variable > this file > built-in default.
 
 # --- client settings ---
-server: http://localhost:8080   # Cortex RPC server URL (env: CORTEX_SERVER_URL)
-token: ""                       # bearer token (env: CORTEX_AUTH_TOKEN)
+server: %s  # Cortex RPC server URL (env: CORTEX_SERVER_URL)
+token: %s  # bearer token (env: CORTEX_AUTH_TOKEN)
 namespace-default: global       # namespace used when none is given (env: DEFAULT_NAMESPACE)
 source: cli                     # source tag recorded on saved memories (env: MEMORY_SOURCE)
 
@@ -151,6 +200,26 @@ mcp:
   max-distance: 0.45            # relevance cutoff, cosine distance; 0 = no cutoff (env: MAX_DISTANCE)
   timeout: 2s                   # per-call fail-fast deadline so a slow/unreachable server never blocks Claude (env: CORTEX_MCP_TIMEOUT)
 `
+
+// renderConfig fills configTemplate with a server URL and token. The token is
+// YAML-quoted (so an empty token renders as "" and special characters stay
+// safe); the server URL is written verbatim, matching how the file has always
+// stored it.
+func renderConfig(server, token string) string {
+	return fmt.Sprintf(configTemplate, server, fmt.Sprintf("%q", token))
+}
+
+// settingDefault returns the built-in default for a persistent-flag key from the
+// settings table, so the scaffolded config and onboarding share one source of
+// truth for defaults instead of re-hardcoding them.
+func settingDefault(key string) string {
+	for _, s := range settings {
+		if s.key == key {
+			return s.def
+		}
+	}
+	return ""
+}
 
 func configCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -194,7 +263,7 @@ func configCmd() *cobra.Command {
 			if err := os.MkdirAll(config.Dir(), 0o755); err != nil {
 				return err
 			}
-			if err := os.WriteFile(path, []byte(sampleConfig), 0o600); err != nil {
+			if err := os.WriteFile(path, []byte(renderConfig(settingDefault("server"), settingDefault("token"))), 0o600); err != nil {
 				return err
 			}
 			fmt.Printf("wrote %s\n", path)
@@ -204,6 +273,58 @@ func configCmd() *cobra.Command {
 	initc.Flags().BoolVar(&force, "force", false, "overwrite an existing config file")
 
 	cmd.AddCommand(show, initc)
+	return cmd
+}
+
+// onboardCmd is the friendly first-run path: it prompts for the two values that
+// have no sensible built-in default — the server URL and an API token — and
+// writes a config file with the documented defaults for everything else. For a
+// non-interactive starter file, use `config init` instead.
+func onboardCmd() *cobra.Command {
+	var force bool
+	cmd := &cobra.Command{
+		Use:   "onboard",
+		Short: "Interactively create the config file (prompts for server URL and token)",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			path := configFile
+			if path == "" {
+				path = config.FilePath()
+			}
+			if _, err := os.Stat(path); err == nil && !force {
+				ok, err := promptYesNo(fmt.Sprintf("%s already exists. Overwrite?", path))
+				if err != nil {
+					return err
+				}
+				if !ok {
+					fmt.Println("aborted; config left unchanged")
+					return nil
+				}
+			}
+
+			server, err := promptLine("Server URL", settingDefault("server"))
+			if err != nil {
+				return err
+			}
+			token, err := promptSecret("API token (leave empty for none)")
+			if err != nil {
+				return err
+			}
+
+			if err := os.MkdirAll(config.Dir(), 0o755); err != nil {
+				return err
+			}
+			if err := os.WriteFile(path, []byte(renderConfig(server, token)), 0o600); err != nil {
+				return err
+			}
+			fmt.Printf("wrote %s\n", path)
+			fmt.Printf("  server: %s\n", server)
+			fmt.Printf("  token:  %s\n", maskToken(token))
+			fmt.Println("Run `cortex status` to verify the connection.")
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&force, "force", false, "overwrite an existing config file without prompting")
 	return cmd
 }
 
@@ -238,7 +359,7 @@ func main() {
 		pf.StringVar(s.target, s.key, s.def, s.usage)
 	}
 
-	root.AddCommand(saveCmd(), editCmd(), listCmd(), searchCmd(), deleteCmd(), exportCmd(), importCmd(), reindexCmd(), deadCmd(), statusCmd(), doctorCmd(), summarizeCmd(), summariesCmd(), recallCmd(), candidatesCmd(), consolidateCmd(), hashPasswordCmd(), configCmd(), migrateMTCmd(), usersCmd())
+	root.AddCommand(saveCmd(), editCmd(), listCmd(), searchCmd(), deleteCmd(), exportCmd(), importCmd(), reindexCmd(), deadCmd(), statusCmd(), doctorCmd(), summarizeCmd(), summariesCmd(), recallCmd(), candidatesCmd(), consolidateCmd(), hashPasswordCmd(), configCmd(), onboardCmd(), migrateMTCmd(), usersCmd())
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -1026,8 +1147,87 @@ func usersCmd() *cobra.Command {
 		Short: "Manage users (multi-tenant mode; needs an admin token)",
 		Args:  cobra.NoArgs,
 	}
-	cmd.AddCommand(usersListCmd(), usersGetCmd(), usersAddCmd(), usersDeleteCmd(), usersSetRoleCmd(), usersResetPasswordCmd())
+	cmd.AddCommand(usersListCmd(), usersGetCmd(), usersAddCmd(), usersDeleteCmd(), usersSetRoleCmd(), usersResetPasswordCmd(), usersApiKeyCmd())
 	return cmd
+}
+
+// usersApiKeyCmd groups the admin API-key commands: provision, list, and revoke
+// keys for another user (e.g. a headless MCP/service account that can't reach
+// the web UI to self-mint). Admin-only server-side, MT mode required.
+func usersApiKeyCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "apikey",
+		Short: "Manage a user's API keys (admin; provision keys for headless accounts)",
+		Args:  cobra.NoArgs,
+	}
+	cmd.AddCommand(usersApiKeyCreateCmd(), usersApiKeyListCmd(), usersApiKeyDeleteCmd())
+	return cmd
+}
+
+func usersApiKeyCreateCmd() *cobra.Command {
+	var label string
+	cmd := &cobra.Command{
+		Use:   "create <username>",
+		Short: "Mint a new API key for a user (prints the secret once)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			resp, err := client().AdminCreateApiKey(cmd.Context(), connect.NewRequest(&cortexv1.AdminCreateApiKeyRequest{
+				Username: strings.TrimSpace(args[0]), Label: label,
+			}))
+			if err != nil {
+				return err
+			}
+			fmt.Println("Created API key — copy it now, it will not be shown again:")
+			fmt.Println(resp.Msg.GetRawKey())
+			fmt.Print("  ")
+			printApiKey(resp.Msg.GetKey())
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&label, "label", "", "human label for the key (e.g. laptop, ci)")
+	return cmd
+}
+
+func usersApiKeyListCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "list <username>",
+		Short: "List a user's API keys (never shows the secret)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			resp, err := client().AdminListApiKeys(cmd.Context(), connect.NewRequest(&cortexv1.AdminListApiKeysRequest{
+				Username: strings.TrimSpace(args[0]),
+			}))
+			if err != nil {
+				return err
+			}
+			keys := resp.Msg.GetKeys()
+			if len(keys) == 0 {
+				fmt.Println("No API keys.")
+				return nil
+			}
+			for _, k := range keys {
+				printApiKey(k)
+			}
+			return nil
+		},
+	}
+}
+
+func usersApiKeyDeleteCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "delete <username> <key-id>",
+		Short: "Revoke one of a user's API keys",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if _, err := client().AdminDeleteApiKey(cmd.Context(), connect.NewRequest(&cortexv1.AdminDeleteApiKeyRequest{
+				Username: strings.TrimSpace(args[0]), Id: strings.TrimSpace(args[1]),
+			})); err != nil {
+				return err
+			}
+			fmt.Println("deleted", args[1])
+			return nil
+		},
+	}
 }
 
 func usersListCmd() *cobra.Command {
@@ -1182,6 +1382,23 @@ func printUser(u *cortexv1.UserInfo) {
 		created = u.GetCreatedAt().AsTime().UTC().Format(time.RFC3339)
 	}
 	fmt.Printf("%-20s role=%-5s id=%s created=%s\n", u.GetUsername(), u.GetRole(), u.GetId(), created)
+}
+
+// printApiKey renders one API key row (never the secret) for the apikey commands.
+func printApiKey(k *cortexv1.ApiKeyInfo) {
+	label := k.GetLabel()
+	if label == "" {
+		label = "-"
+	}
+	created := ""
+	if k.GetCreatedAt() != nil {
+		created = k.GetCreatedAt().AsTime().UTC().Format(time.RFC3339)
+	}
+	lastUsed := "never"
+	if k.GetLastUsedAt() != nil {
+		lastUsed = k.GetLastUsedAt().AsTime().UTC().Format(time.RFC3339)
+	}
+	fmt.Printf("%-20s prefix=%s id=%s created=%s last_used=%s\n", label, k.GetPrefix(), k.GetId(), created, lastUsed)
 }
 
 func printMemory(m *cortexv1.Memory) {

@@ -310,6 +310,105 @@ func (s *Service) DeleteApiKey(ctx context.Context, req *connect.Request[cortexv
 	return connect.NewResponse(&cortexv1.DeleteApiKeyResponse{Status: "deleted"}), nil
 }
 
+// ---- P5b: Admin API key management (keys for other users) ----
+//
+// These mirror the P6 handlers but are admin-only and target an arbitrary user
+// resolved by username. The store methods are the same (CreateApiKey /
+// ListApiKeysForUser / DeleteApiKey); only the identity source differs — the
+// target user, not identity.From(ctx). resolveTargetUser centralises the
+// admin-gate + username lookup so each handler stays a thin wrapper.
+
+// resolveTargetUser applies requireMT + requireAdmin, then resolves username to
+// its user record. Returns InvalidArgument for an empty username and NotFound
+// when no such user exists.
+func (s *Service) resolveTargetUser(ctx context.Context, username string) (store.User, error) {
+	if err := s.requireMT(); err != nil {
+		return store.User{}, err
+	}
+	if err := requireAdmin(ctx); err != nil {
+		return store.User{}, err
+	}
+	username = strings.TrimSpace(username)
+	if username == "" {
+		return store.User{}, connect.NewError(connect.CodeInvalidArgument, errors.New("username must not be empty"))
+	}
+	target, found, err := s.store.GetUserByUsername(ctx, username)
+	if err != nil {
+		return store.User{}, err
+	}
+	if !found {
+		return store.User{}, connect.NewError(connect.CodeNotFound, fmt.Errorf("user %q not found", username))
+	}
+	return target, nil
+}
+
+func (s *Service) AdminCreateApiKey(ctx context.Context, req *connect.Request[cortexv1.AdminCreateApiKeyRequest]) (*connect.Response[cortexv1.AdminCreateApiKeyResponse], error) {
+	target, err := s.resolveTargetUser(ctx, req.Msg.GetUsername())
+	if err != nil {
+		return nil, err
+	}
+	label := strings.TrimSpace(req.Msg.GetLabel())
+	raw, key, err := s.store.CreateApiKey(ctx, target.ID, label)
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(&cortexv1.AdminCreateApiKeyResponse{
+		RawKey: raw,
+		Key:    apiKeyToProto(key),
+	}), nil
+}
+
+func (s *Service) AdminListApiKeys(ctx context.Context, req *connect.Request[cortexv1.AdminListApiKeysRequest]) (*connect.Response[cortexv1.AdminListApiKeysResponse], error) {
+	target, err := s.resolveTargetUser(ctx, req.Msg.GetUsername())
+	if err != nil {
+		return nil, err
+	}
+	keys, err := s.store.ListApiKeysForUser(ctx, target.ID)
+	if err != nil {
+		return nil, err
+	}
+	out := &cortexv1.AdminListApiKeysResponse{Keys: make([]*cortexv1.ApiKeyInfo, 0, len(keys))}
+	for _, k := range keys {
+		out.Keys = append(out.Keys, apiKeyToProto(k))
+	}
+	return connect.NewResponse(out), nil
+}
+
+func (s *Service) AdminDeleteApiKey(ctx context.Context, req *connect.Request[cortexv1.AdminDeleteApiKeyRequest]) (*connect.Response[cortexv1.AdminDeleteApiKeyResponse], error) {
+	target, err := s.resolveTargetUser(ctx, req.Msg.GetUsername())
+	if err != nil {
+		return nil, err
+	}
+	keyID := strings.TrimSpace(req.Msg.GetId())
+	if keyID == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id must not be empty"))
+	}
+
+	// Ownership check: the key must belong to the named user. ListApiKeysForUser
+	// scopes to target.ID, so a key not in that list is either absent or owned by
+	// someone else — both return NotFound so an admin can't delete key X off user
+	// A by naming user B.
+	keys, err := s.store.ListApiKeysForUser(ctx, target.ID)
+	if err != nil {
+		return nil, err
+	}
+	var found bool
+	for _, k := range keys {
+		if k.ID == keyID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("api key %q not found for user %q", keyID, target.Username))
+	}
+
+	if err := s.store.DeleteApiKey(ctx, keyID); err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(&cortexv1.AdminDeleteApiKeyResponse{Status: "deleted"}), nil
+}
+
 // ---- proto helpers ----
 
 func userToProto(u store.User) *cortexv1.UserInfo {

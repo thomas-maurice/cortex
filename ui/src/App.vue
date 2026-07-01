@@ -59,6 +59,17 @@
     <main class="container-fluid py-4">
       <router-view />
     </main>
+
+    <footer class="text-center text-muted small py-3">
+      <a
+        href="https://github.com/thomas-maurice/cortex"
+        target="_blank"
+        rel="noopener noreferrer"
+        class="text-muted text-decoration-none"
+      >
+        <font-awesome-icon :icon="['fab', 'github']" class="me-1" />thomas-maurice/cortex
+      </a>
+    </footer>
   </div>
 </template>
 

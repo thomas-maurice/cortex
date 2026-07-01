@@ -38,7 +38,15 @@ import {
   faSliders,
   faUpload,
   faBoxArchive,
+  faUser,
+  faUsers,
+  faUserPlus,
+  faKey,
+  faArrowUp,
+  faArrowDown,
+  faCopy,
 } from '@fortawesome/free-solid-svg-icons'
+import { faGithub } from '@fortawesome/free-brands-svg-icons'
 
 library.add(
   faBrain,
@@ -67,7 +75,15 @@ library.add(
   faClockRotateLeft,
   faSliders,
   faUpload,
-  faBoxArchive
+  faBoxArchive,
+  faUser,
+  faUsers,
+  faUserPlus,
+  faKey,
+  faArrowUp,
+  faArrowDown,
+  faCopy,
+  faGithub
 )
 
 const pinia = createPinia()
