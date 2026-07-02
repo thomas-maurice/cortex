@@ -4,9 +4,25 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/alexedwards/argon2id"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// Password hashing must use Parallelism=1 (predictable single-core cost, small
+// DoS blast radius) over a 64 MiB, 2-iteration argon2id — and the produced hash
+// must ENCODE those params, so verification cost is portable across machines and
+// independent of the library's NumCPU-based default.
+func TestPasswordParams(t *testing.T) {
+	p := PasswordParams()
+	assert.EqualValues(t, 1, p.Parallelism, "p must be pinned to 1, not the library's NumCPU default")
+	assert.EqualValues(t, 2, p.Iterations)
+	assert.EqualValues(t, 64*1024, p.Memory, "64 MiB memory cost keeps it GPU-hostile")
+
+	h, err := argon2id.CreateHash("pw", p)
+	require.NoError(t, err)
+	assert.Contains(t, h, "m=65536,t=2,p=1", "the hash must encode the pinned cost parameters")
+}
 
 // A minted key must be unique, prefixed, and hash deterministically — the prefix
 // is what the UI shows, and the hash is the only thing stored, so both must be

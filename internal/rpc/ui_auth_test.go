@@ -57,7 +57,7 @@ func postLogin(t *testing.T, h http.Handler, body string) *httptest.ResponseReco
 
 func TestLoginHandlerSuccess(t *testing.T) {
 	mgr := NewJWTManager("secret", time.Hour)
-	h := LoginHandler(mgr, "admin", "hunter2", "admin", testLogger(), false, nil)
+	h := LoginHandler(mgr, "admin", "hunter2", "admin", testLogger(), false, nil, nil)
 
 	rr := postLogin(t, h, `{"username":"admin","password":"hunter2"}`)
 	require.Equal(t, http.StatusOK, rr.Code)
@@ -73,7 +73,7 @@ func TestLoginHandlerSuccess(t *testing.T) {
 }
 
 func TestLoginHandlerRejectsBadCredentials(t *testing.T) {
-	h := LoginHandler(NewJWTManager("secret", time.Hour), "admin", "hunter2", "admin", testLogger(), false, nil)
+	h := LoginHandler(NewJWTManager("secret", time.Hour), "admin", "hunter2", "admin", testLogger(), false, nil, nil)
 	rr := postLogin(t, h, `{"username":"admin","password":"wrong"}`)
 	assert.Equal(t, http.StatusUnauthorized, rr.Code)
 }
@@ -81,7 +81,7 @@ func TestLoginHandlerRejectsBadCredentials(t *testing.T) {
 func TestLoginHandlerDisabledWhenNoPassword(t *testing.T) {
 	// No configured password means the UI login must be refused outright, never
 	// fall through to issuing a token.
-	h := LoginHandler(NewJWTManager("secret", time.Hour), "admin", "", "admin", testLogger(), false, nil)
+	h := LoginHandler(NewJWTManager("secret", time.Hour), "admin", "", "admin", testLogger(), false, nil, nil)
 	rr := postLogin(t, h, `{"username":"admin","password":""}`)
 	assert.Equal(t, http.StatusServiceUnavailable, rr.Code)
 }

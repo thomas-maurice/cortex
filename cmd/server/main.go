@@ -123,6 +123,18 @@ func main() {
 		jwtSecret     = os.Getenv("CORTEX_JWT_SECRET")
 	)
 
+	// Login brute-force / DoS protection for /auth/login. Defaults are conservative
+	// for an internet-exposed self-host; each knob is overridable. TrustProxy must
+	// be enabled ONLY behind a trusted reverse proxy (else X-Forwarded-For spoofing
+	// defeats per-IP limits).
+	loginLimiterCfg := rpc.DefaultLoginLimiterConfig()
+	loginLimiterCfg.PerIP = envInt("CORTEX_LOGIN_PER_IP_PER_MIN", loginLimiterCfg.PerIP)
+	loginLimiterCfg.PerIPBurst = envInt("CORTEX_LOGIN_PER_IP_BURST", loginLimiterCfg.PerIPBurst)
+	loginLimiterCfg.MaxFailures = envInt("CORTEX_LOGIN_MAX_FAILURES", loginLimiterCfg.MaxFailures)
+	loginLimiterCfg.MaxConcurrent = envInt("CORTEX_LOGIN_MAX_CONCURRENT", loginLimiterCfg.MaxConcurrent)
+	loginLimiterCfg.TrustProxy = envBool("CORTEX_TRUST_PROXY", false)
+	loginLimiter := rpc.NewLoginLimiter(loginLimiterCfg)
+
 	// The UI logs in for a JWT signed with this secret.
 	// Precedence:
 	//   1. CORTEX_JWT_SECRET (explicit)
@@ -232,7 +244,7 @@ func main() {
 	mux.Handle(grpcreflect.NewHandlerV1(reflector))
 	mux.Handle(grpcreflect.NewHandlerV1Alpha(reflector))
 	// Web UI: login mints a JWT, the embedded SPA is the catch-all route.
-	mux.Handle("/auth/login", rpc.LoginHandler(jwtMgr, uiUser, uiPass, "admin", log, multiTenant, st))
+	mux.Handle("/auth/login", rpc.LoginHandler(jwtMgr, uiUser, uiPass, "admin", log, multiTenant, st, loginLimiter))
 	mux.Handle("/", ui.Handler())
 
 	srv := &http.Server{

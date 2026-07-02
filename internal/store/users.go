@@ -23,6 +23,27 @@ import (
 // ErrUserExists is returned by CreateUser when the username is already taken.
 var ErrUserExists = errors.New("user already exists")
 
+// passwordParams are the argon2id cost parameters for password hashing. We pin
+// Parallelism=1 rather than the library default of NumCPU: one core per verify
+// keeps the cost predictable and portable across machines, and shrinks the
+// blast radius of a login flood (a burst of logins can't seize every core). We
+// compensate with Iterations=2 over a 64 MiB memory cost, which is at/above
+// OWASP guidance and stays GPU-hostile. ComparePasswordAndHash reads the cost
+// parameters back out of each stored PHC string, so changing these values only
+// affects newly created/updated hashes — existing hashes keep verifying.
+var passwordParams = &argon2id.Params{
+	Memory:      64 * 1024, // 64 MiB
+	Iterations:  2,
+	Parallelism: 1,
+	SaltLength:  16,
+	KeyLength:   32,
+}
+
+// PasswordParams returns the argon2id parameters used to hash passwords. It is
+// exported so the login handler can build a dummy hash with matching
+// verification cost for its username-enumeration timing defense.
+func PasswordParams() *argon2id.Params { return passwordParams }
+
 // User is an account in the multi-tenancy registry. PasswordHash is an argon2id
 // PHC string (passwords are low-frequency, so a slow hash is right). ID doubles as
 // the Weaviate tenant name for the user's memories.
@@ -122,7 +143,7 @@ func (s *Store) CreateUser(ctx context.Context, username, password, role string)
 	if password == "" {
 		return User{}, errors.New("password must not be empty")
 	}
-	hash, err := argon2id.CreateHash(password, argon2id.DefaultParams)
+	hash, err := argon2id.CreateHash(password, passwordParams)
 	if err != nil {
 		return User{}, fmt.Errorf("hash password: %w", err)
 	}
@@ -229,7 +250,7 @@ func (s *Store) SetUserPassword(ctx context.Context, id, password string) error 
 	if password == "" {
 		return errors.New("password must not be empty")
 	}
-	hash, err := argon2id.CreateHash(password, argon2id.DefaultParams)
+	hash, err := argon2id.CreateHash(password, passwordParams)
 	if err != nil {
 		return fmt.Errorf("hash password: %w", err)
 	}
