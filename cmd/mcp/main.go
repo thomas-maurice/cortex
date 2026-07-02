@@ -164,7 +164,7 @@ func main() {
 	cfg.SetDefault("source", "claude-code")
 	cfg.SetDefault("mcp.search-limit", 0) // 0 = defer to the server's own default
 	cfg.SetDefault("mcp.fact-limit", 0)
-	cfg.SetDefault("mcp.timeout", "2s") // per-call fail-fast deadline so a slow/down server never blocks Claude
+	cfg.SetDefault("mcp.timeout", "5s") // per-call fail-fast deadline so a slow/down server never blocks Claude
 	cfg.SetDefault("save.hostname-tag", false) // opt-in: stamp host:<hostname> on saves
 	_ = cfg.BindEnv("server", "CORTEX_SERVER_URL")
 	_ = cfg.BindEnv("token", "CORTEX_AUTH_TOKEN")
@@ -185,9 +185,9 @@ func main() {
 	autoSaveTags := config.AutoTags(cfg.GetStringSlice("save.tags"), cfg.GetBool("save.hostname-tag"))
 
 	// Fail-fast deadline for every tool call: a slow or unreachable Cortex server
-	// must never hang Claude while it loads/recalls context. Default 2s; tune with
-	// CORTEX_MCP_TIMEOUT (e.g. "5s") if a cold Ollama embed or a consolidate trips it.
-	callTimeout := 2 * time.Second
+	// must never hang Claude while it loads/recalls context. Default 5s; tune with
+	// CORTEX_MCP_TIMEOUT (e.g. "10s") if a cold Ollama embed or a consolidate trips it.
+	callTimeout := 5 * time.Second
 	if t, err := time.ParseDuration(cfg.GetString("mcp.timeout")); err == nil && t > 0 {
 		callTimeout = t
 	} else {
