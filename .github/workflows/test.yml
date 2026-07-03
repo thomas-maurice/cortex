@@ -10,6 +10,25 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+
+    services:
+      weaviate:
+        image: cr.weaviate.io/semitechnologies/weaviate:1.38.0
+        env:
+          AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: "true"
+          PERSISTENCE_DATA_PATH: /var/lib/weaviate
+          DEFAULT_VECTORIZER_MODULE: none
+          ENABLE_MODULES: ""
+        ports:
+          - 8085:8080
+          - 50055:50051
+        options: >-
+          --health-cmd "wget -qO- http://localhost:8080/v1/meta || exit 1"
+          --health-interval 5s
+          --health-timeout 10s
+          --health-retries 12
+          --health-start-period 15s
+
     steps:
       - uses: actions/checkout@v4
 
@@ -34,5 +53,29 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      - name: Lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v2.12.2
+
+      - name: Buf lint
+        uses: bufbuild/buf-action@v1
+        with:
+          lint: true
+          format: false
+          push: false
+          breaking: ${{ github.event_name == 'pull_request' }}
+          breaking_against: "https://github.com/thomas-maurice/cortex.git#branch=master"
+
       - name: Test
         run: go test -race ./...
+        env:
+          CORTEX_TEST_WEAVIATE_REST: localhost:8085
+          CORTEX_TEST_WEAVIATE_GRPC: localhost:50055
+
+      - name: Test (multi-tenant)
+        run: go test -race ./internal/store/...
+        env:
+          CORTEX_TEST_WEAVIATE_REST: localhost:8085
+          CORTEX_TEST_WEAVIATE_GRPC: localhost:50055
+          CORTEX_TEST_MULTI_TENANT: "1"

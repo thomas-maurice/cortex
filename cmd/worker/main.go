@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/thomas-maurice/cortex/internal/bus"
@@ -184,7 +185,7 @@ func main() {
 	defer cc.Stop()
 
 	lcc, err := linkCons.Consume(func(msg jetstream.Msg) {
-		handleLink(ctx, log, st, msg)
+		handleLink(ctx, log, js, st, msg)
 	})
 	if err != nil {
 		log.Error("consume links", "err", err)
@@ -240,21 +241,53 @@ func ensureSchemaWithRetry(ctx context.Context, log *slog.Logger, st *store.Stor
 // events share one durable consumer.
 func handle(ctx context.Context, log *slog.Logger, js jetstream.JetStream, embedder *embed.Client, st *store.Store, chunker *chunk.Chunker, msg jetstream.Msg, dedupDistance float32) {
 	if msg.Subject() == memory.SubjectSummary {
-		handleSummary(ctx, log, embedder, st, msg)
+		handleSummary(ctx, log, js, embedder, st, msg)
 		return
 	}
 	handleIndex(ctx, log, js, embedder, st, chunker, msg, dedupDistance)
+}
+
+// deadLetterPublisher is the signature for publishing a dead-letter record.
+// In production it wraps bus.PublishDead; in tests it is a controllable stub.
+type deadLetterPublisher func(dl memory.DeadLetter) error
+
+// deadLetterMalformed dead-letters a message whose payload could not be
+// unmarshalled, preserving the raw bytes in the synthetic Record.Text field so
+// an operator can inspect them via `cortex dead`. It Term-s the message after a
+// successful publish (no more redeliveries of a fundamentally broken payload),
+// or NAK-s if the dead-letter publish itself fails (so NATS redelivers and we
+// get another chance to preserve the bytes rather than silently dropping them).
+// A durability queue must never silently lose bytes.
+func deadLetterMalformed(ctx context.Context, log *slog.Logger, pub deadLetterPublisher, msg jetstream.Msg, unmarshalErr error) {
+	raw := msg.Data()
+	dl := memory.DeadLetter{
+		Record: memory.Record{
+			ID:     uuid.New().String(),
+			Text:   string(raw),
+			Source: "malformed-payload",
+		},
+		Error:      fmt.Sprintf("malformed payload: %s", unmarshalErr),
+		Deliveries: numDelivered(msg),
+		FailedAt:   time.Now().UTC(),
+	}
+	if err := pub(dl); err != nil {
+		log.Error("dead-letter publish failed, will retry", "err", err, "unmarshal_err", unmarshalErr)
+		_ = msg.Nak()
+		return
+	}
+	log.Error("bad payload, dead-lettered", "raw_bytes", len(raw), "err", unmarshalErr)
+	_ = msg.Term()
 }
 
 // handleSummary embeds a conversation summary and upserts it (one per
 // conversation, replaced in place). Summaries are reproducible — the agent
 // re-summarises periodically — so on permanent failure we log loudly and ack
 // rather than dead-letter.
-func handleSummary(ctx context.Context, log *slog.Logger, embedder *embed.Client, st *store.Store, msg jetstream.Msg) {
+func handleSummary(ctx context.Context, log *slog.Logger, js jetstream.JetStream, embedder *embed.Client, st *store.Store, msg jetstream.Msg) {
 	var sum memory.Summary
 	if err := json.Unmarshal(msg.Data(), &sum); err != nil {
-		log.Error("bad summary payload, terminating", "err", err)
-		_ = msg.Term()
+		pub := func(dl memory.DeadLetter) error { return bus.PublishDead(ctx, js, dl) }
+		deadLetterMalformed(ctx, log, pub, msg, err)
 		return
 	}
 
@@ -321,11 +354,11 @@ var linkMu sync.Mutex
 // remove needs no waiting: a missing endpoint has no edge to clear, so it applies
 // to whichever endpoint exists and acks. The apply itself is idempotent
 // (set-union / set-difference), so redelivery and duplicate publishes are no-ops.
-func handleLink(ctx context.Context, log *slog.Logger, st *store.Store, msg jetstream.Msg) {
+func handleLink(ctx context.Context, log *slog.Logger, js jetstream.JetStream, st *store.Store, msg jetstream.Msg) {
 	var lm memory.LinkMsg
 	if err := json.Unmarshal(msg.Data(), &lm); err != nil {
-		log.Error("bad link payload, terminating", "err", err)
-		_ = msg.Term()
+		pub := func(dl memory.DeadLetter) error { return bus.PublishDead(ctx, js, dl) }
+		deadLetterMalformed(ctx, log, pub, msg, err)
 		return
 	}
 	if lm.A == "" || lm.B == "" || lm.A == lm.B {
@@ -553,9 +586,11 @@ func indexChunks(ctx context.Context, embedder *embed.Client, ts *store.TenantSt
 func handleIndex(ctx context.Context, log *slog.Logger, js jetstream.JetStream, embedder *embed.Client, st *store.Store, chunker *chunk.Chunker, msg jetstream.Msg, dedupDistance float32) {
 	var rec memory.Record
 	if err := json.Unmarshal(msg.Data(), &rec); err != nil {
-		// Unrecoverable: bad payload. Terminate so it is not redelivered.
-		log.Error("bad payload, terminating", "err", err)
-		_ = msg.Term()
+		// Unrecoverable: bad payload. Dead-letter it (preserving raw bytes) and
+		// Term so NATS does not redeliver. If the dead-letter publish fails, NAK
+		// instead — redelivery is better than silent data loss.
+		pub := func(dl memory.DeadLetter) error { return bus.PublishDead(ctx, js, dl) }
+		deadLetterMalformed(ctx, log, pub, msg, err)
 		return
 	}
 

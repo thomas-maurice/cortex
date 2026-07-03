@@ -717,6 +717,43 @@ export class SearchResponse extends Message<SearchResponse> {
 }
 
 /**
+ * @generated from message cortex.v1.SearchSimilarResponse
+ */
+export class SearchSimilarResponse extends Message<SearchSimilarResponse> {
+  /**
+   * @generated from field: repeated cortex.v1.Hit hits = 1;
+   */
+  hits: Hit[] = [];
+
+  constructor(data?: PartialMessage<SearchSimilarResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "cortex.v1.SearchSimilarResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "hits", kind: "message", T: Hit, repeated: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): SearchSimilarResponse {
+    return new SearchSimilarResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): SearchSimilarResponse {
+    return new SearchSimilarResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): SearchSimilarResponse {
+    return new SearchSimilarResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: SearchSimilarResponse | PlainMessage<SearchSimilarResponse> | undefined, b: SearchSimilarResponse | PlainMessage<SearchSimilarResponse> | undefined): boolean {
+    return proto3.util.equals(SearchSimilarResponse, a, b);
+  }
+}
+
+/**
  * @generated from message cortex.v1.ListRequest
  */
 export class ListRequest extends Message<ListRequest> {
@@ -3779,6 +3816,261 @@ export class DeleteApiKeyResponse extends Message<DeleteApiKeyResponse> {
 
   static equals(a: DeleteApiKeyResponse | PlainMessage<DeleteApiKeyResponse> | undefined, b: DeleteApiKeyResponse | PlainMessage<DeleteApiKeyResponse> | undefined): boolean {
     return proto3.util.equals(DeleteApiKeyResponse, a, b);
+  }
+}
+
+/**
+ * @generated from message cortex.v1.AdminCreateApiKeyRequest
+ */
+export class AdminCreateApiKeyRequest extends Message<AdminCreateApiKeyRequest> {
+  /**
+   * the target user the key is minted for
+   *
+   * @generated from field: string username = 1;
+   */
+  username = "";
+
+  /**
+   * human label ("laptop", "ci"); optional
+   *
+   * @generated from field: string label = 2;
+   */
+  label = "";
+
+  constructor(data?: PartialMessage<AdminCreateApiKeyRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "cortex.v1.AdminCreateApiKeyRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "username", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "label", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): AdminCreateApiKeyRequest {
+    return new AdminCreateApiKeyRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): AdminCreateApiKeyRequest {
+    return new AdminCreateApiKeyRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): AdminCreateApiKeyRequest {
+    return new AdminCreateApiKeyRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: AdminCreateApiKeyRequest | PlainMessage<AdminCreateApiKeyRequest> | undefined, b: AdminCreateApiKeyRequest | PlainMessage<AdminCreateApiKeyRequest> | undefined): boolean {
+    return proto3.util.equals(AdminCreateApiKeyRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message cortex.v1.AdminCreateApiKeyResponse
+ */
+export class AdminCreateApiKeyResponse extends Message<AdminCreateApiKeyResponse> {
+  /**
+   * raw_key is the full API key, returned EXACTLY ONCE. Hand it to the user now;
+   * it cannot be retrieved again.
+   *
+   * @generated from field: string raw_key = 1;
+   */
+  rawKey = "";
+
+  /**
+   * @generated from field: cortex.v1.ApiKeyInfo key = 2;
+   */
+  key?: ApiKeyInfo;
+
+  constructor(data?: PartialMessage<AdminCreateApiKeyResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "cortex.v1.AdminCreateApiKeyResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "raw_key", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "key", kind: "message", T: ApiKeyInfo },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): AdminCreateApiKeyResponse {
+    return new AdminCreateApiKeyResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): AdminCreateApiKeyResponse {
+    return new AdminCreateApiKeyResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): AdminCreateApiKeyResponse {
+    return new AdminCreateApiKeyResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: AdminCreateApiKeyResponse | PlainMessage<AdminCreateApiKeyResponse> | undefined, b: AdminCreateApiKeyResponse | PlainMessage<AdminCreateApiKeyResponse> | undefined): boolean {
+    return proto3.util.equals(AdminCreateApiKeyResponse, a, b);
+  }
+}
+
+/**
+ * @generated from message cortex.v1.AdminListApiKeysRequest
+ */
+export class AdminListApiKeysRequest extends Message<AdminListApiKeysRequest> {
+  /**
+   * the target user whose keys to list
+   *
+   * @generated from field: string username = 1;
+   */
+  username = "";
+
+  constructor(data?: PartialMessage<AdminListApiKeysRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "cortex.v1.AdminListApiKeysRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "username", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): AdminListApiKeysRequest {
+    return new AdminListApiKeysRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): AdminListApiKeysRequest {
+    return new AdminListApiKeysRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): AdminListApiKeysRequest {
+    return new AdminListApiKeysRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: AdminListApiKeysRequest | PlainMessage<AdminListApiKeysRequest> | undefined, b: AdminListApiKeysRequest | PlainMessage<AdminListApiKeysRequest> | undefined): boolean {
+    return proto3.util.equals(AdminListApiKeysRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message cortex.v1.AdminListApiKeysResponse
+ */
+export class AdminListApiKeysResponse extends Message<AdminListApiKeysResponse> {
+  /**
+   * @generated from field: repeated cortex.v1.ApiKeyInfo keys = 1;
+   */
+  keys: ApiKeyInfo[] = [];
+
+  constructor(data?: PartialMessage<AdminListApiKeysResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "cortex.v1.AdminListApiKeysResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "keys", kind: "message", T: ApiKeyInfo, repeated: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): AdminListApiKeysResponse {
+    return new AdminListApiKeysResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): AdminListApiKeysResponse {
+    return new AdminListApiKeysResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): AdminListApiKeysResponse {
+    return new AdminListApiKeysResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: AdminListApiKeysResponse | PlainMessage<AdminListApiKeysResponse> | undefined, b: AdminListApiKeysResponse | PlainMessage<AdminListApiKeysResponse> | undefined): boolean {
+    return proto3.util.equals(AdminListApiKeysResponse, a, b);
+  }
+}
+
+/**
+ * @generated from message cortex.v1.AdminDeleteApiKeyRequest
+ */
+export class AdminDeleteApiKeyRequest extends Message<AdminDeleteApiKeyRequest> {
+  /**
+   * the target user who owns the key
+   *
+   * @generated from field: string username = 1;
+   */
+  username = "";
+
+  /**
+   * the API key object id to delete
+   *
+   * @generated from field: string id = 2;
+   */
+  id = "";
+
+  constructor(data?: PartialMessage<AdminDeleteApiKeyRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "cortex.v1.AdminDeleteApiKeyRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "username", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): AdminDeleteApiKeyRequest {
+    return new AdminDeleteApiKeyRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): AdminDeleteApiKeyRequest {
+    return new AdminDeleteApiKeyRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): AdminDeleteApiKeyRequest {
+    return new AdminDeleteApiKeyRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: AdminDeleteApiKeyRequest | PlainMessage<AdminDeleteApiKeyRequest> | undefined, b: AdminDeleteApiKeyRequest | PlainMessage<AdminDeleteApiKeyRequest> | undefined): boolean {
+    return proto3.util.equals(AdminDeleteApiKeyRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message cortex.v1.AdminDeleteApiKeyResponse
+ */
+export class AdminDeleteApiKeyResponse extends Message<AdminDeleteApiKeyResponse> {
+  /**
+   * "deleted"
+   *
+   * @generated from field: string status = 1;
+   */
+  status = "";
+
+  constructor(data?: PartialMessage<AdminDeleteApiKeyResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "cortex.v1.AdminDeleteApiKeyResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "status", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): AdminDeleteApiKeyResponse {
+    return new AdminDeleteApiKeyResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): AdminDeleteApiKeyResponse {
+    return new AdminDeleteApiKeyResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): AdminDeleteApiKeyResponse {
+    return new AdminDeleteApiKeyResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: AdminDeleteApiKeyResponse | PlainMessage<AdminDeleteApiKeyResponse> | undefined, b: AdminDeleteApiKeyResponse | PlainMessage<AdminDeleteApiKeyResponse> | undefined): boolean {
+    return proto3.util.equals(AdminDeleteApiKeyResponse, a, b);
   }
 }
 

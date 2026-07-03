@@ -1,0 +1,12 @@
+version: "2"
+
+linters:
+  default: standard
+
+  settings:
+    errcheck:
+      # Deferring resp.Body.Close() without checking the return error is idiomatic
+      # Go. The body is already consumed or discarded at the call site; the Close
+      # error carries no actionable information.
+      exclude-functions:
+        - "(io.ReadCloser).Close"

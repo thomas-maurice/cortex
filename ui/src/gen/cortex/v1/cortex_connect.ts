@@ -3,7 +3,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { ConsolidateRequest, ConsolidateResponse, CreateApiKeyRequest, CreateApiKeyResponse, CreateUserRequest, CreateUserResponse, DeadRequest, DeadResponse, DeleteApiKeyRequest, DeleteApiKeyResponse, DeleteNamespaceRequest, DeleteNamespaceResponse, DeleteRequest, DeleteResponse, DeleteUserRequest, DeleteUserResponse, DismissDuplicateRequest, DismissDuplicateResponse, DoctorRequest, DoctorResponse, IndexQueueRequest, IndexQueueResponse, LinkRequest, LinkResponse, ListApiKeysRequest, ListApiKeysResponse, ListDuplicateCandidatesRequest, ListDuplicateCandidatesResponse, ListNamespacesRequest, ListNamespacesResponse, ListRequest, ListResponse, ListSummariesRequest, ListSummariesResponse, ListUsersRequest, ListUsersResponse, MigrateMTRequest, MigrateMTResponse, PullModelRequest, PullModelResponse, RecallSessionRequest, RecallSessionResponse, ReindexRequest, ReindexResponse, RenameNamespaceRequest, RenameNamespaceResponse, ResetUserPasswordRequest, ResetUserPasswordResponse, RestoreMemoriesRequest, RestoreMemoriesResponse, SaveRequest, SaveResponse, SearchRequest, SearchResponse, SearchSimilarRequest, SetUserRoleRequest, SetUserRoleResponse, StatusRequest, StatusResponse, SummarizeSessionRequest, SummarizeSessionResponse, UnlinkRequest, UnlinkResponse, UpdateMemoryRequest, UpdateMemoryResponse } from "./cortex_pb.js";
+import { AdminCreateApiKeyRequest, AdminCreateApiKeyResponse, AdminDeleteApiKeyRequest, AdminDeleteApiKeyResponse, AdminListApiKeysRequest, AdminListApiKeysResponse, ConsolidateRequest, ConsolidateResponse, CreateApiKeyRequest, CreateApiKeyResponse, CreateUserRequest, CreateUserResponse, DeadRequest, DeadResponse, DeleteApiKeyRequest, DeleteApiKeyResponse, DeleteNamespaceRequest, DeleteNamespaceResponse, DeleteRequest, DeleteResponse, DeleteUserRequest, DeleteUserResponse, DismissDuplicateRequest, DismissDuplicateResponse, DoctorRequest, DoctorResponse, IndexQueueRequest, IndexQueueResponse, LinkRequest, LinkResponse, ListApiKeysRequest, ListApiKeysResponse, ListDuplicateCandidatesRequest, ListDuplicateCandidatesResponse, ListNamespacesRequest, ListNamespacesResponse, ListRequest, ListResponse, ListSummariesRequest, ListSummariesResponse, ListUsersRequest, ListUsersResponse, MigrateMTRequest, MigrateMTResponse, PullModelRequest, PullModelResponse, RecallSessionRequest, RecallSessionResponse, ReindexRequest, ReindexResponse, RenameNamespaceRequest, RenameNamespaceResponse, ResetUserPasswordRequest, ResetUserPasswordResponse, RestoreMemoriesRequest, RestoreMemoriesResponse, SaveRequest, SaveResponse, SearchRequest, SearchResponse, SearchSimilarRequest, SearchSimilarResponse, SetUserRoleRequest, SetUserRoleResponse, StatusRequest, StatusResponse, SummarizeSessionRequest, SummarizeSessionResponse, UnlinkRequest, UnlinkResponse, UpdateMemoryRequest, UpdateMemoryResponse } from "./cortex_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -63,7 +63,7 @@ export const MemoryService = {
     searchSimilar: {
       name: "SearchSimilar",
       I: SearchSimilarRequest,
-      O: SearchResponse,
+      O: SearchSimilarResponse,
       kind: MethodKind.Unary,
     },
     /**
@@ -419,6 +419,45 @@ export const MemoryService = {
       name: "DeleteApiKey",
       I: DeleteApiKeyRequest,
       O: DeleteApiKeyResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * ---- Admin: API key management for other users (P5b) ----
+     * These mirror the P6 self-service RPCs but target an arbitrary user by
+     * username, letting an admin provision keys for headless/service accounts
+     * without the web UI. Admin-only; FailedPrecondition when MT is disabled.
+     * AdminCreateApiKey mints a new key for the named user. Returns the raw key
+     * exactly once.
+     *
+     * @generated from rpc cortex.v1.MemoryService.AdminCreateApiKey
+     */
+    adminCreateApiKey: {
+      name: "AdminCreateApiKey",
+      I: AdminCreateApiKeyRequest,
+      O: AdminCreateApiKeyResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * AdminListApiKeys returns the named user's API keys (never the secret).
+     *
+     * @generated from rpc cortex.v1.MemoryService.AdminListApiKeys
+     */
+    adminListApiKeys: {
+      name: "AdminListApiKeys",
+      I: AdminListApiKeysRequest,
+      O: AdminListApiKeysResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * AdminDeleteApiKey removes one of the named user's API keys. Returns NotFound
+     * when the key does not exist or belongs to a different user.
+     *
+     * @generated from rpc cortex.v1.MemoryService.AdminDeleteApiKey
+     */
+    adminDeleteApiKey: {
+      name: "AdminDeleteApiKey",
+      I: AdminDeleteApiKeyRequest,
+      O: AdminDeleteApiKeyResponse,
       kind: MethodKind.Unary,
     },
   }

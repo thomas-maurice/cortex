@@ -37,7 +37,7 @@ avoid colliding with other local services:
 
 | Service | Host port | Notes |
 |---------|-----------|-------|
-| server | **8088** → 8080 | Connect RPC + embedded UI. **Auth is OFF in dev** (no `CORTEX_AUTH_TOKEN`), so the CLI/curl need no token. UI login defaults to `admin` / `admin`. |
+| server | **8088** → 8080 | Connect RPC + embedded UI. **Auth is ON in dev** (multi-tenant default): RPC calls need a bearer token (JWT from `/auth/login`, or an API key). Compose defaults the UI login to `admin` / `admin`, but the persisted bootstrap admin's password may differ — as of 2026-07-03 `admin`/`admin` is rejected on the local stack (see §1b). |
 | weaviate | 8081 (REST), 50051 (gRPC) | The live store — **has real data**. |
 | nats | 4223 (client), 8223 (mon) | JetStream; the index queue. |
 | ollama | 11434 | Embeddings. Model `qwen3-embedding:0.6b` (1024-dim). |
@@ -54,12 +54,25 @@ make model     # pull the embedding model into the running ollama container
 docker compose ps
 ```
 
-Quick health / smoke checks against the running server:
+Quick health / smoke checks against the running server (auth is on, so mint a
+JWT first — an `unauthenticated` reply still proves the server is up):
 
 ```bash
-curl -s http://localhost:8088/cortex.v1.MemoryService/Status      -d '{}' -H 'content-type: application/json'
-curl -s http://localhost:8088/cortex.v1.MemoryService/IndexQueue  -d '{}' -H 'content-type: application/json'
+TOKEN=$(curl -s http://localhost:8088/auth/login \
+  -d '{"username":"admin","password":"<dev admin password>"}' \
+  -H 'content-type: application/json' | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])')
+curl -s http://localhost:8088/cortex.v1.MemoryService/Status     -d '{}' -H 'content-type: application/json' -H "Authorization: Bearer $TOKEN"
+curl -s http://localhost:8088/cortex.v1.MemoryService/IndexQueue -d '{}' -H 'content-type: application/json' -H "Authorization: Bearer $TOKEN"
 ```
+
+### 1b. Dev-stack auth gotcha (2026-07-03)
+
+`.env` at the repo root sets only `CORTEX_JWT_SECRET` + rerank tuning — no UI
+creds and no `CORTEX_AUTH_TOKEN` — so compose defaults the login to
+`admin`/`admin`. In practice `admin`/`admin` is REJECTED on the persisted dev
+store (the bootstrap admin's password was changed via the users UI, or predates
+the argon2/security-hardening commits). Ask Thomas for the dev admin password,
+or break-glass with `cortex users reset-password` using an admin API key.
 
 UI: open <http://localhost:8088/>.
 

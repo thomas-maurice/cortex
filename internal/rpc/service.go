@@ -100,14 +100,22 @@ func NewService(nc *nats.Conn, js jetstream.JetStream, st *store.Store, embedder
 // req.Msg. When multi-tenancy is off the TenantStore is a no-op (no .WithTenant
 // calls); when on, it applies the authenticated user's tenant to every Weaviate
 // builder.
-func (s *Service) tenantStore(ctx context.Context) *store.TenantStore {
+//
+// In multi-tenant mode a missing identity is an error, never a fallback: the
+// auth interceptor is supposed to reject unauthenticated requests before they
+// reach a handler, so reaching here without an identity means that guarantee
+// broke — silently using a shared tenant would serve another user's data.
+func (s *Service) tenantStore(ctx context.Context) (*store.TenantStore, error) {
 	id, ok := identity.From(ctx)
 	if !ok {
-		// No identity on context means open/dev mode; use the bootstrap tenant so
-		// single-user dev still works without authentication.
-		return s.store.Tenant(identity.BootstrapTenant)
+		if s.cfg.MultiTenant {
+			return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("no authenticated identity on request"))
+		}
+		// No identity in single-user/dev mode (no auth configured); everything
+		// lives in the bootstrap tenant.
+		return s.store.Tenant(identity.BootstrapTenant), nil
 	}
-	return s.store.Tenant(id.UserID)
+	return s.store.Tenant(id.UserID), nil
 }
 
 func (s *Service) Save(ctx context.Context, req *connect.Request[cortexv1.SaveRequest]) (*connect.Response[cortexv1.SaveResponse], error) {
@@ -172,7 +180,10 @@ func (s *Service) UpdateMemory(ctx context.Context, req *connect.Request[cortexv
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("text must not be empty"))
 	}
 
-	ts := s.tenantStore(ctx)
+	ts, err := s.tenantStore(ctx)
+	if err != nil {
+		return nil, err
+	}
 	rec, ok, err := ts.Get(ctx, id)
 	if err != nil {
 		return nil, err
@@ -222,7 +233,10 @@ func (s *Service) Search(ctx context.Context, req *connect.Request[cortexv1.Sear
 	if err != nil {
 		return nil, err
 	}
-	ts := s.tenantStore(ctx)
+	ts, err := s.tenantStore(ctx)
+	if err != nil {
+		return nil, err
+	}
 	hits, err := s.searchStore(ctx, ts, vec, store.SearchOpts{
 		Namespace:          resolveNamespace(req.Msg.GetNamespace(), s.cfg.DefaultNamespace),
 		Limit:              int(req.Msg.GetLimit()),
@@ -308,13 +322,16 @@ func (s *Service) reinforce(ts *store.TenantStore, hits []memory.Hit) {
 // vector (Weaviate nearObject) — it never calls the embedder, so it costs no
 // inference regardless of how large the seed memory is. This is the backend for
 // the UI's "find similar"; the seed memory itself is excluded by the store.
-func (s *Service) SearchSimilar(ctx context.Context, req *connect.Request[cortexv1.SearchSimilarRequest]) (*connect.Response[cortexv1.SearchResponse], error) {
+func (s *Service) SearchSimilar(ctx context.Context, req *connect.Request[cortexv1.SearchSimilarRequest]) (*connect.Response[cortexv1.SearchSimilarResponse], error) {
 	id := strings.TrimSpace(req.Msg.GetId())
 	if id == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id must not be empty"))
 	}
 
-	ts := s.tenantStore(ctx)
+	ts, err := s.tenantStore(ctx)
+	if err != nil {
+		return nil, err
+	}
 	hits, err := ts.SearchByID(ctx, id, store.SearchOpts{
 		Namespace:   resolveNamespace(req.Msg.GetNamespace(), s.cfg.DefaultNamespace),
 		Limit:       int(req.Msg.GetLimit()),
@@ -328,7 +345,7 @@ func (s *Service) SearchSimilar(ctx context.Context, req *connect.Request[cortex
 		return nil, err
 	}
 
-	out := &cortexv1.SearchResponse{Hits: make([]*cortexv1.Hit, 0, len(hits))}
+	out := &cortexv1.SearchSimilarResponse{Hits: make([]*cortexv1.Hit, 0, len(hits))}
 	for _, h := range hits {
 		out.Hits = append(out.Hits, hitToProto(h))
 	}
@@ -336,7 +353,10 @@ func (s *Service) SearchSimilar(ctx context.Context, req *connect.Request[cortex
 }
 
 func (s *Service) List(ctx context.Context, req *connect.Request[cortexv1.ListRequest]) (*connect.Response[cortexv1.ListResponse], error) {
-	ts := s.tenantStore(ctx)
+	ts, err := s.tenantStore(ctx)
+	if err != nil {
+		return nil, err
+	}
 	recs, err := ts.List(ctx, store.ListOpts{
 		Namespace:   resolveNamespace(req.Msg.GetNamespace(), s.cfg.DefaultNamespace),
 		Limit:       int(req.Msg.GetLimit()),
@@ -358,7 +378,10 @@ func (s *Service) Delete(ctx context.Context, req *connect.Request[cortexv1.Dele
 	if id == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id must not be empty"))
 	}
-	ts := s.tenantStore(ctx)
+	ts, err := s.tenantStore(ctx)
+	if err != nil {
+		return nil, err
+	}
 	if err := ts.Delete(ctx, id); err != nil {
 		return nil, err
 	}
@@ -375,9 +398,10 @@ func (s *Service) Status(ctx context.Context, _ *connect.Request[cortexv1.Status
 		out.WeaviateOk = true
 		// Count scoped to the caller's tenant — a normal user sees their own count,
 		// not a cross-tenant total (which would be a privacy leak in MT mode).
-		ts := s.tenantStore(ctx)
-		if c, err := ts.Count(ctx, ""); err == nil {
-			out.MemoryCount = int64(c)
+		if ts, err := s.tenantStore(ctx); err == nil {
+			if c, err := ts.Count(ctx, ""); err == nil {
+				out.MemoryCount = int64(c)
+			}
 		}
 	}
 	if err := s.embedder.Reachable(ctx); err == nil {
@@ -422,8 +446,9 @@ func (s *Service) Doctor(ctx context.Context, _ *connect.Request[cortexv1.Doctor
 	weaviateErr := s.store.Ready(ctx)
 	add("weaviate", weaviateErr, "ready")
 	if weaviateErr == nil {
-		ts := s.tenantStore(ctx)
-		if c, err := ts.Count(ctx, ""); err != nil {
+		if ts, err := s.tenantStore(ctx); err != nil {
+			add("store-query", err, "")
+		} else if c, err := ts.Count(ctx, ""); err != nil {
 			add("store-query", err, "")
 		} else {
 			add("store-query", nil, fmt.Sprintf("%d memories stored", c))
@@ -449,7 +474,10 @@ func (s *Service) Doctor(ctx context.Context, _ *connect.Request[cortexv1.Doctor
 func (s *Service) Reindex(ctx context.Context, req *connect.Request[cortexv1.ReindexRequest]) (*connect.Response[cortexv1.ReindexResponse], error) {
 	ns := resolveNamespace(req.Msg.GetNamespace(), s.cfg.DefaultNamespace)
 
-	ts := s.tenantStore(ctx)
+	ts, err := s.tenantStore(ctx)
+	if err != nil {
+		return nil, err
+	}
 	recs, err := ts.List(ctx, store.ListOpts{Namespace: ns, Limit: allLimit})
 	if err != nil {
 		return nil, err
@@ -655,7 +683,10 @@ func (s *Service) RecallSession(ctx context.Context, req *connect.Request[cortex
 	if err != nil {
 		return nil, err
 	}
-	ts := s.tenantStore(ctx)
+	ts, err := s.tenantStore(ctx)
+	if err != nil {
+		return nil, err
+	}
 	// First hop: best-matching summary.
 	hits, err := ts.SearchSummaries(ctx, vec, store.SummarySearchOpts{
 		Namespace:   resolveNamespace(req.Msg.GetNamespace(), s.cfg.DefaultNamespace),
@@ -696,7 +727,10 @@ func (s *Service) RecallSession(ctx context.Context, req *connect.Request[cortex
 }
 
 func (s *Service) ListSummaries(ctx context.Context, req *connect.Request[cortexv1.ListSummariesRequest]) (*connect.Response[cortexv1.ListSummariesResponse], error) {
-	ts := s.tenantStore(ctx)
+	ts, err := s.tenantStore(ctx)
+	if err != nil {
+		return nil, err
+	}
 	sums, err := ts.ListSummaries(ctx, store.SummaryListOpts{
 		Namespace: resolveNamespace(req.Msg.GetNamespace(), s.cfg.DefaultNamespace),
 		Limit:     int(req.Msg.GetLimit()),
@@ -755,7 +789,10 @@ func (s *Service) publishEdge(ctx context.Context, op memory.LinkOp, idA, idB st
 // human/agent review. Candidates deleted since flagging are dropped; a group
 // whose candidates have all vanished is omitted entirely.
 func (s *Service) ListDuplicateCandidates(ctx context.Context, req *connect.Request[cortexv1.ListDuplicateCandidatesRequest]) (*connect.Response[cortexv1.ListDuplicateCandidatesResponse], error) {
-	ts := s.tenantStore(ctx)
+	ts, err := s.tenantStore(ctx)
+	if err != nil {
+		return nil, err
+	}
 	flagged, err := ts.ListWithCandidates(ctx,
 		resolveNamespace(req.Msg.GetNamespace(), s.cfg.DefaultNamespace),
 		int(req.Msg.GetLimit()))
@@ -797,7 +834,10 @@ func (s *Service) DismissDuplicate(ctx context.Context, req *connect.Request[cor
 	s.linkMu.Lock()
 	defer s.linkMu.Unlock()
 
-	ts := s.tenantStore(ctx)
+	ts, err := s.tenantStore(ctx)
+	if err != nil {
+		return nil, err
+	}
 	a, b, err := s.linkEndpoints(ctx, ts, req.Msg.GetId(), req.Msg.GetTargetId())
 	if err != nil {
 		return nil, err
@@ -852,7 +892,10 @@ func (s *Service) Consolidate(ctx context.Context, req *connect.Request[cortexv1
 	if err != nil {
 		return nil, err
 	}
-	ts := s.tenantStore(ctx)
+	ts, err := s.tenantStore(ctx)
+	if err != nil {
+		return nil, err
+	}
 	includeTags, anyTags, excludeTags := req.Msg.GetTags(), req.Msg.GetAnyTags(), req.Msg.GetExcludeTags()
 	seeds, err := s.searchStore(ctx, ts, vec, store.SearchOpts{
 		Namespace:   resolveNamespace(req.Msg.GetNamespace(), s.cfg.DefaultNamespace),
@@ -1028,7 +1071,10 @@ func (s *Service) RestoreMemories(ctx context.Context, req *connect.Request[cort
 // summary counts and the most recent activity, for the UI's namespace admin view.
 // Scoped to the caller's tenant — a user sees only their own namespaces.
 func (s *Service) ListNamespaces(ctx context.Context, _ *connect.Request[cortexv1.ListNamespacesRequest]) (*connect.Response[cortexv1.ListNamespacesResponse], error) {
-	ts := s.tenantStore(ctx)
+	ts, err := s.tenantStore(ctx)
+	if err != nil {
+		return nil, err
+	}
 	stats, err := ts.ListNamespaces(ctx)
 	if err != nil {
 		return nil, err
@@ -1053,7 +1099,10 @@ func (s *Service) RenameNamespace(ctx context.Context, req *connect.Request[cort
 	if from == to {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("from and to must differ"))
 	}
-	ts := s.tenantStore(ctx)
+	ts, err := s.tenantStore(ctx)
+	if err != nil {
+		return nil, err
+	}
 	mem, sum, err := ts.RenameNamespace(ctx, from, to)
 	if err != nil {
 		return nil, err
@@ -1072,7 +1121,10 @@ func (s *Service) DeleteNamespace(ctx context.Context, req *connect.Request[cort
 	if ns == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("namespace must not be empty"))
 	}
-	ts := s.tenantStore(ctx)
+	ts, err := s.tenantStore(ctx)
+	if err != nil {
+		return nil, err
+	}
 	mem, sum, err := ts.DeleteNamespace(ctx, ns)
 	if err != nil {
 		return nil, err

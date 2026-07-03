@@ -144,7 +144,7 @@ type MemoryServiceClient interface {
 	// SearchSimilar finds memories similar to an EXISTING memory (by id), reusing
 	// that memory's stored vector — it never re-embeds. Use it for "more like this
 	// one" instead of feeding a memory's own text back through Search.
-	SearchSimilar(context.Context, *connect.Request[v1.SearchSimilarRequest]) (*connect.Response[v1.SearchResponse], error)
+	SearchSimilar(context.Context, *connect.Request[v1.SearchSimilarRequest]) (*connect.Response[v1.SearchSimilarResponse], error)
 	// List returns stored memories newest-first, without a vector query.
 	List(context.Context, *connect.Request[v1.ListRequest]) (*connect.Response[v1.ListResponse], error)
 	// Delete removes a memory by ID.
@@ -282,7 +282,7 @@ func NewMemoryServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(memoryServiceMethods.ByName("Search")),
 			connect.WithClientOptions(opts...),
 		),
-		searchSimilar: connect.NewClient[v1.SearchSimilarRequest, v1.SearchResponse](
+		searchSimilar: connect.NewClient[v1.SearchSimilarRequest, v1.SearchSimilarResponse](
 			httpClient,
 			baseURL+MemoryServiceSearchSimilarProcedure,
 			connect.WithSchema(memoryServiceMethods.ByName("SearchSimilar")),
@@ -488,7 +488,7 @@ type memoryServiceClient struct {
 	save                    *connect.Client[v1.SaveRequest, v1.SaveResponse]
 	updateMemory            *connect.Client[v1.UpdateMemoryRequest, v1.UpdateMemoryResponse]
 	search                  *connect.Client[v1.SearchRequest, v1.SearchResponse]
-	searchSimilar           *connect.Client[v1.SearchSimilarRequest, v1.SearchResponse]
+	searchSimilar           *connect.Client[v1.SearchSimilarRequest, v1.SearchSimilarResponse]
 	list                    *connect.Client[v1.ListRequest, v1.ListResponse]
 	delete                  *connect.Client[v1.DeleteRequest, v1.DeleteResponse]
 	status                  *connect.Client[v1.StatusRequest, v1.StatusResponse]
@@ -539,7 +539,7 @@ func (c *memoryServiceClient) Search(ctx context.Context, req *connect.Request[v
 }
 
 // SearchSimilar calls cortex.v1.MemoryService.SearchSimilar.
-func (c *memoryServiceClient) SearchSimilar(ctx context.Context, req *connect.Request[v1.SearchSimilarRequest]) (*connect.Response[v1.SearchResponse], error) {
+func (c *memoryServiceClient) SearchSimilar(ctx context.Context, req *connect.Request[v1.SearchSimilarRequest]) (*connect.Response[v1.SearchSimilarResponse], error) {
 	return c.searchSimilar.CallUnary(ctx, req)
 }
 
@@ -717,7 +717,7 @@ type MemoryServiceHandler interface {
 	// SearchSimilar finds memories similar to an EXISTING memory (by id), reusing
 	// that memory's stored vector — it never re-embeds. Use it for "more like this
 	// one" instead of feeding a memory's own text back through Search.
-	SearchSimilar(context.Context, *connect.Request[v1.SearchSimilarRequest]) (*connect.Response[v1.SearchResponse], error)
+	SearchSimilar(context.Context, *connect.Request[v1.SearchSimilarRequest]) (*connect.Response[v1.SearchSimilarResponse], error)
 	// List returns stored memories newest-first, without a vector query.
 	List(context.Context, *connect.Request[v1.ListRequest]) (*connect.Response[v1.ListResponse], error)
 	// Delete removes a memory by ID.
@@ -1144,7 +1144,7 @@ func (UnimplementedMemoryServiceHandler) Search(context.Context, *connect.Reques
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cortex.v1.MemoryService.Search is not implemented"))
 }
 
-func (UnimplementedMemoryServiceHandler) SearchSimilar(context.Context, *connect.Request[v1.SearchSimilarRequest]) (*connect.Response[v1.SearchResponse], error) {
+func (UnimplementedMemoryServiceHandler) SearchSimilar(context.Context, *connect.Request[v1.SearchSimilarRequest]) (*connect.Response[v1.SearchSimilarResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cortex.v1.MemoryService.SearchSimilar is not implemented"))
 }
 

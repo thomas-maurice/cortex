@@ -196,15 +196,6 @@ func (f *fakeAdminStore) DeleteApiKey(_ context.Context, id string) error {
 	return nil
 }
 
-// ---- Service stub wired to fakeAdminStore ----
-
-// adminSvc builds a minimal Service whose admin handlers can be called directly.
-// The fake store is stored in a thin wrapper so we can override just the methods
-// the handlers touch, without touching the real store.Store type.
-type fakeStoreAdapter struct {
-	f *fakeAdminStore
-}
-
 // adminService builds a Service configured for the P5/P6 handler tests. The
 // Service's store field is a *store.Store (the real type), which we can't easily
 // replace without an interface. Instead we test the handler logic directly by

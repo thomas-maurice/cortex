@@ -19,8 +19,6 @@ import (
 
 	"connectrpc.com/connect"
 	"connectrpc.com/grpcreflect"
-	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/h2c"
 
 	"github.com/thomas-maurice/cortex/gen/cortex/v1/cortexv1connect"
 	"github.com/thomas-maurice/cortex/internal/bus"
@@ -247,10 +245,17 @@ func main() {
 	mux.Handle("/auth/login", rpc.LoginHandler(jwtMgr, uiUser, uiPass, "admin", log, multiTenant, st, loginLimiter))
 	mux.Handle("/", ui.Handler())
 
+	// Cleartext HTTP/2 (prior knowledge) is required for gRPC clients hitting the
+	// server directly without TLS; native http.Server support replaces the
+	// deprecated x/net h2c handler.
+	protocols := new(http.Protocols)
+	protocols.SetHTTP1(true)
+	protocols.SetUnencryptedHTTP2(true)
 	srv := &http.Server{
 		Addr:              listen,
-		Handler:           h2c.NewHandler(mux, &http2.Server{}),
+		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
+		Protocols:         protocols,
 	}
 
 	go func() {
