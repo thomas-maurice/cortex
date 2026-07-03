@@ -30,6 +30,12 @@ service MemoryService {
   rpc Delete(DeleteRequest) returns (DeleteResponse) {}
   // Status is a fast health/connectivity probe of the backing services.
   rpc Status(StatusRequest) returns (StatusResponse) {}
+  // GetVersion reports the server's build version. Intentionally
+  // UNAUTHENTICATED (exempted in the auth interceptor): clients use it to
+  // decide whether their binaries are compatible or need upgrading (`cortex
+  // upgrade`) before they have working credentials. It exposes nothing but
+  // the version string.
+  rpc GetVersion(GetVersionRequest) returns (GetVersionResponse) {}
   // Doctor runs deeper diagnostics and returns a per-check breakdown.
   rpc Doctor(DoctorRequest) returns (DoctorResponse) {}
   // Reindex re-embeds memories through the worker (e.g. after a model change).
@@ -271,6 +277,14 @@ message DeleteRequest {
 
 message DeleteResponse {
   string status = 1; // "deleted"
+}
+
+message GetVersionRequest {}
+
+message GetVersionResponse {
+  // Server build version as stamped by the release pipeline, without a
+  // leading "v" (e.g. "0.0.13"); "dev" for un-stamped local builds.
+  string version = 1;
 }
 
 message StatusRequest {}

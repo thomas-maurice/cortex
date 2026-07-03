@@ -49,6 +49,9 @@ const (
 	MemoryServiceDeleteProcedure = "/cortex.v1.MemoryService/Delete"
 	// MemoryServiceStatusProcedure is the fully-qualified name of the MemoryService's Status RPC.
 	MemoryServiceStatusProcedure = "/cortex.v1.MemoryService/Status"
+	// MemoryServiceGetVersionProcedure is the fully-qualified name of the MemoryService's GetVersion
+	// RPC.
+	MemoryServiceGetVersionProcedure = "/cortex.v1.MemoryService/GetVersion"
 	// MemoryServiceDoctorProcedure is the fully-qualified name of the MemoryService's Doctor RPC.
 	MemoryServiceDoctorProcedure = "/cortex.v1.MemoryService/Doctor"
 	// MemoryServiceReindexProcedure is the fully-qualified name of the MemoryService's Reindex RPC.
@@ -151,6 +154,12 @@ type MemoryServiceClient interface {
 	Delete(context.Context, *connect.Request[v1.DeleteRequest]) (*connect.Response[v1.DeleteResponse], error)
 	// Status is a fast health/connectivity probe of the backing services.
 	Status(context.Context, *connect.Request[v1.StatusRequest]) (*connect.Response[v1.StatusResponse], error)
+	// GetVersion reports the server's build version. Intentionally
+	// UNAUTHENTICATED (exempted in the auth interceptor): clients use it to
+	// decide whether their binaries are compatible or need upgrading (`cortex
+	// upgrade`) before they have working credentials. It exposes nothing but
+	// the version string.
+	GetVersion(context.Context, *connect.Request[v1.GetVersionRequest]) (*connect.Response[v1.GetVersionResponse], error)
 	// Doctor runs deeper diagnostics and returns a per-check breakdown.
 	Doctor(context.Context, *connect.Request[v1.DoctorRequest]) (*connect.Response[v1.DoctorResponse], error)
 	// Reindex re-embeds memories through the worker (e.g. after a model change).
@@ -304,6 +313,12 @@ func NewMemoryServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			httpClient,
 			baseURL+MemoryServiceStatusProcedure,
 			connect.WithSchema(memoryServiceMethods.ByName("Status")),
+			connect.WithClientOptions(opts...),
+		),
+		getVersion: connect.NewClient[v1.GetVersionRequest, v1.GetVersionResponse](
+			httpClient,
+			baseURL+MemoryServiceGetVersionProcedure,
+			connect.WithSchema(memoryServiceMethods.ByName("GetVersion")),
 			connect.WithClientOptions(opts...),
 		),
 		doctor: connect.NewClient[v1.DoctorRequest, v1.DoctorResponse](
@@ -492,6 +507,7 @@ type memoryServiceClient struct {
 	list                    *connect.Client[v1.ListRequest, v1.ListResponse]
 	delete                  *connect.Client[v1.DeleteRequest, v1.DeleteResponse]
 	status                  *connect.Client[v1.StatusRequest, v1.StatusResponse]
+	getVersion              *connect.Client[v1.GetVersionRequest, v1.GetVersionResponse]
 	doctor                  *connect.Client[v1.DoctorRequest, v1.DoctorResponse]
 	reindex                 *connect.Client[v1.ReindexRequest, v1.ReindexResponse]
 	dead                    *connect.Client[v1.DeadRequest, v1.DeadResponse]
@@ -556,6 +572,11 @@ func (c *memoryServiceClient) Delete(ctx context.Context, req *connect.Request[v
 // Status calls cortex.v1.MemoryService.Status.
 func (c *memoryServiceClient) Status(ctx context.Context, req *connect.Request[v1.StatusRequest]) (*connect.Response[v1.StatusResponse], error) {
 	return c.status.CallUnary(ctx, req)
+}
+
+// GetVersion calls cortex.v1.MemoryService.GetVersion.
+func (c *memoryServiceClient) GetVersion(ctx context.Context, req *connect.Request[v1.GetVersionRequest]) (*connect.Response[v1.GetVersionResponse], error) {
+	return c.getVersion.CallUnary(ctx, req)
 }
 
 // Doctor calls cortex.v1.MemoryService.Doctor.
@@ -724,6 +745,12 @@ type MemoryServiceHandler interface {
 	Delete(context.Context, *connect.Request[v1.DeleteRequest]) (*connect.Response[v1.DeleteResponse], error)
 	// Status is a fast health/connectivity probe of the backing services.
 	Status(context.Context, *connect.Request[v1.StatusRequest]) (*connect.Response[v1.StatusResponse], error)
+	// GetVersion reports the server's build version. Intentionally
+	// UNAUTHENTICATED (exempted in the auth interceptor): clients use it to
+	// decide whether their binaries are compatible or need upgrading (`cortex
+	// upgrade`) before they have working credentials. It exposes nothing but
+	// the version string.
+	GetVersion(context.Context, *connect.Request[v1.GetVersionRequest]) (*connect.Response[v1.GetVersionResponse], error)
 	// Doctor runs deeper diagnostics and returns a per-check breakdown.
 	Doctor(context.Context, *connect.Request[v1.DoctorRequest]) (*connect.Response[v1.DoctorResponse], error)
 	// Reindex re-embeds memories through the worker (e.g. after a model change).
@@ -873,6 +900,12 @@ func NewMemoryServiceHandler(svc MemoryServiceHandler, opts ...connect.HandlerOp
 		MemoryServiceStatusProcedure,
 		svc.Status,
 		connect.WithSchema(memoryServiceMethods.ByName("Status")),
+		connect.WithHandlerOptions(opts...),
+	)
+	memoryServiceGetVersionHandler := connect.NewUnaryHandler(
+		MemoryServiceGetVersionProcedure,
+		svc.GetVersion,
+		connect.WithSchema(memoryServiceMethods.ByName("GetVersion")),
 		connect.WithHandlerOptions(opts...),
 	)
 	memoryServiceDoctorHandler := connect.NewUnaryHandler(
@@ -1065,6 +1098,8 @@ func NewMemoryServiceHandler(svc MemoryServiceHandler, opts ...connect.HandlerOp
 			memoryServiceDeleteHandler.ServeHTTP(w, r)
 		case MemoryServiceStatusProcedure:
 			memoryServiceStatusHandler.ServeHTTP(w, r)
+		case MemoryServiceGetVersionProcedure:
+			memoryServiceGetVersionHandler.ServeHTTP(w, r)
 		case MemoryServiceDoctorProcedure:
 			memoryServiceDoctorHandler.ServeHTTP(w, r)
 		case MemoryServiceReindexProcedure:
@@ -1158,6 +1193,10 @@ func (UnimplementedMemoryServiceHandler) Delete(context.Context, *connect.Reques
 
 func (UnimplementedMemoryServiceHandler) Status(context.Context, *connect.Request[v1.StatusRequest]) (*connect.Response[v1.StatusResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cortex.v1.MemoryService.Status is not implemented"))
+}
+
+func (UnimplementedMemoryServiceHandler) GetVersion(context.Context, *connect.Request[v1.GetVersionRequest]) (*connect.Response[v1.GetVersionResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cortex.v1.MemoryService.GetVersion is not implemented"))
 }
 
 func (UnimplementedMemoryServiceHandler) Doctor(context.Context, *connect.Request[v1.DoctorRequest]) (*connect.Response[v1.DoctorResponse], error) {

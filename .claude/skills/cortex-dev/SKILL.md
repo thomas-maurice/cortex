@@ -235,6 +235,7 @@ and scripting without going through Claude. Global flags: `--server`
 | `import <file> [--batch N]` | Restore a dump via the NATS ingest queue (worker re-embeds). Preserves ids/links. **This is how you load seed data** — point `--server` at the target. |
 | `reindex [-n '*'] [--yes]` | Server snapshots then republishes all memories for re-embed. `--yes` allows a destructive class rebuild on an embedding-dimension change. |
 | `migrate-mt [--yes]` | One-shot migration: snapshot + drop non-MT classes + recreate as MT + re-import to the calling admin's tenant. Admin-only; requires `CORTEX_MULTI_TENANT=true`. |
+| `upgrade [--yes]` | Self-update `cortex` + `cortex-mcp` to the **server's** version (checksum-verified GitHub release, atomic replace; `internal/upgrade`). Blocked on dev builds & major mismatch. Uses the public `GetVersion` RPC (the ONE auth-exempt procedure — see `ServerAuthInterceptor`). Same logic backs the `cortex_upgrade` MCP tool; the MCP server probes the version at startup and advertises upgrades via MCP instructions. |
 | `users list\|get\|add\|delete\|set-role\|reset-password` | Manage users from the CLI (MT mode; needs an admin `--token`). Break-glass for fixing accounts without the UI. |
 | `users apikey create\|list\|delete <username>` | Admin-provision API keys for another user (MT mode; admin `--token`). `create` prints the raw secret once — use to bootstrap headless/service accounts that can't reach the web UI to self-mint. |
 | `dead [--requeue \| --purge]` | List dead-lettered (failed-to-index) memories; requeue or purge them. |

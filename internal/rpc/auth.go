@@ -14,6 +14,7 @@ import (
 
 	"connectrpc.com/connect"
 
+	"github.com/thomas-maurice/cortex/gen/cortex/v1/cortexv1connect"
 	"github.com/thomas-maurice/cortex/internal/identity"
 	"github.com/thomas-maurice/cortex/internal/store"
 )
@@ -254,6 +255,13 @@ func ServerAuthInterceptor(a Authenticator) connect.Interceptor {
 	return connect.UnaryInterceptorFunc(func(next connect.UnaryFunc) connect.UnaryFunc {
 		return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
 			if req.Spec().IsClient {
+				return next(ctx, req)
+			}
+			// GetVersion is deliberately public: clients need it to decide whether
+			// to upgrade BEFORE they have working credentials, and it exposes only
+			// the build version. No identity lands on the context, so a handler
+			// reached this way would still fail loud via tenantStore in MT mode.
+			if req.Spec().Procedure == cortexv1connect.MemoryServiceGetVersionProcedure {
 				return next(ctx, req)
 			}
 			id, err := a.Authenticate(ctx, req.Header())

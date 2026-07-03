@@ -572,6 +572,7 @@ authenticate with `--token` / `CORTEX_AUTH_TOKEN`.
 | `cortex users list \| get <u> \| add <u> [--role] \| delete <u> \| set-role <u> <role> \| reset-password <u>` | Manage users (multi-tenant mode; needs an **admin** `--token`). The break-glass path to fix accounts without the web UI. |
 | `cortex status` | Server health + store size (nats/weaviate/ollama/model/count). |
 | `cortex doctor` | Per-check diagnostics from the server. |
+| `cortex upgrade [--yes]` | Upgrade the local `cortex` + `cortex-mcp` binaries to the **server's** version: downloads the matching GitHub release, verifies its checksum, atomically replaces the binaries. Refuses on dev builds and major-version mismatches. Uses the public (unauthenticated) `GetVersion` RPC, so it works even with stale credentials. Also exposed to the LLM as the `cortex_upgrade` MCP tool — the MCP server probes the server version at startup and announces an available upgrade via its instructions. |
 | `cortex summarize "<text>" --conversation <id>` | Save/update a conversation summary (unique per `--conversation`). |
 | `cortex summaries [-n '*'] [-l N]` | List conversation summaries, most-recently-updated first. |
 | `cortex recall "<query>"` | Recall the best-matching past session: summary + its facts. |

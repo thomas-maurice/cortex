@@ -938,6 +938,77 @@ export class DeleteResponse extends Message<DeleteResponse> {
 }
 
 /**
+ * @generated from message cortex.v1.GetVersionRequest
+ */
+export class GetVersionRequest extends Message<GetVersionRequest> {
+  constructor(data?: PartialMessage<GetVersionRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "cortex.v1.GetVersionRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): GetVersionRequest {
+    return new GetVersionRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): GetVersionRequest {
+    return new GetVersionRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): GetVersionRequest {
+    return new GetVersionRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: GetVersionRequest | PlainMessage<GetVersionRequest> | undefined, b: GetVersionRequest | PlainMessage<GetVersionRequest> | undefined): boolean {
+    return proto3.util.equals(GetVersionRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message cortex.v1.GetVersionResponse
+ */
+export class GetVersionResponse extends Message<GetVersionResponse> {
+  /**
+   * Server build version as stamped by the release pipeline, without a
+   * leading "v" (e.g. "0.0.13"); "dev" for un-stamped local builds.
+   *
+   * @generated from field: string version = 1;
+   */
+  version = "";
+
+  constructor(data?: PartialMessage<GetVersionResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "cortex.v1.GetVersionResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "version", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): GetVersionResponse {
+    return new GetVersionResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): GetVersionResponse {
+    return new GetVersionResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): GetVersionResponse {
+    return new GetVersionResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: GetVersionResponse | PlainMessage<GetVersionResponse> | undefined, b: GetVersionResponse | PlainMessage<GetVersionResponse> | undefined): boolean {
+    return proto3.util.equals(GetVersionResponse, a, b);
+  }
+}
+
+/**
  * @generated from message cortex.v1.StatusRequest
  */
 export class StatusRequest extends Message<StatusRequest> {

@@ -8,6 +8,7 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -23,6 +24,7 @@ import (
 	"github.com/thomas-maurice/cortex/gen/cortex/v1/cortexv1connect"
 	"github.com/thomas-maurice/cortex/internal/config"
 	"github.com/thomas-maurice/cortex/internal/rpc"
+	"github.com/thomas-maurice/cortex/internal/upgrade"
 )
 
 // settings maps each persistent flag to its environment variable and built-in
@@ -359,7 +361,7 @@ func main() {
 		pf.StringVar(s.target, s.key, s.def, s.usage)
 	}
 
-	root.AddCommand(saveCmd(), editCmd(), listCmd(), searchCmd(), deleteCmd(), exportCmd(), importCmd(), reindexCmd(), deadCmd(), statusCmd(), doctorCmd(), summarizeCmd(), summariesCmd(), recallCmd(), candidatesCmd(), consolidateCmd(), hashPasswordCmd(), configCmd(), onboardCmd(), migrateMTCmd(), usersCmd())
+	root.AddCommand(saveCmd(), editCmd(), listCmd(), searchCmd(), deleteCmd(), exportCmd(), importCmd(), reindexCmd(), deadCmd(), statusCmd(), doctorCmd(), summarizeCmd(), summariesCmd(), recallCmd(), candidatesCmd(), consolidateCmd(), hashPasswordCmd(), configCmd(), onboardCmd(), migrateMTCmd(), usersCmd(), upgradeCmd())
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -771,6 +773,58 @@ func deadCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&requeue, "requeue", false, "resubmit all dead-lettered memories for indexing, then clear them")
 	cmd.Flags().BoolVar(&purge, "purge", false, "discard all dead-lettered memories")
+	return cmd
+}
+
+func upgradeCmd() *cobra.Command {
+	var yes bool
+	cmd := &cobra.Command{
+		Use:   "upgrade",
+		Short: "Upgrade the local cortex binaries to the server's version",
+		Long: "Upgrade downloads the GitHub release matching the SERVER's version and atomically\n" +
+			"replaces the local cortex and cortex-mcp binaries (whichever exist next to this\n" +
+			"executable), verifying the archive checksum first. The server is the deployment\n" +
+			"source of truth, so the client converges to its version — even downward.\n" +
+			"Refuses on dev/un-stamped builds and on a major-version mismatch.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			resp, err := client().GetVersion(cmd.Context(), connect.NewRequest(&cortexv1.GetVersionRequest{}))
+			if err != nil {
+				return fmt.Errorf("query server version: %w", err)
+			}
+			dec := upgrade.Decide(version, resp.Msg.GetVersion())
+			switch dec.Action {
+			case upgrade.UpToDate:
+				fmt.Println(dec.Reason)
+				return nil
+			case upgrade.Blocked:
+				return errors.New(dec.Reason)
+			}
+			if !yes {
+				fmt.Fprintf(os.Stderr, "%s\n", dec.Reason)
+				fmt.Fprint(os.Stderr, "Type 'yes' to continue: ")
+				var answer string
+				if _, err := fmt.Fscan(os.Stdin, &answer); err != nil || answer != "yes" {
+					return fmt.Errorf("aborted")
+				}
+			}
+			res, err := upgrade.Apply(cmd.Context(), upgrade.Options{Version: dec.Target})
+			if err != nil {
+				return err
+			}
+			for _, b := range res.Replaced {
+				fmt.Printf("upgraded %s to v%s\n", b, dec.Target)
+			}
+			for _, b := range res.Skipped {
+				fmt.Printf("skipped %s (not installed here)\n", b)
+			}
+			if len(res.Replaced) > 0 {
+				fmt.Println("\nRunning processes keep the old version until restarted (reconnect MCP / restart the session).")
+			}
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&yes, "yes", false, "skip the confirmation prompt")
 	return cmd
 }
 

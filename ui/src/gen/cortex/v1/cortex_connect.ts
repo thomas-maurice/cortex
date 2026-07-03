@@ -3,7 +3,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { AdminCreateApiKeyRequest, AdminCreateApiKeyResponse, AdminDeleteApiKeyRequest, AdminDeleteApiKeyResponse, AdminListApiKeysRequest, AdminListApiKeysResponse, ConsolidateRequest, ConsolidateResponse, CreateApiKeyRequest, CreateApiKeyResponse, CreateUserRequest, CreateUserResponse, DeadRequest, DeadResponse, DeleteApiKeyRequest, DeleteApiKeyResponse, DeleteNamespaceRequest, DeleteNamespaceResponse, DeleteRequest, DeleteResponse, DeleteUserRequest, DeleteUserResponse, DismissDuplicateRequest, DismissDuplicateResponse, DoctorRequest, DoctorResponse, IndexQueueRequest, IndexQueueResponse, LinkRequest, LinkResponse, ListApiKeysRequest, ListApiKeysResponse, ListDuplicateCandidatesRequest, ListDuplicateCandidatesResponse, ListNamespacesRequest, ListNamespacesResponse, ListRequest, ListResponse, ListSummariesRequest, ListSummariesResponse, ListUsersRequest, ListUsersResponse, MigrateMTRequest, MigrateMTResponse, PullModelRequest, PullModelResponse, RecallSessionRequest, RecallSessionResponse, ReindexRequest, ReindexResponse, RenameNamespaceRequest, RenameNamespaceResponse, ResetUserPasswordRequest, ResetUserPasswordResponse, RestoreMemoriesRequest, RestoreMemoriesResponse, SaveRequest, SaveResponse, SearchRequest, SearchResponse, SearchSimilarRequest, SearchSimilarResponse, SetUserRoleRequest, SetUserRoleResponse, StatusRequest, StatusResponse, SummarizeSessionRequest, SummarizeSessionResponse, UnlinkRequest, UnlinkResponse, UpdateMemoryRequest, UpdateMemoryResponse } from "./cortex_pb.js";
+import { AdminCreateApiKeyRequest, AdminCreateApiKeyResponse, AdminDeleteApiKeyRequest, AdminDeleteApiKeyResponse, AdminListApiKeysRequest, AdminListApiKeysResponse, ConsolidateRequest, ConsolidateResponse, CreateApiKeyRequest, CreateApiKeyResponse, CreateUserRequest, CreateUserResponse, DeadRequest, DeadResponse, DeleteApiKeyRequest, DeleteApiKeyResponse, DeleteNamespaceRequest, DeleteNamespaceResponse, DeleteRequest, DeleteResponse, DeleteUserRequest, DeleteUserResponse, DismissDuplicateRequest, DismissDuplicateResponse, DoctorRequest, DoctorResponse, GetVersionRequest, GetVersionResponse, IndexQueueRequest, IndexQueueResponse, LinkRequest, LinkResponse, ListApiKeysRequest, ListApiKeysResponse, ListDuplicateCandidatesRequest, ListDuplicateCandidatesResponse, ListNamespacesRequest, ListNamespacesResponse, ListRequest, ListResponse, ListSummariesRequest, ListSummariesResponse, ListUsersRequest, ListUsersResponse, MigrateMTRequest, MigrateMTResponse, PullModelRequest, PullModelResponse, RecallSessionRequest, RecallSessionResponse, ReindexRequest, ReindexResponse, RenameNamespaceRequest, RenameNamespaceResponse, ResetUserPasswordRequest, ResetUserPasswordResponse, RestoreMemoriesRequest, RestoreMemoriesResponse, SaveRequest, SaveResponse, SearchRequest, SearchResponse, SearchSimilarRequest, SearchSimilarResponse, SetUserRoleRequest, SetUserRoleResponse, StatusRequest, StatusResponse, SummarizeSessionRequest, SummarizeSessionResponse, UnlinkRequest, UnlinkResponse, UpdateMemoryRequest, UpdateMemoryResponse } from "./cortex_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -97,6 +97,21 @@ export const MemoryService = {
       name: "Status",
       I: StatusRequest,
       O: StatusResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * GetVersion reports the server's build version. Intentionally
+     * UNAUTHENTICATED (exempted in the auth interceptor): clients use it to
+     * decide whether their binaries are compatible or need upgrading (`cortex
+     * upgrade`) before they have working credentials. It exposes nothing but
+     * the version string.
+     *
+     * @generated from rpc cortex.v1.MemoryService.GetVersion
+     */
+    getVersion: {
+      name: "GetVersion",
+      I: GetVersionRequest,
+      O: GetVersionResponse,
       kind: MethodKind.Unary,
     },
     /**

@@ -388,6 +388,13 @@ func (s *Service) Delete(ctx context.Context, req *connect.Request[cortexv1.Dele
 	return connect.NewResponse(&cortexv1.DeleteResponse{Status: "deleted"}), nil
 }
 
+// GetVersion reports the server's build version. It is exempted from auth in
+// ServerAuthInterceptor (see there for why), so it must never touch the store
+// or reveal anything beyond the version string.
+func (s *Service) GetVersion(_ context.Context, _ *connect.Request[cortexv1.GetVersionRequest]) (*connect.Response[cortexv1.GetVersionResponse], error) {
+	return connect.NewResponse(&cortexv1.GetVersionResponse{Version: s.cfg.Version}), nil
+}
+
 func (s *Service) Status(ctx context.Context, _ *connect.Request[cortexv1.StatusRequest]) (*connect.Response[cortexv1.StatusResponse], error) {
 	out := &cortexv1.StatusResponse{
 		Model:   s.embedder.Model(),

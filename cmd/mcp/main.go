@@ -21,6 +21,7 @@ import (
 	"github.com/thomas-maurice/cortex/gen/cortex/v1/cortexv1connect"
 	"github.com/thomas-maurice/cortex/internal/config"
 	"github.com/thomas-maurice/cortex/internal/rpc"
+	"github.com/thomas-maurice/cortex/internal/upgrade"
 )
 
 // version is the build version, injected at release time via
@@ -205,10 +206,30 @@ func main() {
 		autoSaveTags:       autoSaveTags,
 	}
 
+	// Startup version probe (best-effort, short deadline so a down server never
+	// delays MCP startup): when the server runs a different, compatible version,
+	// the MCP instructions tell the model it may call cortex_upgrade. GetVersion
+	// is unauthenticated, so this works even with stale credentials.
+	instructions := ""
+	{
+		probeCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		if resp, err := d.client.GetVersion(probeCtx, connect.NewRequest(&cortexv1.GetVersionRequest{})); err == nil {
+			if dec := upgrade.Decide(version, resp.Msg.GetVersion()); dec.Action == upgrade.Upgrade {
+				instructions = fmt.Sprintf(
+					"The local cortex binaries (v%s) do not match the Cortex server (v%s). "+
+						"You may call the cortex_upgrade tool to download the matching release and update them; "+
+						"mention it to the user before doing so unless they asked for the upgrade.",
+					version, resp.Msg.GetVersion())
+				log.Info("upgrade available", "client", version, "server", resp.Msg.GetVersion())
+			}
+		}
+		cancel()
+	}
+
 	server := mcp.NewServer(&mcp.Implementation{
 		Name:    "cortex",
 		Version: version,
-	}, nil)
+	}, &mcp.ServerOptions{Instructions: instructions})
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "cortex_memory_save",
@@ -347,6 +368,17 @@ func main() {
 			"projects ONLY when the user explicitly asks to consolidate across everything — it pulls in much more " +
 			"and is expensive.",
 	}, withTimeout(callTimeout, d.consolidate))
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name: "cortex_upgrade",
+		Description: "Upgrade the LOCAL cortex binaries (cortex, cortex-mcp) to the version the Cortex SERVER is " +
+			"running: downloads the matching GitHub release, verifies its checksum, and atomically replaces the " +
+			"binaries installed next to this process. Call it when the user asks to upgrade cortex, or when the " +
+			"session instructions say an upgrade is available and the user agrees. It refuses on dev/un-stamped " +
+			"builds and on a major-version mismatch (manual upgrade required then), and it never touches the " +
+			"server itself. After a successful upgrade, tell the user the running MCP process keeps the OLD " +
+			"version until they reconnect the MCP server or restart the session.",
+	}, withTimeout(5*time.Minute, d.upgrade))
 
 	log.Info("cortex mcp server starting on stdio", "namespace", defaultNS, "server", serverURL, "autoSaveTags", autoSaveTags)
 	if err := server.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
@@ -839,4 +871,42 @@ func text2result(msg string) *mcp.CallToolResult {
 	return &mcp.CallToolResult{
 		Content: []mcp.Content{&mcp.TextContent{Text: msg}},
 	}
+}
+
+type UpgradeIn struct{}
+
+type UpgradeOut struct {
+	From     string   `json:"from" jsonschema:"local version before the upgrade"`
+	To       string   `json:"to,omitempty" jsonschema:"version installed (empty when nothing changed)"`
+	Replaced []string `json:"replaced,omitempty" jsonschema:"binaries that were replaced"`
+	Skipped  []string `json:"skipped,omitempty" jsonschema:"expected binaries not installed alongside this process"`
+	Message  string   `json:"message" jsonschema:"human-readable outcome; relay this to the user"`
+}
+
+// upgrade re-checks the server version at call time (the startup probe may be
+// stale) and only then downloads + installs. The gate lives in
+// upgrade.Decide: dev builds and major-version mismatches refuse.
+func (d *deps) upgrade(ctx context.Context, _ *mcp.CallToolRequest, _ UpgradeIn) (*mcp.CallToolResult, UpgradeOut, error) {
+	resp, err := d.client.GetVersion(ctx, connect.NewRequest(&cortexv1.GetVersionRequest{}))
+	if err != nil {
+		return nil, UpgradeOut{}, fmt.Errorf("query server version: %w", err)
+	}
+	dec := upgrade.Decide(version, resp.Msg.GetVersion())
+	switch dec.Action {
+	case upgrade.UpToDate:
+		return nil, UpgradeOut{From: version, Message: dec.Reason}, nil
+	case upgrade.Blocked:
+		return nil, UpgradeOut{}, fmt.Errorf("upgrade blocked: %s", dec.Reason)
+	}
+
+	res, err := upgrade.Apply(ctx, upgrade.Options{Version: dec.Target})
+	if err != nil {
+		return nil, UpgradeOut{}, err
+	}
+	msg := fmt.Sprintf("upgraded %s to v%s — the running MCP process still uses v%s until the user reconnects the MCP server or restarts the session",
+		strings.Join(res.Replaced, ", "), dec.Target, version)
+	if len(res.Replaced) == 0 {
+		msg = "nothing replaced: none of the expected binaries were found next to this executable"
+	}
+	return nil, UpgradeOut{From: version, To: dec.Target, Replaced: res.Replaced, Skipped: res.Skipped, Message: msg}, nil
 }
