@@ -122,6 +122,12 @@ services:
       CORTEX_BOOTSTRAP_USER: ${CORTEX_BOOTSTRAP_USER:-}
       CORTEX_BOOTSTRAP_PASSWORD: ${CORTEX_BOOTSTRAP_PASSWORD:-}
       CORTEX_BOOTSTRAP_API_KEY: ${CORTEX_BOOTSTRAP_API_KEY:-}
+      # Periodic full-server backup (disaster recovery). BACKUP_INTERVAL is a Go
+      # duration (e.g. "24h", "6h"); empty/unset disables the scheduled goroutine
+      # (the default). BACKUP_KEEP controls how many cortex-full-backup-*.json
+      # files are retained in CORTEX_BACKUP_DIR after each backup (default 7).
+      # BACKUP_INTERVAL: ${BACKUP_INTERVAL:-}
+      # BACKUP_KEEP: ${BACKUP_KEEP:-7}
     depends_on:
       - nats
       - weaviate

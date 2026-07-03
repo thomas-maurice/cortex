@@ -3,7 +3,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { AdminCreateApiKeyRequest, AdminCreateApiKeyResponse, AdminDeleteApiKeyRequest, AdminDeleteApiKeyResponse, AdminListApiKeysRequest, AdminListApiKeysResponse, ConsolidateRequest, ConsolidateResponse, CreateApiKeyRequest, CreateApiKeyResponse, CreateUserRequest, CreateUserResponse, DeadRequest, DeadResponse, DeleteApiKeyRequest, DeleteApiKeyResponse, DeleteNamespaceRequest, DeleteNamespaceResponse, DeleteRequest, DeleteResponse, DeleteUserRequest, DeleteUserResponse, DismissDuplicateRequest, DismissDuplicateResponse, DoctorRequest, DoctorResponse, GetVersionRequest, GetVersionResponse, IndexQueueRequest, IndexQueueResponse, LinkRequest, LinkResponse, ListApiKeysRequest, ListApiKeysResponse, ListDuplicateCandidatesRequest, ListDuplicateCandidatesResponse, ListNamespacesRequest, ListNamespacesResponse, ListRequest, ListResponse, ListSummariesRequest, ListSummariesResponse, ListUsersRequest, ListUsersResponse, MigrateMTRequest, MigrateMTResponse, PullModelRequest, PullModelResponse, RecallSessionRequest, RecallSessionResponse, ReindexRequest, ReindexResponse, RenameNamespaceRequest, RenameNamespaceResponse, ResetUserPasswordRequest, ResetUserPasswordResponse, RestoreMemoriesRequest, RestoreMemoriesResponse, SaveRequest, SaveResponse, SearchRequest, SearchResponse, SearchSimilarRequest, SearchSimilarResponse, SetUserRoleRequest, SetUserRoleResponse, StatusRequest, StatusResponse, SummarizeSessionRequest, SummarizeSessionResponse, UnlinkRequest, UnlinkResponse, UpdateMemoryRequest, UpdateMemoryResponse } from "./cortex_pb.js";
+import { AdminCreateApiKeyRequest, AdminCreateApiKeyResponse, AdminDeleteApiKeyRequest, AdminDeleteApiKeyResponse, AdminListApiKeysRequest, AdminListApiKeysResponse, BackupAllRequest, BackupAllResponse, BackupSelfRequest, BackupSelfResponse, ConsolidateRequest, ConsolidateResponse, CreateApiKeyRequest, CreateApiKeyResponse, CreateUserRequest, CreateUserResponse, DeadRequest, DeadResponse, DeleteApiKeyRequest, DeleteApiKeyResponse, DeleteBackupRequest, DeleteBackupResponse, DeleteNamespaceRequest, DeleteNamespaceResponse, DeleteRequest, DeleteResponse, DeleteUserRequest, DeleteUserResponse, DismissDuplicateRequest, DismissDuplicateResponse, DoctorRequest, DoctorResponse, DownloadBackupRequest, DownloadBackupResponse, GetS3ConfigRequest, GetS3ConfigResponse, GetVersionRequest, GetVersionResponse, IndexQueueRequest, IndexQueueResponse, LinkRequest, LinkResponse, ListApiKeysRequest, ListApiKeysResponse, ListBackupsRequest, ListBackupsResponse, ListDuplicateCandidatesRequest, ListDuplicateCandidatesResponse, ListNamespacesRequest, ListNamespacesResponse, ListRequest, ListResponse, ListSummariesRequest, ListSummariesResponse, ListUsersRequest, ListUsersResponse, MigrateMTRequest, MigrateMTResponse, PullModelRequest, PullModelResponse, RecallSessionRequest, RecallSessionResponse, ReindexRequest, ReindexResponse, RenameNamespaceRequest, RenameNamespaceResponse, ResetUserPasswordRequest, ResetUserPasswordResponse, RestoreAllRequest, RestoreAllResponse, RestoreMemoriesRequest, RestoreMemoriesResponse, RestoreSelfRequest, RestoreSelfResponse, SaveRequest, SaveResponse, SearchRequest, SearchResponse, SearchSimilarRequest, SearchSimilarResponse, SetS3ConfigRequest, SetS3ConfigResponse, SetUserRoleRequest, SetUserRoleResponse, StatusRequest, StatusResponse, SummarizeSessionRequest, SummarizeSessionResponse, TestS3Request, TestS3Response, UnlinkRequest, UnlinkResponse, UpdateMemoryRequest, UpdateMemoryResponse } from "./cortex_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -338,6 +338,138 @@ export const MemoryService = {
       name: "MigrateMT",
       I: MigrateMTRequest,
       O: MigrateMTResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * ---- Self-service backup (any authenticated user) ----
+     * BackupSelf returns a backup of the CALLER's OWN data — their tenant's
+     * memories and conversation summaries — as a downloadable file. Not
+     * admin-gated: everyone may back up their own data, never anyone else's.
+     *
+     * @generated from rpc cortex.v1.MemoryService.BackupSelf
+     */
+    backupSelf: {
+      name: "BackupSelf",
+      I: BackupSelfRequest,
+      O: BackupSelfResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * RestoreSelf restores a BackupSelf file into the CALLER's OWN tenant.
+     * Tenant attribution inside the uploaded file is IGNORED — a user can only
+     * ever restore into themselves. Records re-queue through the index queue
+     * (worker re-embeds); upsert-by-id makes it safe to re-run.
+     *
+     * @generated from rpc cortex.v1.MemoryService.RestoreSelf
+     */
+    restoreSelf: {
+      name: "RestoreSelf",
+      I: RestoreSelfRequest,
+      O: RestoreSelfResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * ---- Admin: Full-server backup & restore ----
+     * BackupAll snapshots EVERYTHING server-side into a timestamped JSON file in
+     * the server's backup dir: every tenant's memories and conversation
+     * summaries plus the user/API-key registry (credential HASHES, never
+     * plaintext). Admin-only. The disaster-recovery counterpart of the
+     * per-tenant Export. Vectors are not included; a restore re-embeds.
+     *
+     * @generated from rpc cortex.v1.MemoryService.BackupAll
+     */
+    backupAll: {
+      name: "BackupAll",
+      I: BackupAllRequest,
+      O: BackupAllResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * ListBackups lists the full-backup files in the server's backup dir,
+     * newest first. Admin-only.
+     *
+     * @generated from rpc cortex.v1.MemoryService.ListBackups
+     */
+    listBackups: {
+      name: "ListBackups",
+      I: ListBackupsRequest,
+      O: ListBackupsResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * RestoreAll restores a BackupAll file (named by bare filename, resolved
+     * inside the server's backup dir): recreates missing users and API keys
+     * (existing ones are left untouched), ensures tenants, then re-queues every
+     * record into its original tenant via the index queue (the worker
+     * re-embeds). Upsert-by-id makes it safe to re-run. Admin-only.
+     *
+     * @generated from rpc cortex.v1.MemoryService.RestoreAll
+     */
+    restoreAll: {
+      name: "RestoreAll",
+      I: RestoreAllRequest,
+      O: RestoreAllResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * DownloadBackup returns the raw content of a full-backup file from the
+     * server's backup dir, so an admin can keep offline copies. Admin-only.
+     *
+     * @generated from rpc cortex.v1.MemoryService.DownloadBackup
+     */
+    downloadBackup: {
+      name: "DownloadBackup",
+      I: DownloadBackupRequest,
+      O: DownloadBackupResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * DeleteBackup removes a full-backup file from the server's backup dir.
+     * Admin-only.
+     *
+     * @generated from rpc cortex.v1.MemoryService.DeleteBackup
+     */
+    deleteBackup: {
+      name: "DeleteBackup",
+      I: DeleteBackupRequest,
+      O: DeleteBackupResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * GetS3Config returns the offsite (S3) backup configuration with the secret
+     * key ALWAYS redacted — only whether one is set. Admin-only.
+     *
+     * @generated from rpc cortex.v1.MemoryService.GetS3Config
+     */
+    getS3Config: {
+      name: "GetS3Config",
+      I: GetS3ConfigRequest,
+      O: GetS3ConfigResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * SetS3Config stores the offsite backup configuration. An empty secret_key
+     * keeps the previously stored secret, so edits don't require re-entering
+     * it. Admin-only.
+     *
+     * @generated from rpc cortex.v1.MemoryService.SetS3Config
+     */
+    setS3Config: {
+      name: "SetS3Config",
+      I: SetS3ConfigRequest,
+      O: SetS3ConfigResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * TestS3 verifies the stored configuration by writing and deleting a probe
+     * object in the bucket. Admin-only.
+     *
+     * @generated from rpc cortex.v1.MemoryService.TestS3
+     */
+    testS3: {
+      name: "TestS3",
+      I: TestS3Request,
+      O: TestS3Response,
       kind: MethodKind.Unary,
     },
     /**

@@ -123,7 +123,9 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 	if err := s.ensureClass(ctx, summaryClass(s.multiTenant), summaryProperties()); err != nil {
 		return err
 	}
-	return nil
+	// CortexSettings is non-MT and provisioned alongside the memory classes so
+	// it is always available for S3 config reads/writes, regardless of MT mode.
+	return s.ensureClass(ctx, settingsClass(), settingsProperties())
 }
 
 // ensureClass creates the class if it is absent, else adds any missing
@@ -365,6 +367,49 @@ func (s *Store) IsClassMultiTenant(ctx context.Context, className string) (bool,
 		return false, fmt.Errorf("get class %s: %w", className, err)
 	}
 	return class.MultiTenancyConfig != nil && class.MultiTenancyConfig.Enabled, nil
+}
+
+// ListTenants returns the tenant names registered for className in Weaviate.
+// Returns an empty slice when the class has no tenants. Only meaningful when
+// multi-tenancy is enabled on the class; callers must check s.multiTenant.
+func (s *Store) ListTenants(ctx context.Context, className string) ([]string, error) {
+	tenants, err := s.client.Schema().TenantsGetter().WithClassName(className).Do(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list tenants %s: %w", className, err)
+	}
+	names := make([]string, 0, len(tenants))
+	for _, t := range tenants {
+		names = append(names, t.Name)
+	}
+	return names, nil
+}
+
+// ListAllTenants returns the union of tenant names across the Memory and
+// ConversationSummary classes, so an orphaned summary tenant (one that has
+// summaries but no memories, or vice versa) is still captured by BackupAll.
+// The returned slice is sorted for deterministic output.
+func (s *Store) ListAllTenants(ctx context.Context) ([]string, error) {
+	memTenants, err := s.ListTenants(ctx, memory.ClassName)
+	if err != nil {
+		return nil, err
+	}
+	sumTenants, err := s.ListTenants(ctx, memory.SummaryClassName)
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[string]struct{}, len(memTenants)+len(sumTenants))
+	for _, t := range memTenants {
+		seen[t] = struct{}{}
+	}
+	for _, t := range sumTenants {
+		seen[t] = struct{}{}
+	}
+	names := make([]string, 0, len(seen))
+	for t := range seen {
+		names = append(names, t)
+	}
+	sort.Strings(names)
+	return names, nil
 }
 
 // ListAllRecords scans the Memory class without any tenant scope — used by the

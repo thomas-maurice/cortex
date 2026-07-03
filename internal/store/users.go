@@ -313,6 +313,28 @@ func (s *Store) CreateApiKey(ctx context.Context, userID, label string) (raw str
 	return raw, key, err
 }
 
+// AddApiKeyFromBackup creates an API-key record verbatim from a full-server
+// backup. It preserves the stored KeyHash and Prefix (the raw key is not
+// available; hashes are one-way). The deterministic id (ApiKeyID(KeyHash))
+// is the same on any server, so the record lands in the correct slot.
+// Returns (true, nil) when created, (false, nil) when the key already exists
+// (an existing key is NEVER overwritten — a live store's key must survive a
+// re-run), and (false, err) on failure.
+func (s *Store) AddApiKeyFromBackup(ctx context.Context, k ApiKey) (bool, error) {
+	id := memory.ApiKeyID(k.KeyHash)
+	exists, err := s.client.Data().Checker().WithClassName(memory.ApiKeyClassName).WithID(id).Do(ctx)
+	if err != nil {
+		return false, fmt.Errorf("check api key: %w", err)
+	}
+	if exists {
+		return false, nil // already present; skip, never overwrite
+	}
+	if _, err := s.putApiKey(ctx, k.UserID, k.Label, k.KeyHash, k.Prefix); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // AddApiKeyRaw stores a SPECIFIC raw key (the env bootstrap key, so existing MCP/CLI
 // configs keep working). Idempotent: re-adding the same raw key upserts the same
 // object (deterministic id from the hash).

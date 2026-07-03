@@ -361,7 +361,7 @@ func main() {
 		pf.StringVar(s.target, s.key, s.def, s.usage)
 	}
 
-	root.AddCommand(saveCmd(), editCmd(), listCmd(), searchCmd(), deleteCmd(), exportCmd(), importCmd(), reindexCmd(), deadCmd(), statusCmd(), doctorCmd(), summarizeCmd(), summariesCmd(), recallCmd(), candidatesCmd(), consolidateCmd(), hashPasswordCmd(), configCmd(), onboardCmd(), migrateMTCmd(), usersCmd(), upgradeCmd())
+	root.AddCommand(saveCmd(), editCmd(), listCmd(), searchCmd(), deleteCmd(), exportCmd(), importCmd(), reindexCmd(), deadCmd(), statusCmd(), doctorCmd(), summarizeCmd(), summariesCmd(), recallCmd(), candidatesCmd(), consolidateCmd(), hashPasswordCmd(), configCmd(), onboardCmd(), migrateMTCmd(), usersCmd(), upgradeCmd(), backupCmd(), restoreCmd())
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -773,6 +773,240 @@ func deadCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&requeue, "requeue", false, "resubmit all dead-lettered memories for indexing, then clear them")
 	cmd.Flags().BoolVar(&purge, "purge", false, "discard all dead-lettered memories")
+	return cmd
+}
+
+func backupCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "backup",
+		Short: "Write a full server-side backup (all tenants + users); admin-only",
+		Long: "Backup asks the server to snapshot EVERYTHING into a timestamped JSON file in its\n" +
+			"backup directory: every tenant's memories and conversation summaries plus the\n" +
+			"user/API-key registry (credential hashes). Vectors are not included; a restore\n" +
+			"re-embeds through the worker. Requires an admin token.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			resp, err := client().BackupAll(cmd.Context(), connect.NewRequest(&cortexv1.BackupAllRequest{}))
+			if err != nil {
+				return err
+			}
+			m := resp.Msg
+			fmt.Printf("backup written:  %s\n", m.GetPath())
+			fmt.Printf("tenants:         %d\n", m.GetTenants())
+			fmt.Printf("memories:        %d\n", m.GetMemories())
+			fmt.Printf("summaries:       %d\n", m.GetSummaries())
+			fmt.Printf("users:           %d\n", m.GetUsers())
+			fmt.Printf("api keys:        %d\n", m.GetApiKeys())
+			if s3 := m.GetS3Result(); s3 != "" {
+				fmt.Printf("offsite (s3):    %s\n", s3)
+			}
+			return nil
+		},
+	}
+	cmd.AddCommand(backupListCmd(), backupDownloadCmd(), backupDeleteCmd(), backupSelfCmd())
+	return cmd
+}
+
+func backupSelfCmd() *cobra.Command {
+	var out string
+	cmd := &cobra.Command{
+		Use:   "self",
+		Short: "Download a backup of YOUR OWN data (memories + summaries); any user",
+		Long: "Backs up the calling user's own tenant — memories and conversation summaries —\n" +
+			"to a local file. Not admin-gated: everyone can back up their own data. Restore it\n" +
+			"later with 'cortex restore self <file>'.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			resp, err := client().BackupSelf(cmd.Context(), connect.NewRequest(&cortexv1.BackupSelfRequest{}))
+			if err != nil {
+				return err
+			}
+			dest := out
+			if dest == "" {
+				dest = resp.Msg.GetName()
+			}
+			if err := os.WriteFile(dest, resp.Msg.GetData(), 0o600); err != nil {
+				return fmt.Errorf("write %s: %w", dest, err)
+			}
+			fmt.Printf("wrote %s (%d memories, %d summaries)\n", dest, resp.Msg.GetMemories(), resp.Msg.GetSummaries())
+			return nil
+		},
+	}
+	cmd.Flags().StringVarP(&out, "output", "o", "", "local destination path (default: the server-suggested name)")
+	return cmd
+}
+
+func restoreSelfCmd() *cobra.Command {
+	var yes bool
+	cmd := &cobra.Command{
+		Use:   "self <local-backup-file>",
+		Short: "Restore YOUR OWN data from a local 'backup self' file; any user",
+		Long: "Uploads a local self-backup file and re-queues its records into YOUR OWN tenant —\n" +
+			"tenant attribution inside the file is ignored, you can only restore yourself. The\n" +
+			"worker re-embeds asynchronously. Upsert-by-id makes it safe to re-run.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			data, err := os.ReadFile(args[0])
+			if err != nil {
+				return err
+			}
+			if !yes {
+				fmt.Fprintf(os.Stderr, "Restore %q into YOUR tenant (existing memories kept; records re-queued)?\n", args[0])
+				fmt.Fprint(os.Stderr, "Type 'yes' to continue: ")
+				var answer string
+				if _, err := fmt.Fscan(os.Stdin, &answer); err != nil || answer != "yes" {
+					return fmt.Errorf("aborted")
+				}
+			}
+			resp, err := client().RestoreSelf(cmd.Context(), connect.NewRequest(&cortexv1.RestoreSelfRequest{Data: data}))
+			if err != nil {
+				return err
+			}
+			m := resp.Msg
+			fmt.Printf("memories queued:   %d\n", m.GetMemoriesQueued())
+			fmt.Printf("summaries queued:  %d\n", m.GetSummariesQueued())
+			if msg := m.GetMessage(); msg != "" {
+				fmt.Printf("\n%s\n", msg)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&yes, "yes", false, "skip the confirmation prompt")
+	return cmd
+}
+
+func backupDownloadCmd() *cobra.Command {
+	var out string
+	cmd := &cobra.Command{
+		Use:   "download <backup-file-name>",
+		Short: "Download a full-backup file from the server to a local file; admin-only",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			resp, err := client().DownloadBackup(cmd.Context(), connect.NewRequest(&cortexv1.DownloadBackupRequest{Name: args[0]}))
+			if err != nil {
+				return err
+			}
+			dest := out
+			if dest == "" {
+				dest = resp.Msg.GetName()
+			}
+			if err := os.WriteFile(dest, resp.Msg.GetData(), 0o600); err != nil {
+				return fmt.Errorf("write %s: %w", dest, err)
+			}
+			fmt.Printf("wrote %s (%d bytes)\n", dest, len(resp.Msg.GetData()))
+			return nil
+		},
+	}
+	cmd.Flags().StringVarP(&out, "output", "o", "", "local destination path (default: the backup's own name)")
+	return cmd
+}
+
+func backupDeleteCmd() *cobra.Command {
+	var yes bool
+	cmd := &cobra.Command{
+		Use:   "delete <backup-file-name>",
+		Short: "Delete a full-backup file from the server's backup dir; admin-only",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if !yes {
+				fmt.Fprintf(os.Stderr, "Delete server backup %q? Type 'yes' to continue: ", args[0])
+				var answer string
+				if _, err := fmt.Fscan(os.Stdin, &answer); err != nil || answer != "yes" {
+					return fmt.Errorf("aborted")
+				}
+			}
+			if _, err := client().DeleteBackup(cmd.Context(), connect.NewRequest(&cortexv1.DeleteBackupRequest{Name: args[0]})); err != nil {
+				return err
+			}
+			fmt.Println("deleted", args[0])
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&yes, "yes", false, "skip the confirmation prompt")
+	return cmd
+}
+
+func backupListCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "list",
+		Short: "List full-backup files in the server's backup directory; admin-only",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			resp, err := client().ListBackups(cmd.Context(), connect.NewRequest(&cortexv1.ListBackupsRequest{}))
+			if err != nil {
+				return err
+			}
+			if len(resp.Msg.GetBackups()) == 0 {
+				fmt.Println("no full backups on the server")
+				return nil
+			}
+			for _, b := range resp.Msg.GetBackups() {
+				fmt.Printf("%s  %10d bytes  %s\n", b.GetCreatedAt().AsTime().Format(time.RFC3339), b.GetSizeBytes(), b.GetName())
+			}
+			return nil
+		},
+	}
+}
+
+func restoreCmd() *cobra.Command {
+	var yes bool
+	var file string
+	cmd := &cobra.Command{
+		Use:   "restore [backup-file-name]",
+		Short: "Restore a full server backup, by server-side name or from a local file; admin-only",
+		Long: "Restore recreates missing users and API keys from a full-backup file (existing\n" +
+			"ones are left untouched), then re-queues every memory and summary into its original\n" +
+			"tenant — the worker re-embeds asynchronously (watch 'cortex status' / the Indexing\n" +
+			"view). Upsert-by-id makes it safe to re-run.\n\n" +
+			"Give either a bare filename that lives in the SERVER's backup directory (see\n" +
+			"'cortex backup list'), or --file with a LOCAL backup file to upload — the\n" +
+			"disaster-recovery path when the server's own copies are gone. Requires an admin token.",
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			req := &cortexv1.RestoreAllRequest{}
+			var label string
+			switch {
+			case file != "" && len(args) > 0:
+				return fmt.Errorf("give a server-side name OR --file, not both")
+			case file != "":
+				data, err := os.ReadFile(file)
+				if err != nil {
+					return err
+				}
+				req.Data = data
+				label = file + " (local upload)"
+			case len(args) == 1:
+				req.Name = args[0]
+				label = args[0]
+			default:
+				return fmt.Errorf("give a server-side backup name or --file <local backup>")
+			}
+			if !yes {
+				fmt.Fprintf(os.Stderr, "Restore %s into the server (existing users/memories are kept; backup records are re-queued)?\n", label)
+				fmt.Fprint(os.Stderr, "Type 'yes' to continue: ")
+				var answer string
+				if _, err := fmt.Fscan(os.Stdin, &answer); err != nil || answer != "yes" {
+					return fmt.Errorf("aborted")
+				}
+			}
+			resp, err := client().RestoreAll(cmd.Context(), connect.NewRequest(req))
+			if err != nil {
+				return err
+			}
+			m := resp.Msg
+			fmt.Printf("users created:     %d (skipped %d already present)\n", m.GetUsersCreated(), m.GetUsersSkipped())
+			fmt.Printf("api keys created:  %d (skipped %d already present)\n", m.GetApiKeysCreated(), m.GetApiKeysSkipped())
+			fmt.Printf("memories queued:   %d\n", m.GetMemoriesQueued())
+			fmt.Printf("summaries queued:  %d\n", m.GetSummariesQueued())
+			if msg := m.GetMessage(); msg != "" {
+				fmt.Printf("\n%s\n", msg)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&yes, "yes", false, "skip the confirmation prompt")
+	cmd.Flags().StringVar(&file, "file", "", "restore from a LOCAL backup file (uploads its content to the server)")
+	cmd.AddCommand(restoreSelfCmd())
 	return cmd
 }
 

@@ -66,6 +66,10 @@ type Config struct {
 	// unaffected until they opt in and migrate (see cortex migrate-mt). Must agree
 	// with the worker's CORTEX_MULTI_TENANT.
 	MultiTenant bool
+	// BackupKeep is how many cortex-full-backup-*.json files to retain in
+	// BackupDir after each successful BackupAll call (RPC or periodic). Older
+	// files are deleted. 0 disables pruning. Read from BACKUP_KEEP (default 7).
+	BackupKeep int
 }
 
 // Service implements the MemoryService Connect handler. It is the single owner

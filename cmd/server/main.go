@@ -80,6 +80,21 @@ func envBool(key string, def bool) bool {
 	return b
 }
 
+// envDuration reads a Go duration env var (e.g. "24h", "30m"), returning def
+// when unset or unparseable. An empty string or "0" effectively disables a
+// feature guarded by duration > 0.
+func envDuration(key string, def time.Duration) time.Duration {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return def
+	}
+	return d
+}
+
 func main() {
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
@@ -119,6 +134,10 @@ func main() {
 		bootstrapPass = env("CORTEX_BOOTSTRAP_PASSWORD", uiPass)
 		bootstrapKey  = env("CORTEX_BOOTSTRAP_API_KEY", authToken)
 		jwtSecret     = os.Getenv("CORTEX_JWT_SECRET")
+		// Full-server backup schedule. backupInterval == 0 disables the periodic
+		// goroutine; backupKeep == 0 disables pruning after each backup.
+		backupInterval = envDuration("BACKUP_INTERVAL", 0)
+		backupKeep     = envInt("BACKUP_KEEP", 7)
 	)
 
 	// Login brute-force / DoS protection for /auth/login. Defaults are conservative
@@ -203,7 +222,27 @@ func main() {
 		ReinforceTopK:      reinforceTopK,
 		ChunkingEnabled:    chunkingEnabled,
 		MultiTenant:        multiTenant,
+		BackupKeep:         backupKeep,
 	}, log)
+
+	// Periodic full-server backup goroutine. Disabled when BACKUP_INTERVAL is
+	// empty or "0". Stops cleanly on server shutdown via the signal context.
+	if backupInterval > 0 {
+		go func() {
+			ticker := time.NewTicker(backupInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					if err := svc.RunPeriodicBackup(ctx); err != nil {
+						log.Error("periodic backup failed", "err", err)
+					}
+				}
+			}
+		}()
+	}
 
 	// Wire the JWT verifier whenever UI/login auth is in play: when a static API
 	// token is set (single-user: token for MCP/CLI + UI JWT for the browser), OR in

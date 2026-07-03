@@ -101,6 +101,50 @@ service MemoryService {
   // after a partial failure — re-import is upsert-by-id.
   rpc MigrateMT(MigrateMTRequest) returns (MigrateMTResponse) {}
 
+  // ---- Self-service backup (any authenticated user) ----
+  // BackupSelf returns a backup of the CALLER's OWN data — their tenant's
+  // memories and conversation summaries — as a downloadable file. Not
+  // admin-gated: everyone may back up their own data, never anyone else's.
+  rpc BackupSelf(BackupSelfRequest) returns (BackupSelfResponse) {}
+  // RestoreSelf restores a BackupSelf file into the CALLER's OWN tenant.
+  // Tenant attribution inside the uploaded file is IGNORED — a user can only
+  // ever restore into themselves. Records re-queue through the index queue
+  // (worker re-embeds); upsert-by-id makes it safe to re-run.
+  rpc RestoreSelf(RestoreSelfRequest) returns (RestoreSelfResponse) {}
+
+  // ---- Admin: Full-server backup & restore ----
+  // BackupAll snapshots EVERYTHING server-side into a timestamped JSON file in
+  // the server's backup dir: every tenant's memories and conversation
+  // summaries plus the user/API-key registry (credential HASHES, never
+  // plaintext). Admin-only. The disaster-recovery counterpart of the
+  // per-tenant Export. Vectors are not included; a restore re-embeds.
+  rpc BackupAll(BackupAllRequest) returns (BackupAllResponse) {}
+  // ListBackups lists the full-backup files in the server's backup dir,
+  // newest first. Admin-only.
+  rpc ListBackups(ListBackupsRequest) returns (ListBackupsResponse) {}
+  // RestoreAll restores a BackupAll file (named by bare filename, resolved
+  // inside the server's backup dir): recreates missing users and API keys
+  // (existing ones are left untouched), ensures tenants, then re-queues every
+  // record into its original tenant via the index queue (the worker
+  // re-embeds). Upsert-by-id makes it safe to re-run. Admin-only.
+  rpc RestoreAll(RestoreAllRequest) returns (RestoreAllResponse) {}
+  // DownloadBackup returns the raw content of a full-backup file from the
+  // server's backup dir, so an admin can keep offline copies. Admin-only.
+  rpc DownloadBackup(DownloadBackupRequest) returns (DownloadBackupResponse) {}
+  // DeleteBackup removes a full-backup file from the server's backup dir.
+  // Admin-only.
+  rpc DeleteBackup(DeleteBackupRequest) returns (DeleteBackupResponse) {}
+  // GetS3Config returns the offsite (S3) backup configuration with the secret
+  // key ALWAYS redacted — only whether one is set. Admin-only.
+  rpc GetS3Config(GetS3ConfigRequest) returns (GetS3ConfigResponse) {}
+  // SetS3Config stores the offsite backup configuration. An empty secret_key
+  // keeps the previously stored secret, so edits don't require re-entering
+  // it. Admin-only.
+  rpc SetS3Config(SetS3ConfigRequest) returns (SetS3ConfigResponse) {}
+  // TestS3 verifies the stored configuration by writing and deleting a probe
+  // object in the bucket. Admin-only.
+  rpc TestS3(TestS3Request) returns (TestS3Response) {}
+
   // ---- Admin: User management (P5) ----
   // ListUsers returns all users. Admin-only; returns PermissionDenied for
   // non-admins and FailedPrecondition when multi-tenancy is disabled.
@@ -277,6 +321,123 @@ message DeleteRequest {
 
 message DeleteResponse {
   string status = 1; // "deleted"
+}
+
+message BackupSelfRequest {}
+
+message BackupSelfResponse {
+  string name = 1;    // suggested filename, e.g. cortex-self-backup-<ts>.json
+  bytes data = 2;     // the backup file content (versioned envelope)
+  int32 memories = 3;
+  int32 summaries = 4;
+}
+
+message RestoreSelfRequest {
+  bytes data = 1; // content of a BackupSelf (or single-tenant BackupAll) file
+}
+
+message RestoreSelfResponse {
+  int32 memories_queued = 1;
+  int32 summaries_queued = 2;
+  string message = 3;
+}
+
+message BackupAllRequest {}
+
+message BackupAllResponse {
+  string path = 1;     // server-side path of the written backup file
+  int32 tenants = 2;   // tenants captured
+  int32 memories = 3;  // memory records captured
+  int32 summaries = 4; // conversation summaries captured
+  int32 users = 5;     // user records captured
+  int32 api_keys = 6;  // API-key records captured
+  // Offsite upload outcome: "" when S3 is not configured/enabled, otherwise
+  // "uploaded s3://bucket/key" or an error description. An S3 failure never
+  // fails the backup itself — the local file is already written.
+  string s3_result = 7;
+}
+
+message ListBackupsRequest {}
+
+message BackupFile {
+  string name = 1; // bare filename inside the backup dir (pass to RestoreAll)
+  int64 size_bytes = 2;
+  google.protobuf.Timestamp created_at = 3;
+}
+
+message ListBackupsResponse {
+  repeated BackupFile backups = 1; // newest first
+}
+
+message RestoreAllRequest {
+  // Bare filename of a BackupAll file in the server's backup dir. Path
+  // separators are rejected — the server never reads outside the backup dir.
+  // Exactly one of name/data must be set.
+  string name = 1;
+  // Raw content of a backup file uploaded from the client (`cortex restore
+  // --file`), for restoring when the server's own copies are gone. Same
+  // format/version checks as name-based restore.
+  bytes data = 2;
+}
+
+message RestoreAllResponse {
+  int32 users_created = 1;
+  int32 users_skipped = 2;    // already existed; left untouched
+  int32 api_keys_created = 3;
+  int32 api_keys_skipped = 4; // already existed; left untouched
+  int32 memories_queued = 5;  // handed to the index queue (worker re-embeds)
+  int32 summaries_queued = 6;
+  string message = 7;
+}
+
+message DownloadBackupRequest {
+  string name = 1; // bare filename, validated like RestoreAll.name
+}
+
+message DownloadBackupResponse {
+  string name = 1;
+  bytes data = 2;
+}
+
+message DeleteBackupRequest {
+  string name = 1; // bare filename, validated like RestoreAll.name
+}
+
+message DeleteBackupResponse {}
+
+// S3Config is the offsite backup target. Works with AWS S3 and any
+// S3-compatible endpoint (MinIO, Garage, R2, ...).
+message S3Config {
+  bool enabled = 1;      // when true, every successful full backup is also uploaded
+  string endpoint = 2;   // host[:port], e.g. "s3.amazonaws.com" or "minio.lan:9000"
+  string region = 3;     // bucket region; may be empty for endpoints that ignore it
+  string bucket = 4;
+  string prefix = 5;     // object key prefix, e.g. "cortex/"
+  string access_key = 6;
+  // secret_key is WRITE-ONLY: accepted in SetS3Config (empty = keep existing),
+  // never returned by GetS3Config.
+  string secret_key = 7;
+  bool use_ssl = 8;
+}
+
+message GetS3ConfigRequest {}
+
+message GetS3ConfigResponse {
+  S3Config config = 1;  // secret_key always empty
+  bool secret_set = 2;  // whether a secret is stored
+}
+
+message SetS3ConfigRequest {
+  S3Config config = 1;
+}
+
+message SetS3ConfigResponse {}
+
+message TestS3Request {}
+
+message TestS3Response {
+  bool ok = 1;
+  string message = 2; // human-readable success/failure detail
 }
 
 message GetVersionRequest {}
