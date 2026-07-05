@@ -203,6 +203,9 @@ func main() {
 		os.Exit(1)
 	}
 	checkSchema(ctx, log, st)
+	// Seed a default S3 backup target from the environment when none is configured
+	// yet, so offsite backup can be provisioned via env vars instead of the admin UI.
+	seedS3ConfigFromEnv(ctx, log, st)
 	if multiTenant {
 		if err := st.EnsureIdentitySchema(ctx); err != nil {
 			log.Error("ensure identity schema", "err", err)
@@ -397,4 +400,63 @@ func checkSchema(ctx context.Context, log *slog.Logger, st *store.Store) {
 	}
 	log.Warn("weaviate schema needs attention — search still works (whole-memory fallback), but a `cortex reindex` / class rebuild is recommended",
 		"issues", len(problems))
+}
+
+// s3ConfigFromEnv builds an S3 backup target from AWS_*/CORTEX_S3_* environment
+// variables. ok is false when no credentials are present (nothing to seed). No
+// credential is ever hardcoded — the values come solely from the environment:
+//
+//	AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY   credentials (BOTH required to seed)
+//	AWS_DEFAULT_REGION or AWS_REGION            region (default "us-east-1")
+//	CORTEX_S3_ENDPOINT                          endpoint host[:port] (default "s3.amazonaws.com")
+//	CORTEX_S3_BUCKET / CORTEX_S3_PREFIX         target bucket + key prefix
+//	CORTEX_S3_USE_SSL                           TLS toggle (default true)
+//	CORTEX_S3_ENABLED                           enable uploads (default true; forced off without a bucket)
+func s3ConfigFromEnv() (store.StoredS3Config, bool) {
+	accessKey := os.Getenv("AWS_ACCESS_KEY_ID")
+	secretKey := os.Getenv("AWS_SECRET_ACCESS_KEY")
+	if accessKey == "" || secretKey == "" {
+		return store.StoredS3Config{}, false
+	}
+	region := env("AWS_DEFAULT_REGION", os.Getenv("AWS_REGION"))
+	if region == "" {
+		region = "us-east-1"
+	}
+	bucket := os.Getenv("CORTEX_S3_BUCKET")
+	return store.StoredS3Config{
+		// Only enable uploads when there is a bucket to write to; enabling with no
+		// bucket would fail every backup's offsite step.
+		Enabled:   bucket != "" && envBool("CORTEX_S3_ENABLED", true),
+		Endpoint:  env("CORTEX_S3_ENDPOINT", "s3.amazonaws.com"),
+		Region:    region,
+		Bucket:    bucket,
+		Prefix:    os.Getenv("CORTEX_S3_PREFIX"),
+		AccessKey: accessKey,
+		SecretKey: secretKey,
+		UseSsl:    envBool("CORTEX_S3_USE_SSL", true),
+	}, true
+}
+
+// seedS3ConfigFromEnv persists a default S3 backup target derived from the
+// environment when none is configured yet. It is a SEED, not an override: once
+// any S3 config exists (from a prior seed or the admin UI) it is never clobbered,
+// so admin edits win and later env changes do not fight the stored value. A no-op
+// when AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY are absent.
+func seedS3ConfigFromEnv(ctx context.Context, log *slog.Logger, st *store.Store) {
+	cfg, ok := s3ConfigFromEnv()
+	if !ok {
+		return
+	}
+	if _, exists, err := st.GetS3Config(ctx); err != nil {
+		log.Warn("s3 seed: could not read existing config; skipping", "err", err)
+		return
+	} else if exists {
+		return // already configured — never clobber
+	}
+	if err := st.SetS3Config(ctx, cfg); err != nil {
+		log.Warn("s3 seed: failed to persist default config", "err", err)
+		return
+	}
+	log.Info("seeded default S3 backup config from environment",
+		"endpoint", cfg.Endpoint, "region", cfg.Region, "bucket", cfg.Bucket, "enabled", cfg.Enabled)
 }
