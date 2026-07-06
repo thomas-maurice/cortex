@@ -70,6 +70,10 @@ type Config struct {
 	// BackupDir after each successful BackupAll call (RPC or periodic). Older
 	// files are deleted. 0 disables pruning. Read from BACKUP_KEEP (default 7).
 	BackupKeep int
+	// S3 is the offsite backup target, built from the server environment
+	// (CORTEX_S3_* / AWS_*). When S3.Enabled every successful full backup is also
+	// uploaded. Credentials live in memory only — never persisted or exposed.
+	S3 S3Config
 }
 
 // Service implements the MemoryService Connect handler. It is the single owner

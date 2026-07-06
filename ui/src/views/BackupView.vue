@@ -103,7 +103,7 @@
       </div>
     </div>
 
-    <!-- Server backups + S3 (admin only) -->
+    <!-- Server backups (admin only) -->
     <template v-if="auth.isAdmin">
       <hr class="my-4" />
 
@@ -215,101 +215,62 @@
       <!-- Offsite (S3) backups -->
       <div class="card">
         <div class="card-body py-3">
-          <h6 class="mb-2"><font-awesome-icon :icon="['fas', 'cloud-arrow-up']" class="me-2" />Offsite (S3) backups</h6>
+          <div class="d-flex align-items-center gap-2 mb-2">
+            <h6 class="mb-0"><font-awesome-icon :icon="['fas', 'cloud-arrow-up']" class="me-2" />Offsite (S3) backups</h6>
+            <button class="btn btn-outline-secondary btn-sm ms-auto" :disabled="s3Loading" @click="loadS3Backups">
+              <font-awesome-icon :icon="['fas', 'rotate']" class="me-1" />Refresh
+            </button>
+          </div>
           <p class="small text-muted mb-3">
-            When enabled, every full backup (manual or periodic) is also uploaded to the configured
-            bucket. S3 retention is managed by bucket lifecycle rules, not Cortex.
+            Backups uploaded to the server's configured S3 bucket. S3 is configured on the server
+            via env vars (<code>CORTEX_S3_*</code> / <code>AWS_*</code>); restore downloads the
+            object back through the server.
           </p>
 
           <div v-if="s3Loading" class="text-center text-muted py-4">
             <font-awesome-icon :icon="['fas', 'spinner']" spin size="2x" />
           </div>
 
-          <template v-else>
-            <div v-if="s3Error" class="alert alert-danger py-2 small">{{ s3Error }}</div>
-            <div v-if="s3Notice" class="alert alert-success alert-dismissible py-2 small">
-              <button type="button" class="btn-close py-2" @click="s3Notice = ''"></button>
-              {{ s3Notice }}
-            </div>
+          <div v-else-if="s3Unavailable" class="text-center text-muted py-4">
+            <font-awesome-icon :icon="['fas', 'cloud-arrow-up']" size="2x" class="mb-2 d-block" />
+            Offsite S3 backup is not configured on the server.
+          </div>
 
-            <div class="row g-3">
-              <!-- Enabled switch -->
-              <div class="col-12">
-                <div class="form-check form-switch">
-                  <input
-                    id="s3Enabled"
-                    v-model="s3Form.enabled"
-                    class="form-check-input"
-                    type="checkbox"
-                    role="switch"
-                  />
-                  <label class="form-check-label small" for="s3Enabled">Enable S3 offsite uploads</label>
-                </div>
-              </div>
+          <div v-else-if="s3Backups.length === 0" class="text-center text-muted py-4">
+            <font-awesome-icon :icon="['fas', 'box-open']" size="2x" class="mb-2 d-block" />
+            No backups in the S3 bucket yet.
+          </div>
 
-              <div class="col-md-6">
-                <label class="form-label small mb-1">Endpoint <span class="text-muted">(host[:port])</span></label>
-                <input v-model="s3Form.endpoint" class="form-control form-control-sm" placeholder="s3.amazonaws.com" />
-              </div>
-
-              <div class="col-md-3">
-                <label class="form-label small mb-1">Region</label>
-                <input v-model="s3Form.region" class="form-control form-control-sm" placeholder="us-east-1" />
-              </div>
-
-              <div class="col-md-3">
-                <div class="form-check form-switch mt-4">
-                  <input
-                    id="s3Ssl"
-                    v-model="s3Form.useSsl"
-                    class="form-check-input"
-                    type="checkbox"
-                    role="switch"
-                  />
-                  <label class="form-check-label small" for="s3Ssl">Use SSL</label>
-                </div>
-              </div>
-
-              <div class="col-md-6">
-                <label class="form-label small mb-1">Bucket</label>
-                <input v-model="s3Form.bucket" class="form-control form-control-sm" placeholder="my-cortex-backups" />
-              </div>
-
-              <div class="col-md-6">
-                <label class="form-label small mb-1">Prefix <span class="text-muted">(optional)</span></label>
-                <input v-model="s3Form.prefix" class="form-control form-control-sm" placeholder="cortex/" />
-              </div>
-
-              <div class="col-md-6">
-                <label class="form-label small mb-1">Access key</label>
-                <input v-model="s3Form.accessKey" class="form-control form-control-sm" placeholder="AKIAIOSFODNN7EXAMPLE" />
-              </div>
-
-              <div class="col-md-6">
-                <label class="form-label small mb-1">Secret key</label>
-                <input
-                  v-model="s3Form.secretKey"
-                  type="password"
-                  class="form-control form-control-sm"
-                  :placeholder="s3SecretSet ? 'unchanged' : 'enter secret key'"
-                />
-                <div class="form-text small">Leave blank to keep the stored secret unchanged.</div>
-              </div>
-            </div>
-
-            <div class="d-flex gap-2 mt-3">
-              <button class="btn btn-primary btn-sm" :disabled="s3Saving" @click="saveS3Config">
-                <font-awesome-icon :icon="['fas', s3Saving ? 'spinner' : 'floppy-disk']" :spin="s3Saving" class="me-1" />
-                {{ s3Saving ? 'Saving…' : 'Save' }}
-              </button>
-              <button class="btn btn-outline-secondary btn-sm" :disabled="s3Testing" @click="testS3">
-                <font-awesome-icon :icon="['fas', s3Testing ? 'spinner' : 'plug']" :spin="s3Testing" class="me-1" />
-                {{ s3Testing ? 'Testing…' : 'Test connection' }}
-              </button>
-            </div>
-          </template>
+          <table v-else class="table table-sm align-middle mb-0">
+            <thead>
+              <tr>
+                <th>Object key</th>
+                <th class="text-end">Size</th>
+                <th>Modified</th>
+                <th class="text-end" style="width: 1%">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="b in s3Backups" :key="b.name">
+                <td class="font-monospace small">{{ b.name }}</td>
+                <td class="text-end small text-muted">{{ formatSize(b.sizeBytes) }}</td>
+                <td class="small text-muted">{{ b.createdAt ? formatTimestamp(b.createdAt) : '—' }}</td>
+                <td class="text-end text-nowrap">
+                  <button
+                    class="btn btn-outline-warning btn-sm"
+                    title="Restore this backup from S3"
+                    :disabled="restoring"
+                    @click="doRestoreS3(b)"
+                  >
+                    <font-awesome-icon :icon="['fas', restoring ? 'spinner' : 'rotate-left']" :spin="restoring" />
+                  </button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
         </div>
       </div>
+
     </template>
   </div>
 </template>
@@ -358,27 +319,15 @@ const backupSuccess = ref(null)   // BackupAllResponse fields when last backup s
 const backups = ref([])
 const backupsLoading = ref(false)
 const restoring = ref(false)
+
+// Offsite (S3) backups (admin). s3Unavailable is set when the server has no S3
+// configured (FailedPrecondition), so we show a hint instead of an error.
+const s3Backups = ref([])
+const s3Loading = ref(false)
+const s3Unavailable = ref(false)
 const restoreMsg = ref('')
 const downloading = ref(false)
 const deleting = ref(false)
-
-// S3 config state (admin only)
-const s3Loading = ref(false)
-const s3Saving = ref(false)
-const s3Testing = ref(false)
-const s3SecretSet = ref(false)
-const s3Error = ref('')
-const s3Notice = ref('')
-const s3Form = ref({
-  enabled: false,
-  endpoint: '',
-  region: '',
-  bucket: '',
-  prefix: '',
-  accessKey: '',
-  secretKey: '',
-  useSsl: true,
-})
 
 // formatSize renders a BigInt byte count as a human-readable string.
 function formatSize(bytes) {
@@ -610,100 +559,54 @@ async function doDeleteBackup(b) {
   }
 }
 
-// ---- S3 config (admin) ----
-
-async function loadS3Config() {
+async function loadS3Backups() {
   s3Loading.value = true
-  s3Error.value = ''
+  s3Unavailable.value = false
+  error.value = ''
   try {
-    const res = await memoryClient.getS3Config({})
-    const c = res.config
-    if (c) {
-      s3Form.value = {
-        enabled: c.enabled,
-        endpoint: c.endpoint,
-        region: c.region,
-        bucket: c.bucket,
-        prefix: c.prefix,
-        accessKey: c.accessKey,
-        secretKey: '',
-        useSsl: c.useSsl,
-      }
-    }
-    s3SecretSet.value = res.secretSet
+    const res = await memoryClient.listS3Backups({})
+    s3Backups.value = res.backups
   } catch (e) {
-    if (e instanceof ConnectError && e.code === Code.Unauthenticated) {
-      auth.logout()
-      router.push({ name: 'login' })
-      return
+    // FailedPrecondition = S3 not configured on the server: a normal state, not an error.
+    if (e instanceof ConnectError && e.code === Code.FailedPrecondition) {
+      s3Unavailable.value = true
+      s3Backups.value = []
+    } else {
+      handleError(e)
     }
-    s3Error.value = e.message || 'Failed to load S3 config'
   } finally {
     s3Loading.value = false
   }
 }
 
-async function saveS3Config() {
-  s3Saving.value = true
-  s3Error.value = ''
-  s3Notice.value = ''
+async function doRestoreS3(b) {
+  if (!window.confirm(
+    `Restore backup "${b.name}" from S3?\n\n` +
+    `Existing users and API keys are left untouched. Memories and summaries will be queued ` +
+    `for re-embedding — this may take a while.`
+  )) return
+
+  restoring.value = true
+  restoreMsg.value = ''
+  error.value = ''
   try {
-    await memoryClient.setS3Config({
-      config: {
-        enabled: s3Form.value.enabled,
-        endpoint: s3Form.value.endpoint,
-        region: s3Form.value.region,
-        bucket: s3Form.value.bucket,
-        prefix: s3Form.value.prefix,
-        accessKey: s3Form.value.accessKey,
-        secretKey: s3Form.value.secretKey,
-        useSsl: s3Form.value.useSsl,
-      },
-    })
-    s3Notice.value = 'S3 configuration saved.'
-    if (s3Form.value.secretKey) {
-      s3SecretSet.value = true
-      s3Form.value.secretKey = ''
-    }
+    const res = await memoryClient.restoreAll({ s3Key: b.name })
+    restoreMsg.value =
+      `Restore complete: ${res.usersCreated} user(s) created, ${res.usersSkipped} skipped; ` +
+      `${res.apiKeysCreated} API key(s) created, ${res.apiKeysSkipped} skipped; ` +
+      `${res.memoriesQueued} memories and ${res.summariesQueued} summaries queued for re-indexing.`
   } catch (e) {
-    if (e instanceof ConnectError && e.code === Code.Unauthenticated) {
-      auth.logout()
-      router.push({ name: 'login' })
-      return
-    }
-    s3Error.value = e.message || 'Failed to save S3 config'
+    handleError(e)
   } finally {
-    s3Saving.value = false
+    restoring.value = false
   }
 }
 
-async function testS3() {
-  s3Testing.value = true
-  s3Error.value = ''
-  s3Notice.value = ''
-  try {
-    const res = await memoryClient.testS3({})
-    if (res.ok) {
-      s3Notice.value = `Connection OK: ${res.message}`
-    } else {
-      s3Error.value = `Connection failed: ${res.message}`
-    }
-  } catch (e) {
-    if (e instanceof ConnectError && e.code === Code.Unauthenticated) {
-      auth.logout()
-      router.push({ name: 'login' })
-      return
-    }
-    s3Error.value = e.message || 'Test failed'
-  } finally {
-    s3Testing.value = false
-  }
-}
 
 onMounted(() => {
   if (auth.isAdmin) {
     loadBackups()
-    loadS3Config()
+    loadS3Backups()
   }
 })
 

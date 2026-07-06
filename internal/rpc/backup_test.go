@@ -313,6 +313,52 @@ func TestListBackupsNewestFirst(t *testing.T) {
 	}
 }
 
+// TestLastBackupTime pins the input to the restart-resilient scheduler: it must
+// return the NEWEST full-backup file's mtime (ignoring reindex snapshots), and
+// report ok=false when there is no backup / no dir. A wrong answer here makes the
+// scheduler either back up too eagerly or never at all across restarts.
+func TestLastBackupTime(t *testing.T) {
+	t.Run("returns newest full-backup mtime, ignoring reindex snapshots", func(t *testing.T) {
+		dir := t.TempDir()
+		base := time.Now().Truncate(time.Second)
+		names := []string{
+			"cortex-full-backup-20240101-120000.json",
+			"cortex-full-backup-20240103-120000.json", // newest by mtime below
+			"cortex-full-backup-20240102-120000.json",
+		}
+		for i, name := range names {
+			p := filepath.Join(dir, name)
+			require.NoError(t, os.WriteFile(p, []byte("{}"), 0o644))
+			mt := base.Add(time.Duration(i) * time.Minute)
+			require.NoError(t, os.Chtimes(p, mt, mt))
+		}
+		// A reindex snapshot, even if newest, must NOT be considered a full backup.
+		reindex := filepath.Join(dir, "cortex-backup-20240104-120000.json")
+		require.NoError(t, os.WriteFile(reindex, []byte("{}"), 0o644))
+		future := base.Add(time.Hour)
+		require.NoError(t, os.Chtimes(reindex, future, future))
+
+		svc := &Service{cfg: Config{BackupDir: dir}}
+		got, ok := svc.LastBackupTime()
+		require.True(t, ok)
+		// The newest full backup is the 3rd file written (i=2 → base+2m).
+		assert.WithinDuration(t, base.Add(2*time.Minute), got, time.Second,
+			"must return the newest full-backup mtime, not the reindex snapshot's")
+	})
+
+	t.Run("false when no backups exist", func(t *testing.T) {
+		svc := &Service{cfg: Config{BackupDir: t.TempDir()}}
+		_, ok := svc.LastBackupTime()
+		assert.False(t, ok)
+	})
+
+	t.Run("false when dir is absent", func(t *testing.T) {
+		svc := &Service{cfg: Config{BackupDir: filepath.Join(t.TempDir(), "nope")}}
+		_, ok := svc.LastBackupTime()
+		assert.False(t, ok)
+	})
+}
+
 // TestListBackupsEmptyDirReturnsEmpty verifies ListBackups returns an empty
 // response (not an error) when the backup directory does not yet exist.
 func TestListBackupsEmptyDirReturnsEmpty(t *testing.T) {
@@ -342,6 +388,62 @@ func TestRestoreAllInvalidFilenameReturnsInvalidArgument(t *testing.T) {
 		assert.Equal(t, connect.CodeInvalidArgument, ce.Code(),
 			"invalid filename must return InvalidArgument, not NotFound or PermissionDenied")
 	}
+}
+
+// TestRestoreAllSourceSelection pins the three-way source rule: exactly one of
+// name/data/s3_key must be set, and an s3_key restore requires S3 to be
+// configured — both caught before any store mutation.
+func TestRestoreAllSourceSelection(t *testing.T) {
+	ctx := adminCtx()
+
+	t.Run("zero or multiple sources -> InvalidArgument", func(t *testing.T) {
+		svc := &Service{cfg: Config{BackupDir: t.TempDir()}}
+		reqs := []*cortexv1.RestoreAllRequest{
+			{}, // none
+			{Name: "cortex-full-backup-20240101-120000.json", S3Key: "k"},
+			{Name: "cortex-full-backup-20240101-120000.json", Data: []byte("{}")},
+			{Data: []byte("{}"), S3Key: "k"},
+		}
+		for _, r := range reqs {
+			_, err := svc.RestoreAll(ctx, connect.NewRequest(r))
+			require.Error(t, err)
+			var ce *connect.Error
+			require.True(t, errors.As(err, &ce))
+			assert.Equal(t, connect.CodeInvalidArgument, ce.Code(),
+				"exactly one of name/data/s3_key must be required")
+		}
+	})
+
+	t.Run("s3_key without S3 configured -> FailedPrecondition", func(t *testing.T) {
+		svc := &Service{cfg: Config{S3: S3Config{Enabled: false}}}
+		_, err := svc.RestoreAll(ctx, connect.NewRequest(&cortexv1.RestoreAllRequest{S3Key: "cortex/backup.json"}))
+		require.Error(t, err)
+		var ce *connect.Error
+		require.True(t, errors.As(err, &ce))
+		assert.Equal(t, connect.CodeFailedPrecondition, ce.Code(),
+			"restoring from S3 without S3 configured must be a clear precondition failure")
+	})
+}
+
+// TestListS3BackupsGates verifies ListS3Backups is admin-gated and returns a
+// clear precondition error (not a crash) when S3 is not configured.
+func TestListS3BackupsGates(t *testing.T) {
+	t.Run("non-admin rejected", func(t *testing.T) {
+		svc := &Service{cfg: Config{MultiTenant: true}}
+		_, err := svc.ListS3Backups(userCtx("uid-bob", "bob"), connect.NewRequest(&cortexv1.ListS3BackupsRequest{}))
+		require.Error(t, err)
+		var ce *connect.Error
+		require.True(t, errors.As(err, &ce))
+		assert.Equal(t, connect.CodePermissionDenied, ce.Code())
+	})
+	t.Run("S3 not configured -> FailedPrecondition", func(t *testing.T) {
+		svc := &Service{cfg: Config{S3: S3Config{Enabled: false}}}
+		_, err := svc.ListS3Backups(adminCtx(), connect.NewRequest(&cortexv1.ListS3BackupsRequest{}))
+		require.Error(t, err)
+		var ce *connect.Error
+		require.True(t, errors.As(err, &ce))
+		assert.Equal(t, connect.CodeFailedPrecondition, ce.Code())
+	})
 }
 
 // ---- DownloadBackup and DeleteBackup tests ----

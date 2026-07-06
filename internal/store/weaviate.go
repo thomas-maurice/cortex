@@ -120,12 +120,7 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 	if err := s.ensureClass(ctx, chunkClass(s.multiTenant), chunkProperties()); err != nil {
 		return err
 	}
-	if err := s.ensureClass(ctx, summaryClass(s.multiTenant), summaryProperties()); err != nil {
-		return err
-	}
-	// CortexSettings is non-MT and provisioned alongside the memory classes so
-	// it is always available for S3 config reads/writes, regardless of MT mode.
-	return s.ensureClass(ctx, settingsClass(), settingsProperties())
+	return s.ensureClass(ctx, summaryClass(s.multiTenant), summaryProperties())
 }
 
 // ensureClass creates the class if it is absent, else adds any missing

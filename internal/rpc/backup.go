@@ -138,6 +138,74 @@ func (s *Service) ListBackups(ctx context.Context, _ *connect.Request[cortexv1.L
 	return connect.NewResponse(out), nil
 }
 
+// ListS3Backups lists full-backup objects in the configured offsite (S3)
+// bucket/prefix, newest first. Returns FailedPrecondition when S3 is not
+// configured/enabled on the server. Admin-only. This is the read-back path that
+// makes offsite backups usable — S3 config is server-env only, so the server
+// (which holds the credentials) does the listing.
+func (s *Service) ListS3Backups(ctx context.Context, _ *connect.Request[cortexv1.ListS3BackupsRequest]) (*connect.Response[cortexv1.ListS3BackupsResponse], error) {
+	if err := requireAdmin(ctx); err != nil {
+		return nil, err
+	}
+	if !s.cfg.S3.Enabled {
+		return nil, connect.NewError(connect.CodeFailedPrecondition,
+			errors.New("offsite S3 backup is not configured (set CORTEX_S3_*/AWS_* on the server)"))
+	}
+	listCtx, cancel := context.WithTimeout(ctx, s3ListTimeout)
+	defer cancel()
+	objs, err := listS3Backups(listCtx, s.cfg.S3)
+	if err != nil {
+		return nil, fmt.Errorf("list s3 backups: %w", err)
+	}
+	out := &cortexv1.ListS3BackupsResponse{Backups: make([]*cortexv1.BackupFile, 0, len(objs))}
+	for _, o := range objs {
+		out.Backups = append(out.Backups, &cortexv1.BackupFile{
+			Name:      o.Key,
+			SizeBytes: o.Size,
+			CreatedAt: timestamppb.New(o.LastModified),
+		})
+	}
+	return connect.NewResponse(out), nil
+}
+
+// btoi is 1 when b is true, else 0 — used to count how many of a set of
+// mutually-exclusive request options are provided.
+func btoi(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// LastBackupTime returns the modification time of the newest full-backup file in
+// BackupDir. ok is false when no backup exists yet (or the dir is absent). The
+// server's periodic scheduler uses this to stay restart-resilient: it decides
+// whether a backup is overdue from what is actually on disk, not from process
+// start time — so a server that restarts more often than BACKUP_INTERVAL still
+// gets backed up once the newest file ages past the interval.
+func (s *Service) LastBackupTime() (time.Time, bool) {
+	entries, err := os.ReadDir(s.backupDir())
+	if err != nil {
+		return time.Time{}, false
+	}
+	var newest time.Time
+	found := false
+	for _, e := range entries {
+		if e.IsDir() || !backupFullPattern.MatchString(e.Name()) {
+			continue
+		}
+		fi, ferr := e.Info()
+		if ferr != nil {
+			continue
+		}
+		if mt := fi.ModTime(); !found || mt.After(newest) {
+			newest = mt
+			found = true
+		}
+	}
+	return newest, found
+}
+
 // RestoreAll is the admin-gated RPC handler. It accepts EITHER a named backup
 // file (name field) OR raw bytes (data field) — exactly one must be set
 // (CodeInvalidArgument when both or neither are provided). It validates the
@@ -149,18 +217,21 @@ func (s *Service) RestoreAll(ctx context.Context, req *connect.Request[cortexv1.
 		return nil, err
 	}
 
-	// Exactly one of name/data must be set.
+	// Exactly one source of name/data/s3_key must be set.
 	name := req.Msg.GetName()
 	inData := req.Msg.GetData()
+	s3Key := req.Msg.GetS3Key()
 	hasName := name != ""
 	hasData := len(inData) > 0
-	if hasName == hasData { // both set, or both empty
+	hasS3 := s3Key != ""
+	if btoi(hasName)+btoi(hasData)+btoi(hasS3) != 1 {
 		return nil, connect.NewError(connect.CodeInvalidArgument,
-			errors.New("exactly one of name or data must be set"))
+			errors.New("exactly one of name, data, or s3_key must be set"))
 	}
 
 	var data []byte
-	if hasName {
+	switch {
+	case hasName:
 		if err := validateBackupFilename(name); err != nil {
 			return nil, connect.NewError(connect.CodeInvalidArgument, err)
 		}
@@ -174,7 +245,20 @@ func (s *Service) RestoreAll(ctx context.Context, req *connect.Request[cortexv1.
 			}
 			return nil, fmt.Errorf("read backup: %w", err)
 		}
-	} else {
+	case hasS3:
+		if !s.cfg.S3.Enabled {
+			return nil, connect.NewError(connect.CodeFailedPrecondition,
+				errors.New("offsite S3 backup is not configured (set CORTEX_S3_*/AWS_* on the server)"))
+		}
+		dlCtx, cancel := context.WithTimeout(ctx, s3UploadTimeout)
+		d, err := downloadFromS3(dlCtx, s.cfg.S3, s3Key)
+		cancel()
+		if err != nil {
+			return nil, connect.NewError(connect.CodeNotFound,
+				fmt.Errorf("download s3 backup %q: %w", s3Key, err))
+		}
+		data = d
+	default: // hasData
 		data = inData
 	}
 	var env backupEnvelope
@@ -516,21 +600,18 @@ func (s *Service) runFullBackup(ctx context.Context) (*cortexv1.BackupAllRespons
 		"api_keys", len(env.ApiKeys),
 	)
 
-	// S3 offsite upload: best-effort, never fails the backup.
-	// s.store may be nil in unit tests that call runFullBackup via a stub;
-	// guard to keep tests clean.
+	// S3 offsite upload: best-effort, never fails the backup. The target comes
+	// from the server environment (s.cfg.S3), held in memory — no stored config.
 	s3Result := ""
-	if s.store != nil {
-		if s3Cfg, ok, loadErr := s.store.GetS3Config(ctx); loadErr == nil && ok && s3Cfg.Enabled {
-			uploadCtx, cancel := context.WithTimeout(ctx, s3UploadTimeout)
-			s3Result = uploadToS3(uploadCtx, s3Cfg, fpath)
-			cancel()
-			if strings.HasPrefix(s3Result, "uploaded") {
-				s.log.Info("full backup uploaded to S3", "result", s3Result)
-			} else {
-				s.log.Warn("full backup S3 upload failed (local backup still valid)",
-					"result", s3Result)
-			}
+	if s.cfg.S3.Enabled {
+		uploadCtx, cancel := context.WithTimeout(ctx, s3UploadTimeout)
+		s3Result = uploadToS3(uploadCtx, s.cfg.S3, fpath)
+		cancel()
+		if strings.HasPrefix(s3Result, "uploaded") {
+			s.log.Info("full backup uploaded to S3", "result", s3Result)
+		} else {
+			s.log.Warn("full backup S3 upload failed (local backup still valid)",
+				"result", s3Result)
 		}
 	}
 

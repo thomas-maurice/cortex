@@ -46,6 +46,12 @@ import {
   faArrowDown,
   faCopy,
   faBook,
+  faRotateLeft,
+  faUserShield,
+  faFloppyDisk,
+  faList,
+  faBoxOpen,
+  faCloudArrowUp,
 } from '@fortawesome/free-solid-svg-icons'
 import { faGithub } from '@fortawesome/free-brands-svg-icons'
 
@@ -85,6 +91,12 @@ library.add(
   faArrowDown,
   faCopy,
   faBook,
+  faRotateLeft,
+  faUserShield,
+  faFloppyDisk,
+  faList,
+  faBoxOpen,
+  faCloudArrowUp,
   faGithub
 )
 

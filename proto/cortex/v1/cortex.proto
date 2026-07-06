@@ -122,11 +122,16 @@ service MemoryService {
   // ListBackups lists the full-backup files in the server's backup dir,
   // newest first. Admin-only.
   rpc ListBackups(ListBackupsRequest) returns (ListBackupsResponse) {}
-  // RestoreAll restores a BackupAll file (named by bare filename, resolved
-  // inside the server's backup dir): recreates missing users and API keys
-  // (existing ones are left untouched), ensures tenants, then re-queues every
-  // record into its original tenant via the index queue (the worker
-  // re-embeds). Upsert-by-id makes it safe to re-run. Admin-only.
+  // ListS3Backups lists the full-backup objects in the configured offsite (S3)
+  // bucket/prefix, newest first. FailedPrecondition when S3 is not configured.
+  // Admin-only.
+  rpc ListS3Backups(ListS3BackupsRequest) returns (ListS3BackupsResponse) {}
+  // RestoreAll restores a BackupAll file: from the server's backup dir (name),
+  // from raw uploaded bytes (data), or downloaded from the offsite S3 bucket
+  // (s3_key). It recreates missing users and API keys (existing ones are left
+  // untouched), ensures tenants, then re-queues every record into its original
+  // tenant via the index queue (the worker re-embeds). Upsert-by-id makes it
+  // safe to re-run. Admin-only.
   rpc RestoreAll(RestoreAllRequest) returns (RestoreAllResponse) {}
   // DownloadBackup returns the raw content of a full-backup file from the
   // server's backup dir, so an admin can keep offline copies. Admin-only.
@@ -134,16 +139,10 @@ service MemoryService {
   // DeleteBackup removes a full-backup file from the server's backup dir.
   // Admin-only.
   rpc DeleteBackup(DeleteBackupRequest) returns (DeleteBackupResponse) {}
-  // GetS3Config returns the offsite (S3) backup configuration with the secret
-  // key ALWAYS redacted — only whether one is set. Admin-only.
-  rpc GetS3Config(GetS3ConfigRequest) returns (GetS3ConfigResponse) {}
-  // SetS3Config stores the offsite backup configuration. An empty secret_key
-  // keeps the previously stored secret, so edits don't require re-entering
-  // it. Admin-only.
-  rpc SetS3Config(SetS3ConfigRequest) returns (SetS3ConfigResponse) {}
-  // TestS3 verifies the stored configuration by writing and deleting a probe
-  // object in the bucket. Admin-only.
-  rpc TestS3(TestS3Request) returns (TestS3Response) {}
+  // NOTE: S3 offsite backup is configured entirely via server environment
+  // variables (CORTEX_S3_* / AWS_*), never over RPC — credentials are never
+  // stored in Weaviate or exposed to clients. The former GetS3Config /
+  // SetS3Config / TestS3 RPCs were removed for that reason.
 
   // ---- Admin: User management (P5) ----
   // ListUsers returns all users. Admin-only; returns PermissionDenied for
@@ -369,15 +368,27 @@ message ListBackupsResponse {
   repeated BackupFile backups = 1; // newest first
 }
 
+message ListS3BackupsRequest {}
+
+message ListS3BackupsResponse {
+  // Newest first. BackupFile.name is the S3 object KEY (pass to RestoreAll as
+  // s3_key).
+  repeated BackupFile backups = 1;
+}
+
 message RestoreAllRequest {
   // Bare filename of a BackupAll file in the server's backup dir. Path
   // separators are rejected — the server never reads outside the backup dir.
-  // Exactly one of name/data must be set.
+  // Exactly one of name/data/s3_key must be set.
   string name = 1;
   // Raw content of a backup file uploaded from the client (`cortex restore
   // --file`), for restoring when the server's own copies are gone. Same
   // format/version checks as name-based restore.
   bytes data = 2;
+  // Object key of a BackupAll file in the configured offsite (S3) bucket; the
+  // server downloads it (using its env-configured credentials) and restores it.
+  // Same format/version checks. FailedPrecondition when S3 is not configured.
+  string s3_key = 3;
 }
 
 message RestoreAllResponse {
@@ -404,41 +415,6 @@ message DeleteBackupRequest {
 }
 
 message DeleteBackupResponse {}
-
-// S3Config is the offsite backup target. Works with AWS S3 and any
-// S3-compatible endpoint (MinIO, Garage, R2, ...).
-message S3Config {
-  bool enabled = 1;      // when true, every successful full backup is also uploaded
-  string endpoint = 2;   // host[:port], e.g. "s3.amazonaws.com" or "minio.lan:9000"
-  string region = 3;     // bucket region; may be empty for endpoints that ignore it
-  string bucket = 4;
-  string prefix = 5;     // object key prefix, e.g. "cortex/"
-  string access_key = 6;
-  // secret_key is WRITE-ONLY: accepted in SetS3Config (empty = keep existing),
-  // never returned by GetS3Config.
-  string secret_key = 7;
-  bool use_ssl = 8;
-}
-
-message GetS3ConfigRequest {}
-
-message GetS3ConfigResponse {
-  S3Config config = 1;  // secret_key always empty
-  bool secret_set = 2;  // whether a secret is stored
-}
-
-message SetS3ConfigRequest {
-  S3Config config = 1;
-}
-
-message SetS3ConfigResponse {}
-
-message TestS3Request {}
-
-message TestS3Response {
-  bool ok = 1;
-  string message = 2; // human-readable success/failure detail
-}
 
 message GetVersionRequest {}
 

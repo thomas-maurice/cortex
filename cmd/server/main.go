@@ -33,6 +33,28 @@ import (
 // -ldflags "-X main.version=...". Defaults to "dev" for un-stamped builds.
 var version = "dev"
 
+// backupStartupDelay is how soon after boot an OVERDUE periodic backup runs
+// (short, not immediate, so startup settles first). A not-overdue schedule waits
+// the remaining interval instead.
+const backupStartupDelay = time.Minute
+
+// initialBackupDelay computes how long to wait before the FIRST periodic backup
+// after startup, given when the last on-disk backup ran (last/hasLast from
+// Service.LastBackupTime). This is what makes the scheduler restart-resilient:
+// if there is no prior backup, or the last one is already older than interval,
+// back up soon (startupDelay) rather than waiting a full interval a frequent
+// restart would never reach; otherwise resume the existing cadence by waiting
+// only the remaining time.
+func initialBackupDelay(last time.Time, hasLast bool, interval, startupDelay time.Duration, now time.Time) time.Duration {
+	if !hasLast {
+		return startupDelay
+	}
+	if elapsed := now.Sub(last); elapsed < interval {
+		return interval - elapsed
+	}
+	return startupDelay
+}
+
 func env(key, def string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
@@ -203,9 +225,6 @@ func main() {
 		os.Exit(1)
 	}
 	checkSchema(ctx, log, st)
-	// Seed a default S3 backup target from the environment when none is configured
-	// yet, so offsite backup can be provisioned via env vars instead of the admin UI.
-	seedS3ConfigFromEnv(ctx, log, st)
 	if multiTenant {
 		if err := st.EnsureIdentitySchema(ctx); err != nil {
 			log.Error("ensure identity schema", "err", err)
@@ -226,22 +245,33 @@ func main() {
 		ChunkingEnabled:    chunkingEnabled,
 		MultiTenant:        multiTenant,
 		BackupKeep:         backupKeep,
+		S3:                 s3ConfigFromEnv(),
 	}, log)
 
 	// Periodic full-server backup goroutine. Disabled when BACKUP_INTERVAL is
 	// empty or "0". Stops cleanly on server shutdown via the signal context.
+	//
+	// Restart-resilient: the FIRST backup is scheduled from the newest on-disk
+	// backup's age (see initialBackupDelay), not from process start. A naive
+	// ticker-from-start would never fire on a server that restarts more often than
+	// the interval; instead we back up shortly after boot when one is overdue,
+	// then keep the cadence.
 	if backupInterval > 0 {
 		go func() {
-			ticker := time.NewTicker(backupInterval)
-			defer ticker.Stop()
+			last, hasLast := svc.LastBackupTime()
+			delay := initialBackupDelay(last, hasLast, backupInterval, backupStartupDelay, time.Now())
+			log.Info("periodic backup scheduled", "interval", backupInterval, "first_in", delay.Round(time.Second))
+			timer := time.NewTimer(delay)
+			defer timer.Stop()
 			for {
 				select {
 				case <-ctx.Done():
 					return
-				case <-ticker.C:
+				case <-timer.C:
 					if err := svc.RunPeriodicBackup(ctx); err != nil {
 						log.Error("periodic backup failed", "err", err)
 					}
+					timer.Reset(backupInterval)
 				}
 			}
 		}()
@@ -402,31 +432,30 @@ func checkSchema(ctx context.Context, log *slog.Logger, st *store.Store) {
 		"issues", len(problems))
 }
 
-// s3ConfigFromEnv builds an S3 backup target from AWS_*/CORTEX_S3_* environment
-// variables. ok is false when no credentials are present (nothing to seed). No
-// credential is ever hardcoded — the values come solely from the environment:
+// s3ConfigFromEnv builds the offsite S3 backup target from AWS_*/CORTEX_S3_*
+// environment variables. Credentials are NEVER stored — the returned config is
+// held in memory by the server for the process lifetime. Enabled is false (so no
+// upload is attempted) unless both credentials AND a bucket are present. No
+// credential is hardcoded; every value comes solely from the environment:
 //
-//	AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY   credentials (BOTH required to seed)
+//	AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY   credentials (BOTH required)
 //	AWS_DEFAULT_REGION or AWS_REGION            region (default "us-east-1")
 //	CORTEX_S3_ENDPOINT                          endpoint host[:port] (default "s3.amazonaws.com")
 //	CORTEX_S3_BUCKET / CORTEX_S3_PREFIX         target bucket + key prefix
 //	CORTEX_S3_USE_SSL                           TLS toggle (default true)
-//	CORTEX_S3_ENABLED                           enable uploads (default true; forced off without a bucket)
-func s3ConfigFromEnv() (store.StoredS3Config, bool) {
+//	CORTEX_S3_ENABLED                           enable uploads (default true; forced off without creds+bucket)
+func s3ConfigFromEnv() rpc.S3Config {
 	accessKey := os.Getenv("AWS_ACCESS_KEY_ID")
 	secretKey := os.Getenv("AWS_SECRET_ACCESS_KEY")
-	if accessKey == "" || secretKey == "" {
-		return store.StoredS3Config{}, false
-	}
+	bucket := os.Getenv("CORTEX_S3_BUCKET")
 	region := env("AWS_DEFAULT_REGION", os.Getenv("AWS_REGION"))
 	if region == "" {
 		region = "us-east-1"
 	}
-	bucket := os.Getenv("CORTEX_S3_BUCKET")
-	return store.StoredS3Config{
-		// Only enable uploads when there is a bucket to write to; enabling with no
-		// bucket would fail every backup's offsite step.
-		Enabled:   bucket != "" && envBool("CORTEX_S3_ENABLED", true),
+	return rpc.S3Config{
+		// Only enable uploads with full credentials AND a bucket to write to;
+		// enabling without them would fail every backup's offsite step.
+		Enabled:   accessKey != "" && secretKey != "" && bucket != "" && envBool("CORTEX_S3_ENABLED", true),
 		Endpoint:  env("CORTEX_S3_ENDPOINT", "s3.amazonaws.com"),
 		Region:    region,
 		Bucket:    bucket,
@@ -434,29 +463,5 @@ func s3ConfigFromEnv() (store.StoredS3Config, bool) {
 		AccessKey: accessKey,
 		SecretKey: secretKey,
 		UseSsl:    envBool("CORTEX_S3_USE_SSL", true),
-	}, true
-}
-
-// seedS3ConfigFromEnv persists a default S3 backup target derived from the
-// environment when none is configured yet. It is a SEED, not an override: once
-// any S3 config exists (from a prior seed or the admin UI) it is never clobbered,
-// so admin edits win and later env changes do not fight the stored value. A no-op
-// when AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY are absent.
-func seedS3ConfigFromEnv(ctx context.Context, log *slog.Logger, st *store.Store) {
-	cfg, ok := s3ConfigFromEnv()
-	if !ok {
-		return
 	}
-	if _, exists, err := st.GetS3Config(ctx); err != nil {
-		log.Warn("s3 seed: could not read existing config; skipping", "err", err)
-		return
-	} else if exists {
-		return // already configured — never clobber
-	}
-	if err := st.SetS3Config(ctx, cfg); err != nil {
-		log.Warn("s3 seed: failed to persist default config", "err", err)
-		return
-	}
-	log.Info("seeded default S3 backup config from environment",
-		"endpoint", cfg.Endpoint, "region", cfg.Region, "bucket", cfg.Bucket, "enabled", cfg.Enabled)
 }

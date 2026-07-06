@@ -110,6 +110,9 @@ const (
 	// MemoryServiceListBackupsProcedure is the fully-qualified name of the MemoryService's ListBackups
 	// RPC.
 	MemoryServiceListBackupsProcedure = "/cortex.v1.MemoryService/ListBackups"
+	// MemoryServiceListS3BackupsProcedure is the fully-qualified name of the MemoryService's
+	// ListS3Backups RPC.
+	MemoryServiceListS3BackupsProcedure = "/cortex.v1.MemoryService/ListS3Backups"
 	// MemoryServiceRestoreAllProcedure is the fully-qualified name of the MemoryService's RestoreAll
 	// RPC.
 	MemoryServiceRestoreAllProcedure = "/cortex.v1.MemoryService/RestoreAll"
@@ -119,14 +122,6 @@ const (
 	// MemoryServiceDeleteBackupProcedure is the fully-qualified name of the MemoryService's
 	// DeleteBackup RPC.
 	MemoryServiceDeleteBackupProcedure = "/cortex.v1.MemoryService/DeleteBackup"
-	// MemoryServiceGetS3ConfigProcedure is the fully-qualified name of the MemoryService's GetS3Config
-	// RPC.
-	MemoryServiceGetS3ConfigProcedure = "/cortex.v1.MemoryService/GetS3Config"
-	// MemoryServiceSetS3ConfigProcedure is the fully-qualified name of the MemoryService's SetS3Config
-	// RPC.
-	MemoryServiceSetS3ConfigProcedure = "/cortex.v1.MemoryService/SetS3Config"
-	// MemoryServiceTestS3Procedure is the fully-qualified name of the MemoryService's TestS3 RPC.
-	MemoryServiceTestS3Procedure = "/cortex.v1.MemoryService/TestS3"
 	// MemoryServiceListUsersProcedure is the fully-qualified name of the MemoryService's ListUsers RPC.
 	MemoryServiceListUsersProcedure = "/cortex.v1.MemoryService/ListUsers"
 	// MemoryServiceCreateUserProcedure is the fully-qualified name of the MemoryService's CreateUser
@@ -272,11 +267,16 @@ type MemoryServiceClient interface {
 	// ListBackups lists the full-backup files in the server's backup dir,
 	// newest first. Admin-only.
 	ListBackups(context.Context, *connect.Request[v1.ListBackupsRequest]) (*connect.Response[v1.ListBackupsResponse], error)
-	// RestoreAll restores a BackupAll file (named by bare filename, resolved
-	// inside the server's backup dir): recreates missing users and API keys
-	// (existing ones are left untouched), ensures tenants, then re-queues every
-	// record into its original tenant via the index queue (the worker
-	// re-embeds). Upsert-by-id makes it safe to re-run. Admin-only.
+	// ListS3Backups lists the full-backup objects in the configured offsite (S3)
+	// bucket/prefix, newest first. FailedPrecondition when S3 is not configured.
+	// Admin-only.
+	ListS3Backups(context.Context, *connect.Request[v1.ListS3BackupsRequest]) (*connect.Response[v1.ListS3BackupsResponse], error)
+	// RestoreAll restores a BackupAll file: from the server's backup dir (name),
+	// from raw uploaded bytes (data), or downloaded from the offsite S3 bucket
+	// (s3_key). It recreates missing users and API keys (existing ones are left
+	// untouched), ensures tenants, then re-queues every record into its original
+	// tenant via the index queue (the worker re-embeds). Upsert-by-id makes it
+	// safe to re-run. Admin-only.
 	RestoreAll(context.Context, *connect.Request[v1.RestoreAllRequest]) (*connect.Response[v1.RestoreAllResponse], error)
 	// DownloadBackup returns the raw content of a full-backup file from the
 	// server's backup dir, so an admin can keep offline copies. Admin-only.
@@ -284,16 +284,6 @@ type MemoryServiceClient interface {
 	// DeleteBackup removes a full-backup file from the server's backup dir.
 	// Admin-only.
 	DeleteBackup(context.Context, *connect.Request[v1.DeleteBackupRequest]) (*connect.Response[v1.DeleteBackupResponse], error)
-	// GetS3Config returns the offsite (S3) backup configuration with the secret
-	// key ALWAYS redacted — only whether one is set. Admin-only.
-	GetS3Config(context.Context, *connect.Request[v1.GetS3ConfigRequest]) (*connect.Response[v1.GetS3ConfigResponse], error)
-	// SetS3Config stores the offsite backup configuration. An empty secret_key
-	// keeps the previously stored secret, so edits don't require re-entering
-	// it. Admin-only.
-	SetS3Config(context.Context, *connect.Request[v1.SetS3ConfigRequest]) (*connect.Response[v1.SetS3ConfigResponse], error)
-	// TestS3 verifies the stored configuration by writing and deleting a probe
-	// object in the bucket. Admin-only.
-	TestS3(context.Context, *connect.Request[v1.TestS3Request]) (*connect.Response[v1.TestS3Response], error)
 	// ---- Admin: User management (P5) ----
 	// ListUsers returns all users. Admin-only; returns PermissionDenied for
 	// non-admins and FailedPrecondition when multi-tenancy is disabled.
@@ -523,6 +513,12 @@ func NewMemoryServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(memoryServiceMethods.ByName("ListBackups")),
 			connect.WithClientOptions(opts...),
 		),
+		listS3Backups: connect.NewClient[v1.ListS3BackupsRequest, v1.ListS3BackupsResponse](
+			httpClient,
+			baseURL+MemoryServiceListS3BackupsProcedure,
+			connect.WithSchema(memoryServiceMethods.ByName("ListS3Backups")),
+			connect.WithClientOptions(opts...),
+		),
 		restoreAll: connect.NewClient[v1.RestoreAllRequest, v1.RestoreAllResponse](
 			httpClient,
 			baseURL+MemoryServiceRestoreAllProcedure,
@@ -539,24 +535,6 @@ func NewMemoryServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			httpClient,
 			baseURL+MemoryServiceDeleteBackupProcedure,
 			connect.WithSchema(memoryServiceMethods.ByName("DeleteBackup")),
-			connect.WithClientOptions(opts...),
-		),
-		getS3Config: connect.NewClient[v1.GetS3ConfigRequest, v1.GetS3ConfigResponse](
-			httpClient,
-			baseURL+MemoryServiceGetS3ConfigProcedure,
-			connect.WithSchema(memoryServiceMethods.ByName("GetS3Config")),
-			connect.WithClientOptions(opts...),
-		),
-		setS3Config: connect.NewClient[v1.SetS3ConfigRequest, v1.SetS3ConfigResponse](
-			httpClient,
-			baseURL+MemoryServiceSetS3ConfigProcedure,
-			connect.WithSchema(memoryServiceMethods.ByName("SetS3Config")),
-			connect.WithClientOptions(opts...),
-		),
-		testS3: connect.NewClient[v1.TestS3Request, v1.TestS3Response](
-			httpClient,
-			baseURL+MemoryServiceTestS3Procedure,
-			connect.WithSchema(memoryServiceMethods.ByName("TestS3")),
 			connect.WithClientOptions(opts...),
 		),
 		listUsers: connect.NewClient[v1.ListUsersRequest, v1.ListUsersResponse](
@@ -660,12 +638,10 @@ type memoryServiceClient struct {
 	restoreSelf             *connect.Client[v1.RestoreSelfRequest, v1.RestoreSelfResponse]
 	backupAll               *connect.Client[v1.BackupAllRequest, v1.BackupAllResponse]
 	listBackups             *connect.Client[v1.ListBackupsRequest, v1.ListBackupsResponse]
+	listS3Backups           *connect.Client[v1.ListS3BackupsRequest, v1.ListS3BackupsResponse]
 	restoreAll              *connect.Client[v1.RestoreAllRequest, v1.RestoreAllResponse]
 	downloadBackup          *connect.Client[v1.DownloadBackupRequest, v1.DownloadBackupResponse]
 	deleteBackup            *connect.Client[v1.DeleteBackupRequest, v1.DeleteBackupResponse]
-	getS3Config             *connect.Client[v1.GetS3ConfigRequest, v1.GetS3ConfigResponse]
-	setS3Config             *connect.Client[v1.SetS3ConfigRequest, v1.SetS3ConfigResponse]
-	testS3                  *connect.Client[v1.TestS3Request, v1.TestS3Response]
 	listUsers               *connect.Client[v1.ListUsersRequest, v1.ListUsersResponse]
 	createUser              *connect.Client[v1.CreateUserRequest, v1.CreateUserResponse]
 	deleteUser              *connect.Client[v1.DeleteUserRequest, v1.DeleteUserResponse]
@@ -829,6 +805,11 @@ func (c *memoryServiceClient) ListBackups(ctx context.Context, req *connect.Requ
 	return c.listBackups.CallUnary(ctx, req)
 }
 
+// ListS3Backups calls cortex.v1.MemoryService.ListS3Backups.
+func (c *memoryServiceClient) ListS3Backups(ctx context.Context, req *connect.Request[v1.ListS3BackupsRequest]) (*connect.Response[v1.ListS3BackupsResponse], error) {
+	return c.listS3Backups.CallUnary(ctx, req)
+}
+
 // RestoreAll calls cortex.v1.MemoryService.RestoreAll.
 func (c *memoryServiceClient) RestoreAll(ctx context.Context, req *connect.Request[v1.RestoreAllRequest]) (*connect.Response[v1.RestoreAllResponse], error) {
 	return c.restoreAll.CallUnary(ctx, req)
@@ -842,21 +823,6 @@ func (c *memoryServiceClient) DownloadBackup(ctx context.Context, req *connect.R
 // DeleteBackup calls cortex.v1.MemoryService.DeleteBackup.
 func (c *memoryServiceClient) DeleteBackup(ctx context.Context, req *connect.Request[v1.DeleteBackupRequest]) (*connect.Response[v1.DeleteBackupResponse], error) {
 	return c.deleteBackup.CallUnary(ctx, req)
-}
-
-// GetS3Config calls cortex.v1.MemoryService.GetS3Config.
-func (c *memoryServiceClient) GetS3Config(ctx context.Context, req *connect.Request[v1.GetS3ConfigRequest]) (*connect.Response[v1.GetS3ConfigResponse], error) {
-	return c.getS3Config.CallUnary(ctx, req)
-}
-
-// SetS3Config calls cortex.v1.MemoryService.SetS3Config.
-func (c *memoryServiceClient) SetS3Config(ctx context.Context, req *connect.Request[v1.SetS3ConfigRequest]) (*connect.Response[v1.SetS3ConfigResponse], error) {
-	return c.setS3Config.CallUnary(ctx, req)
-}
-
-// TestS3 calls cortex.v1.MemoryService.TestS3.
-func (c *memoryServiceClient) TestS3(ctx context.Context, req *connect.Request[v1.TestS3Request]) (*connect.Response[v1.TestS3Response], error) {
-	return c.testS3.CallUnary(ctx, req)
 }
 
 // ListUsers calls cortex.v1.MemoryService.ListUsers.
@@ -1025,11 +991,16 @@ type MemoryServiceHandler interface {
 	// ListBackups lists the full-backup files in the server's backup dir,
 	// newest first. Admin-only.
 	ListBackups(context.Context, *connect.Request[v1.ListBackupsRequest]) (*connect.Response[v1.ListBackupsResponse], error)
-	// RestoreAll restores a BackupAll file (named by bare filename, resolved
-	// inside the server's backup dir): recreates missing users and API keys
-	// (existing ones are left untouched), ensures tenants, then re-queues every
-	// record into its original tenant via the index queue (the worker
-	// re-embeds). Upsert-by-id makes it safe to re-run. Admin-only.
+	// ListS3Backups lists the full-backup objects in the configured offsite (S3)
+	// bucket/prefix, newest first. FailedPrecondition when S3 is not configured.
+	// Admin-only.
+	ListS3Backups(context.Context, *connect.Request[v1.ListS3BackupsRequest]) (*connect.Response[v1.ListS3BackupsResponse], error)
+	// RestoreAll restores a BackupAll file: from the server's backup dir (name),
+	// from raw uploaded bytes (data), or downloaded from the offsite S3 bucket
+	// (s3_key). It recreates missing users and API keys (existing ones are left
+	// untouched), ensures tenants, then re-queues every record into its original
+	// tenant via the index queue (the worker re-embeds). Upsert-by-id makes it
+	// safe to re-run. Admin-only.
 	RestoreAll(context.Context, *connect.Request[v1.RestoreAllRequest]) (*connect.Response[v1.RestoreAllResponse], error)
 	// DownloadBackup returns the raw content of a full-backup file from the
 	// server's backup dir, so an admin can keep offline copies. Admin-only.
@@ -1037,16 +1008,6 @@ type MemoryServiceHandler interface {
 	// DeleteBackup removes a full-backup file from the server's backup dir.
 	// Admin-only.
 	DeleteBackup(context.Context, *connect.Request[v1.DeleteBackupRequest]) (*connect.Response[v1.DeleteBackupResponse], error)
-	// GetS3Config returns the offsite (S3) backup configuration with the secret
-	// key ALWAYS redacted — only whether one is set. Admin-only.
-	GetS3Config(context.Context, *connect.Request[v1.GetS3ConfigRequest]) (*connect.Response[v1.GetS3ConfigResponse], error)
-	// SetS3Config stores the offsite backup configuration. An empty secret_key
-	// keeps the previously stored secret, so edits don't require re-entering
-	// it. Admin-only.
-	SetS3Config(context.Context, *connect.Request[v1.SetS3ConfigRequest]) (*connect.Response[v1.SetS3ConfigResponse], error)
-	// TestS3 verifies the stored configuration by writing and deleting a probe
-	// object in the bucket. Admin-only.
-	TestS3(context.Context, *connect.Request[v1.TestS3Request]) (*connect.Response[v1.TestS3Response], error)
 	// ---- Admin: User management (P5) ----
 	// ListUsers returns all users. Admin-only; returns PermissionDenied for
 	// non-admins and FailedPrecondition when multi-tenancy is disabled.
@@ -1272,6 +1233,12 @@ func NewMemoryServiceHandler(svc MemoryServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(memoryServiceMethods.ByName("ListBackups")),
 		connect.WithHandlerOptions(opts...),
 	)
+	memoryServiceListS3BackupsHandler := connect.NewUnaryHandler(
+		MemoryServiceListS3BackupsProcedure,
+		svc.ListS3Backups,
+		connect.WithSchema(memoryServiceMethods.ByName("ListS3Backups")),
+		connect.WithHandlerOptions(opts...),
+	)
 	memoryServiceRestoreAllHandler := connect.NewUnaryHandler(
 		MemoryServiceRestoreAllProcedure,
 		svc.RestoreAll,
@@ -1288,24 +1255,6 @@ func NewMemoryServiceHandler(svc MemoryServiceHandler, opts ...connect.HandlerOp
 		MemoryServiceDeleteBackupProcedure,
 		svc.DeleteBackup,
 		connect.WithSchema(memoryServiceMethods.ByName("DeleteBackup")),
-		connect.WithHandlerOptions(opts...),
-	)
-	memoryServiceGetS3ConfigHandler := connect.NewUnaryHandler(
-		MemoryServiceGetS3ConfigProcedure,
-		svc.GetS3Config,
-		connect.WithSchema(memoryServiceMethods.ByName("GetS3Config")),
-		connect.WithHandlerOptions(opts...),
-	)
-	memoryServiceSetS3ConfigHandler := connect.NewUnaryHandler(
-		MemoryServiceSetS3ConfigProcedure,
-		svc.SetS3Config,
-		connect.WithSchema(memoryServiceMethods.ByName("SetS3Config")),
-		connect.WithHandlerOptions(opts...),
-	)
-	memoryServiceTestS3Handler := connect.NewUnaryHandler(
-		MemoryServiceTestS3Procedure,
-		svc.TestS3,
-		connect.WithSchema(memoryServiceMethods.ByName("TestS3")),
 		connect.WithHandlerOptions(opts...),
 	)
 	memoryServiceListUsersHandler := connect.NewUnaryHandler(
@@ -1436,18 +1385,14 @@ func NewMemoryServiceHandler(svc MemoryServiceHandler, opts ...connect.HandlerOp
 			memoryServiceBackupAllHandler.ServeHTTP(w, r)
 		case MemoryServiceListBackupsProcedure:
 			memoryServiceListBackupsHandler.ServeHTTP(w, r)
+		case MemoryServiceListS3BackupsProcedure:
+			memoryServiceListS3BackupsHandler.ServeHTTP(w, r)
 		case MemoryServiceRestoreAllProcedure:
 			memoryServiceRestoreAllHandler.ServeHTTP(w, r)
 		case MemoryServiceDownloadBackupProcedure:
 			memoryServiceDownloadBackupHandler.ServeHTTP(w, r)
 		case MemoryServiceDeleteBackupProcedure:
 			memoryServiceDeleteBackupHandler.ServeHTTP(w, r)
-		case MemoryServiceGetS3ConfigProcedure:
-			memoryServiceGetS3ConfigHandler.ServeHTTP(w, r)
-		case MemoryServiceSetS3ConfigProcedure:
-			memoryServiceSetS3ConfigHandler.ServeHTTP(w, r)
-		case MemoryServiceTestS3Procedure:
-			memoryServiceTestS3Handler.ServeHTTP(w, r)
 		case MemoryServiceListUsersProcedure:
 			memoryServiceListUsersHandler.ServeHTTP(w, r)
 		case MemoryServiceCreateUserProcedure:
@@ -1599,6 +1544,10 @@ func (UnimplementedMemoryServiceHandler) ListBackups(context.Context, *connect.R
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cortex.v1.MemoryService.ListBackups is not implemented"))
 }
 
+func (UnimplementedMemoryServiceHandler) ListS3Backups(context.Context, *connect.Request[v1.ListS3BackupsRequest]) (*connect.Response[v1.ListS3BackupsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cortex.v1.MemoryService.ListS3Backups is not implemented"))
+}
+
 func (UnimplementedMemoryServiceHandler) RestoreAll(context.Context, *connect.Request[v1.RestoreAllRequest]) (*connect.Response[v1.RestoreAllResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cortex.v1.MemoryService.RestoreAll is not implemented"))
 }
@@ -1609,18 +1558,6 @@ func (UnimplementedMemoryServiceHandler) DownloadBackup(context.Context, *connec
 
 func (UnimplementedMemoryServiceHandler) DeleteBackup(context.Context, *connect.Request[v1.DeleteBackupRequest]) (*connect.Response[v1.DeleteBackupResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cortex.v1.MemoryService.DeleteBackup is not implemented"))
-}
-
-func (UnimplementedMemoryServiceHandler) GetS3Config(context.Context, *connect.Request[v1.GetS3ConfigRequest]) (*connect.Response[v1.GetS3ConfigResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cortex.v1.MemoryService.GetS3Config is not implemented"))
-}
-
-func (UnimplementedMemoryServiceHandler) SetS3Config(context.Context, *connect.Request[v1.SetS3ConfigRequest]) (*connect.Response[v1.SetS3ConfigResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cortex.v1.MemoryService.SetS3Config is not implemented"))
-}
-
-func (UnimplementedMemoryServiceHandler) TestS3(context.Context, *connect.Request[v1.TestS3Request]) (*connect.Response[v1.TestS3Response], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cortex.v1.MemoryService.TestS3 is not implemented"))
 }
 
 func (UnimplementedMemoryServiceHandler) ListUsers(context.Context, *connect.Request[v1.ListUsersRequest]) (*connect.Response[v1.ListUsersResponse], error) {

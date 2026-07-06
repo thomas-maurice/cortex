@@ -1357,13 +1357,84 @@ export class ListBackupsResponse extends Message<ListBackupsResponse> {
 }
 
 /**
+ * @generated from message cortex.v1.ListS3BackupsRequest
+ */
+export class ListS3BackupsRequest extends Message<ListS3BackupsRequest> {
+  constructor(data?: PartialMessage<ListS3BackupsRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "cortex.v1.ListS3BackupsRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListS3BackupsRequest {
+    return new ListS3BackupsRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ListS3BackupsRequest {
+    return new ListS3BackupsRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ListS3BackupsRequest {
+    return new ListS3BackupsRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ListS3BackupsRequest | PlainMessage<ListS3BackupsRequest> | undefined, b: ListS3BackupsRequest | PlainMessage<ListS3BackupsRequest> | undefined): boolean {
+    return proto3.util.equals(ListS3BackupsRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message cortex.v1.ListS3BackupsResponse
+ */
+export class ListS3BackupsResponse extends Message<ListS3BackupsResponse> {
+  /**
+   * Newest first. BackupFile.name is the S3 object KEY (pass to RestoreAll as
+   * s3_key).
+   *
+   * @generated from field: repeated cortex.v1.BackupFile backups = 1;
+   */
+  backups: BackupFile[] = [];
+
+  constructor(data?: PartialMessage<ListS3BackupsResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "cortex.v1.ListS3BackupsResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "backups", kind: "message", T: BackupFile, repeated: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListS3BackupsResponse {
+    return new ListS3BackupsResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ListS3BackupsResponse {
+    return new ListS3BackupsResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ListS3BackupsResponse {
+    return new ListS3BackupsResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ListS3BackupsResponse | PlainMessage<ListS3BackupsResponse> | undefined, b: ListS3BackupsResponse | PlainMessage<ListS3BackupsResponse> | undefined): boolean {
+    return proto3.util.equals(ListS3BackupsResponse, a, b);
+  }
+}
+
+/**
  * @generated from message cortex.v1.RestoreAllRequest
  */
 export class RestoreAllRequest extends Message<RestoreAllRequest> {
   /**
    * Bare filename of a BackupAll file in the server's backup dir. Path
    * separators are rejected — the server never reads outside the backup dir.
-   * Exactly one of name/data must be set.
+   * Exactly one of name/data/s3_key must be set.
    *
    * @generated from field: string name = 1;
    */
@@ -1378,6 +1449,15 @@ export class RestoreAllRequest extends Message<RestoreAllRequest> {
    */
   data = new Uint8Array(0);
 
+  /**
+   * Object key of a BackupAll file in the configured offsite (S3) bucket; the
+   * server downloads it (using its env-configured credentials) and restores it.
+   * Same format/version checks. FailedPrecondition when S3 is not configured.
+   *
+   * @generated from field: string s3_key = 3;
+   */
+  s3Key = "";
+
   constructor(data?: PartialMessage<RestoreAllRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -1388,6 +1468,7 @@ export class RestoreAllRequest extends Message<RestoreAllRequest> {
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
     { no: 1, name: "name", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 2, name: "data", kind: "scalar", T: 12 /* ScalarType.BYTES */ },
+    { no: 3, name: "s3_key", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): RestoreAllRequest {
@@ -1635,321 +1716,6 @@ export class DeleteBackupResponse extends Message<DeleteBackupResponse> {
 
   static equals(a: DeleteBackupResponse | PlainMessage<DeleteBackupResponse> | undefined, b: DeleteBackupResponse | PlainMessage<DeleteBackupResponse> | undefined): boolean {
     return proto3.util.equals(DeleteBackupResponse, a, b);
-  }
-}
-
-/**
- * S3Config is the offsite backup target. Works with AWS S3 and any
- * S3-compatible endpoint (MinIO, Garage, R2, ...).
- *
- * @generated from message cortex.v1.S3Config
- */
-export class S3Config extends Message<S3Config> {
-  /**
-   * when true, every successful full backup is also uploaded
-   *
-   * @generated from field: bool enabled = 1;
-   */
-  enabled = false;
-
-  /**
-   * host[:port], e.g. "s3.amazonaws.com" or "minio.lan:9000"
-   *
-   * @generated from field: string endpoint = 2;
-   */
-  endpoint = "";
-
-  /**
-   * bucket region; may be empty for endpoints that ignore it
-   *
-   * @generated from field: string region = 3;
-   */
-  region = "";
-
-  /**
-   * @generated from field: string bucket = 4;
-   */
-  bucket = "";
-
-  /**
-   * object key prefix, e.g. "cortex/"
-   *
-   * @generated from field: string prefix = 5;
-   */
-  prefix = "";
-
-  /**
-   * @generated from field: string access_key = 6;
-   */
-  accessKey = "";
-
-  /**
-   * secret_key is WRITE-ONLY: accepted in SetS3Config (empty = keep existing),
-   * never returned by GetS3Config.
-   *
-   * @generated from field: string secret_key = 7;
-   */
-  secretKey = "";
-
-  /**
-   * @generated from field: bool use_ssl = 8;
-   */
-  useSsl = false;
-
-  constructor(data?: PartialMessage<S3Config>) {
-    super();
-    proto3.util.initPartial(data, this);
-  }
-
-  static readonly runtime: typeof proto3 = proto3;
-  static readonly typeName = "cortex.v1.S3Config";
-  static readonly fields: FieldList = proto3.util.newFieldList(() => [
-    { no: 1, name: "enabled", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
-    { no: 2, name: "endpoint", kind: "scalar", T: 9 /* ScalarType.STRING */ },
-    { no: 3, name: "region", kind: "scalar", T: 9 /* ScalarType.STRING */ },
-    { no: 4, name: "bucket", kind: "scalar", T: 9 /* ScalarType.STRING */ },
-    { no: 5, name: "prefix", kind: "scalar", T: 9 /* ScalarType.STRING */ },
-    { no: 6, name: "access_key", kind: "scalar", T: 9 /* ScalarType.STRING */ },
-    { no: 7, name: "secret_key", kind: "scalar", T: 9 /* ScalarType.STRING */ },
-    { no: 8, name: "use_ssl", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
-  ]);
-
-  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): S3Config {
-    return new S3Config().fromBinary(bytes, options);
-  }
-
-  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): S3Config {
-    return new S3Config().fromJson(jsonValue, options);
-  }
-
-  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): S3Config {
-    return new S3Config().fromJsonString(jsonString, options);
-  }
-
-  static equals(a: S3Config | PlainMessage<S3Config> | undefined, b: S3Config | PlainMessage<S3Config> | undefined): boolean {
-    return proto3.util.equals(S3Config, a, b);
-  }
-}
-
-/**
- * @generated from message cortex.v1.GetS3ConfigRequest
- */
-export class GetS3ConfigRequest extends Message<GetS3ConfigRequest> {
-  constructor(data?: PartialMessage<GetS3ConfigRequest>) {
-    super();
-    proto3.util.initPartial(data, this);
-  }
-
-  static readonly runtime: typeof proto3 = proto3;
-  static readonly typeName = "cortex.v1.GetS3ConfigRequest";
-  static readonly fields: FieldList = proto3.util.newFieldList(() => [
-  ]);
-
-  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): GetS3ConfigRequest {
-    return new GetS3ConfigRequest().fromBinary(bytes, options);
-  }
-
-  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): GetS3ConfigRequest {
-    return new GetS3ConfigRequest().fromJson(jsonValue, options);
-  }
-
-  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): GetS3ConfigRequest {
-    return new GetS3ConfigRequest().fromJsonString(jsonString, options);
-  }
-
-  static equals(a: GetS3ConfigRequest | PlainMessage<GetS3ConfigRequest> | undefined, b: GetS3ConfigRequest | PlainMessage<GetS3ConfigRequest> | undefined): boolean {
-    return proto3.util.equals(GetS3ConfigRequest, a, b);
-  }
-}
-
-/**
- * @generated from message cortex.v1.GetS3ConfigResponse
- */
-export class GetS3ConfigResponse extends Message<GetS3ConfigResponse> {
-  /**
-   * secret_key always empty
-   *
-   * @generated from field: cortex.v1.S3Config config = 1;
-   */
-  config?: S3Config;
-
-  /**
-   * whether a secret is stored
-   *
-   * @generated from field: bool secret_set = 2;
-   */
-  secretSet = false;
-
-  constructor(data?: PartialMessage<GetS3ConfigResponse>) {
-    super();
-    proto3.util.initPartial(data, this);
-  }
-
-  static readonly runtime: typeof proto3 = proto3;
-  static readonly typeName = "cortex.v1.GetS3ConfigResponse";
-  static readonly fields: FieldList = proto3.util.newFieldList(() => [
-    { no: 1, name: "config", kind: "message", T: S3Config },
-    { no: 2, name: "secret_set", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
-  ]);
-
-  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): GetS3ConfigResponse {
-    return new GetS3ConfigResponse().fromBinary(bytes, options);
-  }
-
-  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): GetS3ConfigResponse {
-    return new GetS3ConfigResponse().fromJson(jsonValue, options);
-  }
-
-  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): GetS3ConfigResponse {
-    return new GetS3ConfigResponse().fromJsonString(jsonString, options);
-  }
-
-  static equals(a: GetS3ConfigResponse | PlainMessage<GetS3ConfigResponse> | undefined, b: GetS3ConfigResponse | PlainMessage<GetS3ConfigResponse> | undefined): boolean {
-    return proto3.util.equals(GetS3ConfigResponse, a, b);
-  }
-}
-
-/**
- * @generated from message cortex.v1.SetS3ConfigRequest
- */
-export class SetS3ConfigRequest extends Message<SetS3ConfigRequest> {
-  /**
-   * @generated from field: cortex.v1.S3Config config = 1;
-   */
-  config?: S3Config;
-
-  constructor(data?: PartialMessage<SetS3ConfigRequest>) {
-    super();
-    proto3.util.initPartial(data, this);
-  }
-
-  static readonly runtime: typeof proto3 = proto3;
-  static readonly typeName = "cortex.v1.SetS3ConfigRequest";
-  static readonly fields: FieldList = proto3.util.newFieldList(() => [
-    { no: 1, name: "config", kind: "message", T: S3Config },
-  ]);
-
-  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): SetS3ConfigRequest {
-    return new SetS3ConfigRequest().fromBinary(bytes, options);
-  }
-
-  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): SetS3ConfigRequest {
-    return new SetS3ConfigRequest().fromJson(jsonValue, options);
-  }
-
-  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): SetS3ConfigRequest {
-    return new SetS3ConfigRequest().fromJsonString(jsonString, options);
-  }
-
-  static equals(a: SetS3ConfigRequest | PlainMessage<SetS3ConfigRequest> | undefined, b: SetS3ConfigRequest | PlainMessage<SetS3ConfigRequest> | undefined): boolean {
-    return proto3.util.equals(SetS3ConfigRequest, a, b);
-  }
-}
-
-/**
- * @generated from message cortex.v1.SetS3ConfigResponse
- */
-export class SetS3ConfigResponse extends Message<SetS3ConfigResponse> {
-  constructor(data?: PartialMessage<SetS3ConfigResponse>) {
-    super();
-    proto3.util.initPartial(data, this);
-  }
-
-  static readonly runtime: typeof proto3 = proto3;
-  static readonly typeName = "cortex.v1.SetS3ConfigResponse";
-  static readonly fields: FieldList = proto3.util.newFieldList(() => [
-  ]);
-
-  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): SetS3ConfigResponse {
-    return new SetS3ConfigResponse().fromBinary(bytes, options);
-  }
-
-  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): SetS3ConfigResponse {
-    return new SetS3ConfigResponse().fromJson(jsonValue, options);
-  }
-
-  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): SetS3ConfigResponse {
-    return new SetS3ConfigResponse().fromJsonString(jsonString, options);
-  }
-
-  static equals(a: SetS3ConfigResponse | PlainMessage<SetS3ConfigResponse> | undefined, b: SetS3ConfigResponse | PlainMessage<SetS3ConfigResponse> | undefined): boolean {
-    return proto3.util.equals(SetS3ConfigResponse, a, b);
-  }
-}
-
-/**
- * @generated from message cortex.v1.TestS3Request
- */
-export class TestS3Request extends Message<TestS3Request> {
-  constructor(data?: PartialMessage<TestS3Request>) {
-    super();
-    proto3.util.initPartial(data, this);
-  }
-
-  static readonly runtime: typeof proto3 = proto3;
-  static readonly typeName = "cortex.v1.TestS3Request";
-  static readonly fields: FieldList = proto3.util.newFieldList(() => [
-  ]);
-
-  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): TestS3Request {
-    return new TestS3Request().fromBinary(bytes, options);
-  }
-
-  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): TestS3Request {
-    return new TestS3Request().fromJson(jsonValue, options);
-  }
-
-  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): TestS3Request {
-    return new TestS3Request().fromJsonString(jsonString, options);
-  }
-
-  static equals(a: TestS3Request | PlainMessage<TestS3Request> | undefined, b: TestS3Request | PlainMessage<TestS3Request> | undefined): boolean {
-    return proto3.util.equals(TestS3Request, a, b);
-  }
-}
-
-/**
- * @generated from message cortex.v1.TestS3Response
- */
-export class TestS3Response extends Message<TestS3Response> {
-  /**
-   * @generated from field: bool ok = 1;
-   */
-  ok = false;
-
-  /**
-   * human-readable success/failure detail
-   *
-   * @generated from field: string message = 2;
-   */
-  message = "";
-
-  constructor(data?: PartialMessage<TestS3Response>) {
-    super();
-    proto3.util.initPartial(data, this);
-  }
-
-  static readonly runtime: typeof proto3 = proto3;
-  static readonly typeName = "cortex.v1.TestS3Response";
-  static readonly fields: FieldList = proto3.util.newFieldList(() => [
-    { no: 1, name: "ok", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
-    { no: 2, name: "message", kind: "scalar", T: 9 /* ScalarType.STRING */ },
-  ]);
-
-  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): TestS3Response {
-    return new TestS3Response().fromBinary(bytes, options);
-  }
-
-  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): TestS3Response {
-    return new TestS3Response().fromJson(jsonValue, options);
-  }
-
-  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): TestS3Response {
-    return new TestS3Response().fromJsonString(jsonString, options);
-  }
-
-  static equals(a: TestS3Response | PlainMessage<TestS3Response> | undefined, b: TestS3Response | PlainMessage<TestS3Response> | undefined): boolean {
-    return proto3.util.equals(TestS3Response, a, b);
   }
 }
 

@@ -803,7 +803,7 @@ func backupCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.AddCommand(backupListCmd(), backupDownloadCmd(), backupDeleteCmd(), backupSelfCmd())
+	cmd.AddCommand(backupListCmd(), backupS3ListCmd(), backupDownloadCmd(), backupDeleteCmd(), backupSelfCmd())
 	return cmd
 }
 
@@ -948,26 +948,68 @@ func backupListCmd() *cobra.Command {
 	}
 }
 
+func backupS3ListCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "s3-list",
+		Short: "List full-backup objects in the offsite (S3) bucket, newest first; admin-only",
+		Long: "Lists the backups the server has uploaded to its configured offsite S3 bucket.\n" +
+			"S3 is configured on the SERVER via env (CORTEX_S3_*/AWS_*); this asks the server to\n" +
+			"enumerate the bucket with its own credentials. Restore one with\n" +
+			"'cortex restore --s3 <object-key>'.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			resp, err := client().ListS3Backups(cmd.Context(), connect.NewRequest(&cortexv1.ListS3BackupsRequest{}))
+			if err != nil {
+				return err
+			}
+			if len(resp.Msg.GetBackups()) == 0 {
+				fmt.Println("no full backups in the S3 bucket")
+				return nil
+			}
+			for _, b := range resp.Msg.GetBackups() {
+				fmt.Printf("%s  %10d bytes  %s\n", b.GetCreatedAt().AsTime().Format(time.RFC3339), b.GetSizeBytes(), b.GetName())
+			}
+			return nil
+		},
+	}
+}
+
 func restoreCmd() *cobra.Command {
 	var yes bool
 	var file string
+	var s3Key string
 	cmd := &cobra.Command{
 		Use:   "restore [backup-file-name]",
-		Short: "Restore a full server backup, by server-side name or from a local file; admin-only",
+		Short: "Restore a full server backup, by server-side name, local file, or from S3; admin-only",
 		Long: "Restore recreates missing users and API keys from a full-backup file (existing\n" +
 			"ones are left untouched), then re-queues every memory and summary into its original\n" +
 			"tenant — the worker re-embeds asynchronously (watch 'cortex status' / the Indexing\n" +
 			"view). Upsert-by-id makes it safe to re-run.\n\n" +
-			"Give either a bare filename that lives in the SERVER's backup directory (see\n" +
-			"'cortex backup list'), or --file with a LOCAL backup file to upload — the\n" +
-			"disaster-recovery path when the server's own copies are gone. Requires an admin token.",
+			"Give exactly one source:\n" +
+			"  - a bare filename in the SERVER's backup directory (see 'cortex backup list'), or\n" +
+			"  - --file <local backup> to upload a LOCAL file (disaster recovery when the server's\n" +
+			"    own copies are gone), or\n" +
+			"  - --s3 <object-key> to restore from the offsite S3 bucket (see 'cortex backup\n" +
+			"    s3-list'); the server downloads it with its env-configured credentials.\n" +
+			"Requires an admin token.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			req := &cortexv1.RestoreAllRequest{}
 			var label string
+			sources := 0
+			if file != "" {
+				sources++
+			}
+			if s3Key != "" {
+				sources++
+			}
+			if len(args) > 0 {
+				sources++
+			}
+			if sources != 1 {
+				return fmt.Errorf("give exactly one of: a server-side backup name, --file <local>, or --s3 <object-key>")
+			}
 			switch {
-			case file != "" && len(args) > 0:
-				return fmt.Errorf("give a server-side name OR --file, not both")
 			case file != "":
 				data, err := os.ReadFile(file)
 				if err != nil {
@@ -975,11 +1017,12 @@ func restoreCmd() *cobra.Command {
 				}
 				req.Data = data
 				label = file + " (local upload)"
-			case len(args) == 1:
+			case s3Key != "":
+				req.S3Key = s3Key
+				label = s3Key + " (from S3)"
+			default:
 				req.Name = args[0]
 				label = args[0]
-			default:
-				return fmt.Errorf("give a server-side backup name or --file <local backup>")
 			}
 			if !yes {
 				fmt.Fprintf(os.Stderr, "Restore %s into the server (existing users/memories are kept; backup records are re-queued)?\n", label)
@@ -1006,6 +1049,7 @@ func restoreCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&yes, "yes", false, "skip the confirmation prompt")
 	cmd.Flags().StringVar(&file, "file", "", "restore from a LOCAL backup file (uploads its content to the server)")
+	cmd.Flags().StringVar(&s3Key, "s3", "", "restore from an offsite S3 object key (see 'cortex backup s3-list')")
 	cmd.AddCommand(restoreSelfCmd())
 	return cmd
 }
