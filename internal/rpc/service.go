@@ -36,6 +36,20 @@ const (
 	errQueryEmpty = "query must not be empty"
 )
 
+// clampProtoInt clamps a proto int32 field cast to int: negative values
+// become 0 (the store-layer "use default" sentinel), and values above allLimit
+// are capped to allLimit so a client cannot request an unbounded result set.
+func clampProtoInt(v int32) int {
+	n := int(v)
+	if n < 0 {
+		return 0
+	}
+	if n > allLimit {
+		return allLimit
+	}
+	return n
+}
+
 // reinforceTimeout is the per-goroutine deadline for a living-memory reinforcement
 // write. Long enough to absorb a slow Weaviate under load; short enough not to
 // leak goroutines if the store is down.
@@ -257,9 +271,9 @@ func (s *Service) Search(ctx context.Context, req *connect.Request[cortexv1.Sear
 	}
 	hits, err := s.searchStore(ctx, ts, vec, store.SearchOpts{
 		Namespace:          resolveNamespace(req.Msg.GetNamespace(), s.cfg.DefaultNamespace),
-		Limit:              int(req.Msg.GetLimit()),
+		Limit:              clampProtoInt(req.Msg.GetLimit()),
 		MaxDistance:        req.Msg.GetMaxDistance(),
-		Autocut:            int(req.Msg.GetAutocut()),
+		Autocut:            clampProtoInt(req.Msg.GetAutocut()),
 		IncludeTags:        req.Msg.GetTags(),
 		AnyTags:            req.Msg.GetAnyTags(),
 		ExcludeTags:        req.Msg.GetExcludeTags(),
@@ -352,9 +366,9 @@ func (s *Service) SearchSimilar(ctx context.Context, req *connect.Request[cortex
 	}
 	hits, err := ts.SearchByID(ctx, id, store.SearchOpts{
 		Namespace:   resolveNamespace(req.Msg.GetNamespace(), s.cfg.DefaultNamespace),
-		Limit:       int(req.Msg.GetLimit()),
+		Limit:       clampProtoInt(req.Msg.GetLimit()),
 		MaxDistance: req.Msg.GetMaxDistance(),
-		Autocut:     int(req.Msg.GetAutocut()),
+		Autocut:     clampProtoInt(req.Msg.GetAutocut()),
 		IncludeTags: req.Msg.GetTags(),
 		AnyTags:     req.Msg.GetAnyTags(),
 		ExcludeTags: req.Msg.GetExcludeTags(),
@@ -377,7 +391,7 @@ func (s *Service) List(ctx context.Context, req *connect.Request[cortexv1.ListRe
 	}
 	recs, err := ts.List(ctx, store.ListOpts{
 		Namespace:   resolveNamespace(req.Msg.GetNamespace(), s.cfg.DefaultNamespace),
-		Limit:       int(req.Msg.GetLimit()),
+		Limit:       clampProtoInt(req.Msg.GetLimit()),
 		IncludeTags: req.Msg.GetTags(),
 		ExcludeTags: req.Msg.GetExcludeTags(),
 	})

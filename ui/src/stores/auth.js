@@ -30,8 +30,7 @@ export const useAuthStore = defineStore('auth', {
         this.username = decoded.username || ''
         this.role = decoded.role || ''
         this.isAdmin = decoded.role === 'admin'
-      } catch (e) {
-        console.error('failed to decode JWT', e)
+      } catch {
         this.logout()
       }
     },

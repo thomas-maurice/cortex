@@ -3,6 +3,7 @@ BIN := bin
 IMAGE ?= ghcr.io/thomas-maurice/cortex:latest
 VERSION ?= dev
 OLLAMA_MODEL ?= qwen3-embedding:0.6b
+OLLAMA_URL   ?= http://localhost:11434
 # `make recall` knobs (override on the command line, e.g. `make recall CORTEX_SERVER=...`)
 CORTEX_SERVER  ?= http://localhost:8088
 RECALL_QUERIES ?= testdata/recall-queries.json
@@ -64,7 +65,7 @@ model: ## Pull the embedding model into the running ollama container
 .PHONY: bootstrap
 bootstrap: up ## Bring up the stack and pull the embedding model
 	@echo "waiting for ollama to be ready..."; \
-	i=0; until curl -sf http://localhost:11434/ > /dev/null 2>&1; do \
+	i=0; until curl -sf $(OLLAMA_URL)/ > /dev/null 2>&1; do \
 		i=$$((i+1)); if [ $$i -ge 30 ]; then echo "ollama did not become ready in 60s" >&2; exit 1; fi; \
 		sleep 2; \
 	done; echo "ollama ready"

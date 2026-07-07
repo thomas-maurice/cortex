@@ -339,15 +339,19 @@ func fetchBody(ctx context.Context, client *http.Client, url string) ([]byte, er
 // both flat archives and single-top-directory archives (goreleaser wraps binaries
 // in a directory named after the archive by default). Path traversal is rejected
 // and per-file reads are capped to resist decompression bombs.
-func extractBinaries(data []byte, want map[string]bool) (map[string][]byte, error) {
+func extractBinaries(data []byte, want map[string]bool) (result map[string][]byte, err error) {
 	gr, err := gzip.NewReader(bytes.NewReader(data))
 	if err != nil {
 		return nil, fmt.Errorf("opening gzip stream: %w", err)
 	}
-	defer func() { _ = gr.Close() }()
+	defer func() {
+		if cerr := gr.Close(); cerr != nil && err == nil {
+			err = fmt.Errorf("closing gzip stream: %w", cerr)
+		}
+	}()
 
 	tr := tar.NewReader(gr)
-	result := make(map[string][]byte)
+	result = make(map[string][]byte)
 
 	for {
 		hdr, err := tr.Next()

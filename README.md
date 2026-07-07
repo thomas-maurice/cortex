@@ -526,7 +526,7 @@ Scaffold a starter file with `cortex config init`, then edit it:
 # Cortex configuration, shared by the CLI and the MCP server.
 
 # --- client settings ---
-server: http://localhost:8080   # Cortex RPC server URL          (env: CORTEX_SERVER_URL)
+server: http://localhost:8088   # Cortex RPC server URL          (env: CORTEX_SERVER_URL)
 token: ""                       # bearer token                   (env: CORTEX_AUTH_TOKEN)
 namespace-default: global       # namespace used when none given (env: DEFAULT_NAMESPACE)
 source: cli                     # source tag on saved memories   (env: MEMORY_SOURCE)

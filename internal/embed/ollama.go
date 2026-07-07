@@ -11,6 +11,10 @@ import (
 	"time"
 )
 
+// ollamaClientTimeout is the HTTP client deadline for embed requests. Long
+// enough for a cold model load; callers provide a shorter context when needed.
+const ollamaClientTimeout = 60 * time.Second
+
 // Client calls Ollama's /api/embeddings endpoint.
 type Client struct {
 	baseURL string
@@ -24,7 +28,7 @@ func New(baseURL, model string) *Client {
 	return &Client{
 		baseURL: baseURL,
 		model:   model,
-		http:    &http.Client{Timeout: 60 * time.Second},
+		http:    &http.Client{Timeout: ollamaClientTimeout},
 	}
 }
 

@@ -14,7 +14,7 @@
 #
 # Install: copy to ~/.claude/hooks/ and register in ~/.claude/settings.json under
 # hooks.SessionStart (see the repo README, "Standing preferences" section).
-set -uo pipefail
+set -euo pipefail
 
 # Locate the cortex CLI: explicit override, ~/bin, or PATH.
 CORTEX_BIN="${CORTEX_BIN:-$HOME/bin/cortex}"
@@ -49,4 +49,4 @@ context=$(printf '%s\n\n%s\n' "$header" "$prefs")
 # SessionStart hooks add `additionalContext` to the session. jq builds the JSON so
 # preference text with quotes/newlines is escaped safely.
 jq -nc --arg ctx "$context" \
-  '{hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: $ctx}}'
+  '{hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: $ctx}}' || true

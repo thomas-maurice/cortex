@@ -16,19 +16,22 @@ import (
 // TestChunkSearchGroupingAndCascade proves the chunking data model end-to-end
 // against a REAL Weaviate (env-gated like the other integration tests; CI skips
 // it). It encodes WHY each behaviour matters:
+//
 //   - Search runs over chunks but returns PARENT memories, deduped — a memory
 //     with several matching chunks must appear once, not once per chunk.
+//
 //   - Deleting a memory cascades to its chunks — no orphaned chunk may keep
 //     surfacing a deleted memory in search.
+//
 //   - Renaming/deleting a namespace moves/removes the chunks too — chunks carry
 //     the namespace for filter push-down, so a stale chunk namespace would make a
 //     namespace-scoped search wrong.
 //
-//	docker run -d --name wv -p 8085:8080 -p 50055:50051 \
-//	  -e AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED=true -e PERSISTENCE_DATA_PATH=/var/lib/weaviate \
-//	  -e DEFAULT_VECTORIZER_MODULE=none -e ENABLE_MODULES="" cr.weaviate.io/semitechnologies/weaviate:1.38.0
-//	CORTEX_TEST_WEAVIATE_REST=localhost:8085 CORTEX_TEST_WEAVIATE_GRPC=localhost:50055 \
-//	  go test ./internal/store -run TestChunkSearchGroupingAndCascade -v
+//     docker run -d --name wv -p 8085:8080 -p 50055:50051 \
+//     -e AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED=true -e PERSISTENCE_DATA_PATH=/var/lib/weaviate \
+//     -e DEFAULT_VECTORIZER_MODULE=none -e ENABLE_MODULES="" cr.weaviate.io/semitechnologies/weaviate:1.38.0
+//     CORTEX_TEST_WEAVIATE_REST=localhost:8085 CORTEX_TEST_WEAVIATE_GRPC=localhost:50055 \
+//     go test ./internal/store -run TestChunkSearchGroupingAndCascade -v
 func TestChunkSearchGroupingAndCascade(t *testing.T) {
 	rest := os.Getenv("CORTEX_TEST_WEAVIATE_REST")
 	grpc := os.Getenv("CORTEX_TEST_WEAVIATE_GRPC")

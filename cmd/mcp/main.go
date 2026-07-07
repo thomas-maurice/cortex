@@ -28,6 +28,11 @@ import (
 // -ldflags "-X main.version=...". Defaults to "dev" for un-stamped builds.
 var version = "dev"
 
+// defaultCallTimeout is the fail-fast deadline for every MCP tool call so a
+// slow or unreachable Cortex server never blocks Claude. Overridable via the
+// mcp.timeout config key or CORTEX_MCP_TIMEOUT env var.
+const defaultCallTimeout = 5 * time.Second
+
 // resolveDefaultNamespace picks the namespace used when a tool call omits one.
 // An explicit DEFAULT_NAMESPACE env always wins (per-project override). Otherwise
 // it is detected from the launch directory: the full git origin remote URL (e.g.
@@ -165,7 +170,7 @@ func main() {
 	cfg.SetDefault("source", "claude-code")
 	cfg.SetDefault("mcp.search-limit", 0) // 0 = defer to the server's own default
 	cfg.SetDefault("mcp.fact-limit", 0)
-	cfg.SetDefault("mcp.timeout", "5s") // per-call fail-fast deadline so a slow/down server never blocks Claude
+	cfg.SetDefault("mcp.timeout", "5s")        // per-call fail-fast deadline so a slow/down server never blocks Claude
 	cfg.SetDefault("save.hostname-tag", false) // opt-in: stamp host:<hostname> on saves
 	for key, env := range map[string]string{
 		"server":           "CORTEX_SERVER_URL",
@@ -194,7 +199,7 @@ func main() {
 	// Fail-fast deadline for every tool call: a slow or unreachable Cortex server
 	// must never hang Claude while it loads/recalls context. Default 5s; tune with
 	// CORTEX_MCP_TIMEOUT (e.g. "10s") if a cold Ollama embed or a consolidate trips it.
-	callTimeout := 5 * time.Second
+	callTimeout := defaultCallTimeout
 	if t, err := time.ParseDuration(cfg.GetString("mcp.timeout")); err == nil && t > 0 {
 		callTimeout = t
 	} else {

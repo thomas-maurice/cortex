@@ -1308,7 +1308,10 @@ func objectToRecord(id string, raw models.PropertySchema) memory.Record {
 		rec.CreatedAt, _ = time.Parse(time.RFC3339, ca)
 	}
 	if la := restString(p, "lastAccessedAt"); la != "" {
-		rec.LastAccessedAt, _ = time.Parse(time.RFC3339, la)
+		if t, err := time.Parse(time.RFC3339, la); err == nil {
+			rec.LastAccessedAt = t
+		}
+		// err != nil: malformed timestamp; leave LastAccessedAt as zero time (explicit fallback)
 	}
 	return rec
 }

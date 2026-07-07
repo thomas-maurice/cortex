@@ -99,12 +99,12 @@ func TestServerAuthenticatorAcceptsTokenOrJWT(t *testing.T) {
 	require.NoError(t, err)
 
 	cases := map[string]struct {
-		bearer      string
-		wantOK      bool
-		wantUserID  string
-		wantRole    string
+		bearer     string
+		wantOK     bool
+		wantUserID string
+		wantRole   string
 	}{
-		"static token": {"static-tok", true, "", identity.RoleAdmin},   // bootstrap id from username
+		"static token": {"static-tok", true, "", identity.RoleAdmin}, // bootstrap id from username
 		"valid jwt":    {jwtTok, true, "user-id-alice", identity.RoleAdmin},
 		"garbage":      {"nonsense", false, "", ""},
 		"empty":        {"", false, "", ""},

@@ -5,3 +5,4 @@ ui/dist
 *.exe
 .env
 cortex-backup-*.json
+.DS_Store

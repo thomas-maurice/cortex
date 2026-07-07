@@ -25,17 +25,17 @@ type stubMsg struct {
 	nakked  bool
 }
 
-func (s *stubMsg) Data() []byte                               { return s.data }
-func (s *stubMsg) Subject() string                            { return s.subject }
-func (s *stubMsg) Headers() nats.Header                       { return nil }
-func (s *stubMsg) Reply() string                              { return "" }
-func (s *stubMsg) Ack() error                                 { return nil }
-func (s *stubMsg) DoubleAck(_ context.Context) error          { return nil }
-func (s *stubMsg) Nak() error                                 { s.nakked = true; return nil }
-func (s *stubMsg) NakWithDelay(_ time.Duration) error         { s.nakked = true; return nil }
-func (s *stubMsg) InProgress() error                          { return nil }
-func (s *stubMsg) Term() error                                { s.termed = true; return nil }
-func (s *stubMsg) TermWithReason(_ string) error              { s.termed = true; return nil }
+func (s *stubMsg) Data() []byte                              { return s.data }
+func (s *stubMsg) Subject() string                           { return s.subject }
+func (s *stubMsg) Headers() nats.Header                      { return nil }
+func (s *stubMsg) Reply() string                             { return "" }
+func (s *stubMsg) Ack() error                                { return nil }
+func (s *stubMsg) DoubleAck(_ context.Context) error         { return nil }
+func (s *stubMsg) Nak() error                                { s.nakked = true; return nil }
+func (s *stubMsg) NakWithDelay(_ time.Duration) error        { s.nakked = true; return nil }
+func (s *stubMsg) InProgress() error                         { return nil }
+func (s *stubMsg) Term() error                               { s.termed = true; return nil }
+func (s *stubMsg) TermWithReason(_ string) error             { s.termed = true; return nil }
 func (s *stubMsg) Metadata() (*jetstream.MsgMetadata, error) { return nil, errors.New("stub") }
 
 // compile-time assertion that stubMsg satisfies the interface

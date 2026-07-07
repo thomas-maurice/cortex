@@ -272,11 +272,15 @@ func deadLetterMalformed(ctx context.Context, log *slog.Logger, pub deadLetterPu
 	}
 	if err := pub(dl); err != nil {
 		log.Error("dead-letter publish failed, will retry", "err", err, "unmarshal_err", unmarshalErr)
-		_ = msg.Nak()
+		if nerr := msg.Nak(); nerr != nil {
+			log.Warn("msg nak failed", "err", nerr)
+		}
 		return
 	}
 	log.Error("bad payload, dead-lettered", "raw_bytes", len(raw), "err", unmarshalErr)
-	_ = msg.Term()
+	if nerr := msg.Term(); nerr != nil {
+		log.Warn("msg term failed", "err", nerr)
+	}
 }
 
 // handleSummary embeds a conversation summary and upserts it (one per
@@ -320,7 +324,9 @@ func handleSummary(ctx context.Context, log *slog.Logger, js jetstream.JetStream
 			"embed_ms", embedDur.Milliseconds(), "store_ms", storeDur.Milliseconds(),
 			"total_ms", (embedDur + storeDur).Milliseconds(),
 			"queue_latency_ms", time.Since(sum.UpdatedAt).Milliseconds())
-		_ = msg.Ack()
+		if nerr := msg.Ack(); nerr != nil {
+			log.Warn("msg ack failed", "err", nerr)
+		}
 		return
 	}
 
@@ -330,11 +336,15 @@ func handleSummary(ctx context.Context, log *slog.Logger, js jetstream.JetStream
 	}
 	if deliveries >= memory.MaxDeliver {
 		log.Error("gave up summarizing, dropping (agent will re-summarize)", "conversation", sum.ConversationID, "deliveries", deliveries, "err", procErr)
-		_ = msg.Ack()
+		if nerr := msg.Ack(); nerr != nil {
+			log.Warn("msg ack failed", "err", nerr)
+		}
 		return
 	}
 	log.Warn("summarizing failed, will retry", "conversation", sum.ConversationID, "deliveries", deliveries, "err", procErr)
-	_ = msg.NakWithDelay(2 * time.Second)
+	if nerr := msg.NakWithDelay(2 * time.Second); nerr != nil {
+		log.Warn("msg nak failed", "err", nerr)
+	}
 }
 
 // linkMu serializes the read-modify-write the link consumer performs on each

@@ -49,16 +49,22 @@ const backupVersion = 1
 // 100 MiB — a personal tenant backup is never legitimately this large.
 const maxRestoreSelfBytes = 100 * 1024 * 1024
 
+// maxBackupDownloadBytes is the maximum file size DownloadBackup will serve.
+// 1 GiB — full-server backups grow with the tenant count but stay well under
+// this in realistic deployments; exceeding it signals an unusual situation
+// better handled out-of-band than via the RPC channel.
+const maxBackupDownloadBytes = int64(1 << 30) // 1 GiB
+
 // backupFullPattern matches the bare filename of a full-server backup file.
 // Reindex safety snapshots use cortex-backup-*.json and must never be pruned.
 var backupFullPattern = regexp.MustCompile(`^cortex-full-backup-\d{8}-\d{6}\.json$`)
 
 // backupEnvelope is the versioned container written to disk by BackupAll.
 type backupEnvelope struct {
-	Version       int              `json:"version"`
-	CreatedAt     time.Time        `json:"createdAt"`
-	ServerVersion string           `json:"serverVersion"`
-	MultiTenant   bool             `json:"multiTenant"`
+	Version       int       `json:"version"`
+	CreatedAt     time.Time `json:"createdAt"`
+	ServerVersion string    `json:"serverVersion"`
+	MultiTenant   bool      `json:"multiTenant"`
 	// Users and ApiKeys are populated only in MT mode. Hashes are already one-way;
 	// they are stored verbatim here for disaster recovery only and are NEVER sent
 	// over the RPC wire — they live solely in the server-side file.
@@ -469,12 +475,20 @@ func (s *Service) DownloadBackup(ctx context.Context, req *connect.Request[corte
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 	path := filepath.Join(s.backupDir(), name)
-	data, err := os.ReadFile(path)
+	info, err := os.Stat(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, connect.NewError(connect.CodeNotFound,
 				fmt.Errorf("backup file %q not found", name))
 		}
+		return nil, fmt.Errorf("stat backup: %w", err)
+	}
+	if info.Size() > maxBackupDownloadBytes {
+		return nil, connect.NewError(connect.CodeResourceExhausted,
+			fmt.Errorf("backup file %q size %d exceeds %d byte download limit", name, info.Size(), maxBackupDownloadBytes))
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
 		return nil, fmt.Errorf("read backup: %w", err)
 	}
 	return connect.NewResponse(&cortexv1.DownloadBackupResponse{Name: name, Data: data}), nil

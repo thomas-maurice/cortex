@@ -40,6 +40,22 @@ func requireAdmin(ctx context.Context) error {
 	return nil
 }
 
+// countAdmins returns the number of users currently holding the admin role.
+// Used by DeleteUser and SetUserRole to guard against removing the last admin.
+func (s *Service) countAdmins(ctx context.Context) (int, error) {
+	allUsers, err := s.store.ListUsers(ctx)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, u := range allUsers {
+		if u.Role == identity.RoleAdmin {
+			n++
+		}
+	}
+	return n, nil
+}
+
 // requireMT returns a CodeFailedPrecondition error when multi-tenancy is off.
 // Flag-off ⇒ these RPCs are not meaningful and must not silently touch anything.
 func (s *Service) requireMT() error {
@@ -82,11 +98,11 @@ func (s *Service) CreateUser(ctx context.Context, req *connect.Request[cortexv1.
 	if username == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New(errUsernameEmpty))
 	}
-	if password == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("password must not be empty"))
-	}
 	if role != "" && role != identity.RoleAdmin && role != identity.RoleUser {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("role must be %q or %q", identity.RoleAdmin, identity.RoleUser))
+	}
+	if password == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("password must not be empty"))
 	}
 	u, err := s.store.CreateUser(ctx, username, password, role)
 	if err != nil {
@@ -125,15 +141,9 @@ func (s *Service) DeleteUser(ctx context.Context, req *connect.Request[cortexv1.
 
 	// Safety: refuse to delete the last remaining admin.
 	if target.Role == identity.RoleAdmin {
-		allUsers, err := s.store.ListUsers(ctx)
+		adminCount, err := s.countAdmins(ctx)
 		if err != nil {
 			return nil, err
-		}
-		adminCount := 0
-		for _, u := range allUsers {
-			if u.Role == identity.RoleAdmin {
-				adminCount++
-			}
 		}
 		if adminCount <= 1 {
 			return nil, connect.NewError(connect.CodeFailedPrecondition,
@@ -184,15 +194,9 @@ func (s *Service) SetUserRole(ctx context.Context, req *connect.Request[cortexv1
 
 	// Safety: refuse to demote the last admin.
 	if target.Role == identity.RoleAdmin && role == identity.RoleUser {
-		allUsers, err := s.store.ListUsers(ctx)
+		adminCount, err := s.countAdmins(ctx)
 		if err != nil {
 			return nil, err
-		}
-		adminCount := 0
-		for _, u := range allUsers {
-			if u.Role == identity.RoleAdmin {
-				adminCount++
-			}
 		}
 		if adminCount <= 1 {
 			return nil, connect.NewError(connect.CodeFailedPrecondition,

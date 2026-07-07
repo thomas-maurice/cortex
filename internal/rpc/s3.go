@@ -16,6 +16,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"path"
 	"path/filepath"
 	"sort"
@@ -72,7 +73,11 @@ func downloadFromS3(ctx context.Context, cfg S3Config, key string) ([]byte, erro
 	if err != nil {
 		return nil, fmt.Errorf("get s3 object %q: %w", key, err)
 	}
-	defer func() { _ = obj.Close() }()
+	defer func() {
+		if cerr := obj.Close(); cerr != nil {
+			slog.Warn("s3 object close failed", "key", key, "err", cerr)
+		}
+	}()
 	data, err := io.ReadAll(obj)
 	if err != nil {
 		return nil, fmt.Errorf("read s3 object %q: %w", key, err)

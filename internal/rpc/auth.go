@@ -126,7 +126,7 @@ type apiKeyAuth struct {
 
 	// debounce tracks the last time each api key id was touched (by key id, not
 	// hash, to avoid keeping the secret in memory any longer than needed).
-	mu         sync.Mutex
+	mu          sync.Mutex
 	lastTouched map[string]time.Time
 }
 

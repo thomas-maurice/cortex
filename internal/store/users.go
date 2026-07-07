@@ -468,8 +468,8 @@ func userFromREST(id string, raw models.PropertySchema) User {
 		PasswordHash: restString(p, "passwordHash"),
 		Role:         restString(p, "role"),
 	}
-	u.CreatedAt, _ = time.Parse(time.RFC3339, restString(p, "createdAt"))   // ignored: best-effort timestamp parse
-	u.UpdatedAt, _ = time.Parse(time.RFC3339, restString(p, "updatedAt"))   // ignored: best-effort timestamp parse
+	u.CreatedAt, _ = time.Parse(time.RFC3339, restString(p, "createdAt")) // ignored: best-effort timestamp parse
+	u.UpdatedAt, _ = time.Parse(time.RFC3339, restString(p, "updatedAt")) // ignored: best-effort timestamp parse
 	return u
 }
 

@@ -40,7 +40,7 @@ services:
       timeout: 5s
       retries: 5
   ollama:
-    image: ollama/ollama:latest
+    image: ollama/ollama:0.30.10
     ports:
       - 11434:11434
     volumes:
