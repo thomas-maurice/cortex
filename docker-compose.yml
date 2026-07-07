@@ -14,6 +14,11 @@ services:
     volumes:
       - nats_data:/data
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8222/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
   weaviate:
     image: cr.weaviate.io/semitechnologies/weaviate:1.38.0
     ports:
@@ -29,6 +34,11 @@ services:
     volumes:
       - weaviate_data:/var/lib/weaviate
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/v1/.well-known/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
   ollama:
     image: ollama/ollama:latest
     ports:
@@ -36,6 +46,11 @@ services:
     volumes:
       - ollama_data:/root/.ollama
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:11434/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
   # Indexing worker: NATS -> Ollama embed -> Weaviate. The only writer.
   worker:
     image: ${CORTEX_IMAGE:-ghcr.io/thomas-maurice/cortex:latest}
@@ -109,6 +124,8 @@ services:
       # Unset -> the server generates a random per-process secret and all sessions
       # are invalidated on every restart. Keep this out of git (it lives in .env).
       CORTEX_JWT_SECRET: ${CORTEX_JWT_SECRET:-}
+      # DEV-ONLY DEFAULTS — change before deploying to production via .env or
+      # override CORTEX_UI_USER / CORTEX_UI_PASSWORD with strong credentials.
       CORTEX_UI_USER: ${CORTEX_UI_USER:-admin}
       CORTEX_UI_PASSWORD: ${CORTEX_UI_PASSWORD:-admin}
       # Multi-tenancy (per-user isolation via Weaviate multi-tenancy, tenant=user).

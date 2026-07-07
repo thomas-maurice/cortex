@@ -36,7 +36,7 @@
         <template v-else>
           <div class="d-flex justify-content-between align-items-start">
             <div class="mb-1 me-3 markdown-body" v-html="renderMarkdown(s.text)"></div>
-            <button class="btn btn-outline-secondary btn-sm flex-shrink-0" title="Edit" @click="startEdit(s)">
+            <button class="btn btn-outline-secondary btn-sm flex-shrink-0" title="Edit" aria-label="Edit session" @click="startEdit(s)">
               <font-awesome-icon :icon="['fas', 'pen']" />
             </button>
           </div>

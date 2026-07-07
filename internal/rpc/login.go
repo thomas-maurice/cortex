@@ -51,6 +51,10 @@ var dummyPasswordHash = func() string {
 	return h
 }()
 
+// maxLoginBodyBytes caps the request body read in LoginHandler to defend against
+// a trivially large payload bloating memory before JSON decoding begins.
+const maxLoginBodyBytes = 4096
+
 type loginRequest struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
@@ -92,7 +96,7 @@ func LoginHandler(mgr *JWTManager, user, pass, role string, log *slog.Logger, mu
 		}
 
 		var req loginRequest
-		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil {
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxLoginBodyBytes)).Decode(&req); err != nil {
 			http.Error(w, "bad request", http.StatusBadRequest)
 			return
 		}
@@ -143,7 +147,9 @@ func LoginHandler(mgr *JWTManager, user, pass, role string, log *slog.Logger, mu
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(loginResponse{Token: token})
+		if err := json.NewEncoder(w).Encode(loginResponse{Token: token}); err != nil {
+			log.Error("encode login response", "err", err)
+		}
 	})
 }
 

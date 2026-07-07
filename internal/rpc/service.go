@@ -27,9 +27,19 @@ import (
 	"github.com/thomas-maurice/cortex/internal/store"
 )
 
-// allLimit caps a full-store fetch (export/reindex). Weaviate's default
-// QUERY_MAXIMUM_RESULTS is 10000; a personal store stays well under it.
-const allLimit = 10000
+// allLimit caps a full-store fetch (export/reindex). Canonical value is
+// store.AllLimit; this alias keeps call sites readable without a long prefix.
+const allLimit = store.AllLimit
+
+const (
+	errTextEmpty  = "text must not be empty"
+	errQueryEmpty = "query must not be empty"
+)
+
+// reinforceTimeout is the per-goroutine deadline for a living-memory reinforcement
+// write. Long enough to absorb a slow Weaviate under load; short enough not to
+// leak goroutines if the store is down.
+const reinforceTimeout = 10 * time.Second
 
 // Config holds the server-side defaults applied to inbound requests.
 type Config struct {
@@ -129,7 +139,7 @@ func (s *Service) tenantStore(ctx context.Context) (*store.TenantStore, error) {
 func (s *Service) Save(ctx context.Context, req *connect.Request[cortexv1.SaveRequest]) (*connect.Response[cortexv1.SaveResponse], error) {
 	text := strings.TrimSpace(req.Msg.GetText())
 	if text == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("text must not be empty"))
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New(errTextEmpty))
 	}
 	ns := req.Msg.GetNamespace()
 	if ns == "" {
@@ -181,11 +191,11 @@ func (s *Service) Save(ctx context.Context, req *connect.Request[cortexv1.SaveRe
 func (s *Service) UpdateMemory(ctx context.Context, req *connect.Request[cortexv1.UpdateMemoryRequest]) (*connect.Response[cortexv1.UpdateMemoryResponse], error) {
 	id := strings.TrimSpace(req.Msg.GetId())
 	if id == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id must not be empty"))
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New(errIDEmpty))
 	}
 	text := strings.TrimSpace(req.Msg.GetText())
 	if text == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("text must not be empty"))
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New(errTextEmpty))
 	}
 
 	ts, err := s.tenantStore(ctx)
@@ -234,7 +244,7 @@ func (s *Service) searchStore(ctx context.Context, ts *store.TenantStore, vec []
 func (s *Service) Search(ctx context.Context, req *connect.Request[cortexv1.SearchRequest]) (*connect.Response[cortexv1.SearchResponse], error) {
 	query := strings.TrimSpace(req.Msg.GetQuery())
 	if query == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("query must not be empty"))
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New(errQueryEmpty))
 	}
 
 	vec, err := s.embedder.Embed(ctx, query)
@@ -306,7 +316,7 @@ func (s *Service) reinforce(ts *store.TenantStore, hits []memory.Hit) {
 		return
 	}
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), reinforceTimeout)
 		defer cancel()
 		s.reinforceMu.Lock()
 		defer s.reinforceMu.Unlock()
@@ -333,7 +343,7 @@ func (s *Service) reinforce(ts *store.TenantStore, hits []memory.Hit) {
 func (s *Service) SearchSimilar(ctx context.Context, req *connect.Request[cortexv1.SearchSimilarRequest]) (*connect.Response[cortexv1.SearchSimilarResponse], error) {
 	id := strings.TrimSpace(req.Msg.GetId())
 	if id == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id must not be empty"))
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New(errIDEmpty))
 	}
 
 	ts, err := s.tenantStore(ctx)
@@ -384,7 +394,7 @@ func (s *Service) List(ctx context.Context, req *connect.Request[cortexv1.ListRe
 func (s *Service) Delete(ctx context.Context, req *connect.Request[cortexv1.DeleteRequest]) (*connect.Response[cortexv1.DeleteResponse], error) {
 	id := strings.TrimSpace(req.Msg.GetId())
 	if id == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id must not be empty"))
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New(errIDEmpty))
 	}
 	ts, err := s.tenantStore(ctx)
 	if err != nil {
@@ -661,7 +671,7 @@ func (s *Service) SummarizeSession(ctx context.Context, req *connect.Request[cor
 	}
 	text := strings.TrimSpace(req.Msg.GetText())
 	if text == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("text must not be empty"))
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New(errTextEmpty))
 	}
 	ns := req.Msg.GetNamespace()
 	if ns == "" {
@@ -691,7 +701,7 @@ func (s *Service) SummarizeSession(ctx context.Context, req *connect.Request[cor
 func (s *Service) RecallSession(ctx context.Context, req *connect.Request[cortexv1.RecallSessionRequest]) (*connect.Response[cortexv1.RecallSessionResponse], error) {
 	query := strings.TrimSpace(req.Msg.GetQuery())
 	if query == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("query must not be empty"))
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New(errQueryEmpty))
 	}
 
 	vec, err := s.embedder.Embed(ctx, query)

@@ -55,7 +55,7 @@
             <span class="badge bg-secondary">
               <font-awesome-icon :icon="['fas', 'layer-group']" class="me-1" />{{ selected.namespace }}
             </span>
-            <button class="btn-close btn-sm" @click="deselect"></button>
+            <button class="btn-close btn-sm" aria-label="Close details panel" @click="deselect"></button>
           </div>
           <!-- Edit mode: textarea + tags, replaces the read view in place. -->
           <div v-if="editing">

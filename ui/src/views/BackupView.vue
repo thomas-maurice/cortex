@@ -94,7 +94,7 @@
             </div>
           </div>
           <div v-if="selfRestoreMsg" class="alert alert-success alert-dismissible py-2 mt-2 mb-0 small">
-            <button type="button" class="btn-close py-2" @click="selfRestoreMsg = ''"></button>
+            <button type="button" class="btn-close py-2" aria-label="Dismiss message" @click="selfRestoreMsg = ''"></button>
             {{ selfRestoreMsg }}
             Memories and summaries are re-embedded asynchronously — check the
             <router-link :to="{ name: 'queue' }">Indexing</router-link> view for progress.
@@ -128,7 +128,7 @@
           </button>
 
           <div v-if="backupSuccess" class="alert alert-success alert-dismissible py-2 mt-3 mb-0 small">
-            <button type="button" class="btn-close py-2" @click="backupSuccess = null"></button>
+            <button type="button" class="btn-close py-2" aria-label="Dismiss message" @click="backupSuccess = null"></button>
             <strong>Backup written:</strong> <code>{{ backupSuccess.path }}</code><br />
             {{ backupSuccess.tenants }} tenant(s), {{ backupSuccess.memories }} memories,
             {{ backupSuccess.summaries }} summaries, {{ backupSuccess.users }} users,
@@ -177,6 +177,7 @@
                   <button
                     class="btn btn-outline-secondary btn-sm me-1"
                     title="Download this backup"
+                    aria-label="Download this backup"
                     :disabled="downloading"
                     @click="doDownloadBackup(b)"
                   >
@@ -185,6 +186,7 @@
                   <button
                     class="btn btn-outline-warning btn-sm me-1"
                     title="Restore this backup"
+                    aria-label="Restore this backup"
                     :disabled="restoring"
                     @click="doRestoreAll(b)"
                   >
@@ -193,6 +195,7 @@
                   <button
                     class="btn btn-outline-danger btn-sm"
                     title="Delete this backup"
+                    aria-label="Delete this backup"
                     :disabled="deleting"
                     @click="doDeleteBackup(b)"
                   >
@@ -204,7 +207,7 @@
           </table>
 
           <div v-if="restoreMsg" class="alert alert-success alert-dismissible py-2 mt-3 mb-0 small">
-            <button type="button" class="btn-close py-2" @click="restoreMsg = ''"></button>
+            <button type="button" class="btn-close py-2" aria-label="Dismiss message" @click="restoreMsg = ''"></button>
             {{ restoreMsg }}
             Memories and summaries are re-embedded asynchronously — check the
             <router-link :to="{ name: 'queue' }">Indexing</router-link> view for progress.
@@ -259,6 +262,7 @@
                   <button
                     class="btn btn-outline-warning btn-sm"
                     title="Restore this backup from S3"
+                    aria-label="Restore this backup from S3"
                     :disabled="restoring"
                     @click="doRestoreS3(b)"
                   >

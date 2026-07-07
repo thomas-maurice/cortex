@@ -76,6 +76,7 @@
             <button
               class="btn btn-outline-secondary btn-sm me-1"
               title="Reset password"
+              aria-label="Reset password"
               :disabled="busy"
               @click="startResetPassword(u)"
             >
@@ -85,6 +86,7 @@
             <button
               class="btn btn-outline-secondary btn-sm me-1"
               :title="u.role === 'admin' ? 'Demote to user' : 'Promote to admin'"
+              :aria-label="u.role === 'admin' ? 'Demote to user' : 'Promote to admin'"
               :disabled="busy"
               @click="toggleRole(u)"
             >
@@ -94,6 +96,7 @@
             <button
               class="btn btn-outline-danger btn-sm"
               title="Delete user"
+              aria-label="Delete user"
               :disabled="busy"
               @click="deleteUser(u)"
             >

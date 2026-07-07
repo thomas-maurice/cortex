@@ -25,6 +25,11 @@ import (
 	"github.com/thomas-maurice/cortex/internal/store"
 )
 
+const (
+	errUsernameEmpty = "username must not be empty"
+	errIDEmpty       = "id must not be empty"
+)
+
 // requireAdmin returns a CodePermissionDenied error unless the identity on ctx
 // carries the admin role. It is the single admin-gate used by all P5 handlers.
 func requireAdmin(ctx context.Context) error {
@@ -75,7 +80,7 @@ func (s *Service) CreateUser(ctx context.Context, req *connect.Request[cortexv1.
 	password := req.Msg.GetPassword()
 	role := strings.TrimSpace(req.Msg.GetRole())
 	if username == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("username must not be empty"))
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New(errUsernameEmpty))
 	}
 	if password == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("password must not be empty"))
@@ -102,7 +107,7 @@ func (s *Service) DeleteUser(ctx context.Context, req *connect.Request[cortexv1.
 	}
 	username := strings.TrimSpace(req.Msg.GetUsername())
 	if username == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("username must not be empty"))
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New(errUsernameEmpty))
 	}
 	target, found, err := s.store.GetUserByUsername(ctx, username)
 	if err != nil {
@@ -162,7 +167,7 @@ func (s *Service) SetUserRole(ctx context.Context, req *connect.Request[cortexv1
 	username := strings.TrimSpace(req.Msg.GetUsername())
 	role := strings.TrimSpace(req.Msg.GetRole())
 	if username == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("username must not be empty"))
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New(errUsernameEmpty))
 	}
 	if role != identity.RoleAdmin && role != identity.RoleUser {
 		return nil, connect.NewError(connect.CodeInvalidArgument,
@@ -212,7 +217,7 @@ func (s *Service) ResetUserPassword(ctx context.Context, req *connect.Request[co
 	username := strings.TrimSpace(req.Msg.GetUsername())
 	newPassword := req.Msg.GetNewPassword()
 	if username == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("username must not be empty"))
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New(errUsernameEmpty))
 	}
 	if newPassword == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("new_password must not be empty"))
@@ -280,7 +285,7 @@ func (s *Service) DeleteApiKey(ctx context.Context, req *connect.Request[cortexv
 	}
 	keyID := strings.TrimSpace(req.Msg.GetId())
 	if keyID == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id must not be empty"))
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New(errIDEmpty))
 	}
 
 	// Ownership check: retrieve the key by id and verify it belongs to the caller.
@@ -330,7 +335,7 @@ func (s *Service) resolveTargetUser(ctx context.Context, username string) (store
 	}
 	username = strings.TrimSpace(username)
 	if username == "" {
-		return store.User{}, connect.NewError(connect.CodeInvalidArgument, errors.New("username must not be empty"))
+		return store.User{}, connect.NewError(connect.CodeInvalidArgument, errors.New(errUsernameEmpty))
 	}
 	target, found, err := s.store.GetUserByUsername(ctx, username)
 	if err != nil {
@@ -381,7 +386,7 @@ func (s *Service) AdminDeleteApiKey(ctx context.Context, req *connect.Request[co
 	}
 	keyID := strings.TrimSpace(req.Msg.GetId())
 	if keyID == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id must not be empty"))
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New(errIDEmpty))
 	}
 
 	// Ownership check: the key must belong to the named user. ListApiKeysForUser

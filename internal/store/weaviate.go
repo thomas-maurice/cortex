@@ -460,9 +460,14 @@ func (s *Store) Ready(ctx context.Context) error {
 	return nil
 }
 
-// allCount caps the Count scan. Weaviate's default QUERY_MAXIMUM_RESULTS is
-// 10000; a personal store stays well under it.
-const allCount = 10000
+// AllLimit is the maximum number of records a single full-store fetch may
+// return. Weaviate's default QUERY_MAXIMUM_RESULTS is 10000; a personal store
+// stays well under it. Exported so RPC handlers can share the cap without
+// duplicating the magic number.
+const AllLimit = 10000
+
+// allCount is the internal alias used throughout this file.
+const allCount = AllLimit
 
 // ---- TenantStore — all memory-class operations ----
 
@@ -1249,10 +1254,10 @@ func resultToRecord(r graphql.SearchResult) memory.Record {
 		AccessCount:    propInt(p, "accessCount"),
 	}
 	if ca := propString(p, "createdAt"); ca != "" {
-		rec.CreatedAt, _ = time.Parse(time.RFC3339, ca)
+		rec.CreatedAt, _ = time.Parse(time.RFC3339, ca) // ignored: best-effort timestamp parse
 	}
 	if la := propString(p, "lastAccessedAt"); la != "" {
-		rec.LastAccessedAt, _ = time.Parse(time.RFC3339, la)
+		rec.LastAccessedAt, _ = time.Parse(time.RFC3339, la) // ignored: best-effort timestamp parse
 	}
 	return rec
 }
@@ -1269,10 +1274,10 @@ func resultToSummary(r graphql.SearchResult) memory.Summary {
 		Dims:           propInt(p, "dims"),
 	}
 	if ca := propString(p, "createdAt"); ca != "" {
-		sum.CreatedAt, _ = time.Parse(time.RFC3339, ca)
+		sum.CreatedAt, _ = time.Parse(time.RFC3339, ca) // ignored: best-effort timestamp parse
 	}
 	if ua := propString(p, "updatedAt"); ua != "" {
-		sum.UpdatedAt, _ = time.Parse(time.RFC3339, ua)
+		sum.UpdatedAt, _ = time.Parse(time.RFC3339, ua) // ignored: best-effort timestamp parse
 	}
 	return sum
 }
@@ -1281,7 +1286,10 @@ func resultToSummary(r graphql.SearchResult) memory.Summary {
 // memory.Record. REST property values are typed differently from the gRPC search
 // path: text[] arrives as []interface{} of strings and int as float64.
 func objectToRecord(id string, raw models.PropertySchema) memory.Record {
-	p, _ := raw.(map[string]interface{})
+	p, ok := raw.(map[string]interface{})
+	if !ok {
+		return memory.Record{ID: id}
+	}
 	rec := memory.Record{
 		ID:             id,
 		Text:           restString(p, "text"),

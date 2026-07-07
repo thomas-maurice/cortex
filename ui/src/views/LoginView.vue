@@ -20,7 +20,7 @@
             <input id="password" v-model="password" type="password" class="form-control" required :disabled="loading" />
           </div>
           <button type="submit" class="btn btn-primary w-100" :disabled="loading">
-            <span v-if="loading" class="spinner-border spinner-border-sm me-2"></span>
+            <span v-if="loading" class="spinner-border spinner-border-sm me-2" role="status" aria-label="Signing in"></span>
             {{ loading ? 'Signing in...' : 'Sign In' }}
           </button>
         </form>

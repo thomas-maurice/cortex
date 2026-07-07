@@ -458,15 +458,18 @@ func (s *Store) mergeObject(ctx context.Context, className, id string, props map
 // ---- decoders ----
 
 func userFromREST(id string, raw models.PropertySchema) User {
-	p, _ := raw.(map[string]interface{})
+	p, ok := raw.(map[string]interface{})
+	if !ok {
+		return User{ID: id}
+	}
 	u := User{
 		ID:           id,
 		Username:     restString(p, "username"),
 		PasswordHash: restString(p, "passwordHash"),
 		Role:         restString(p, "role"),
 	}
-	u.CreatedAt, _ = time.Parse(time.RFC3339, restString(p, "createdAt"))
-	u.UpdatedAt, _ = time.Parse(time.RFC3339, restString(p, "updatedAt"))
+	u.CreatedAt, _ = time.Parse(time.RFC3339, restString(p, "createdAt"))   // ignored: best-effort timestamp parse
+	u.UpdatedAt, _ = time.Parse(time.RFC3339, restString(p, "updatedAt"))   // ignored: best-effort timestamp parse
 	return u
 }
 
@@ -478,8 +481,8 @@ func userFromSearch(r graphql.SearchResult) User {
 		PasswordHash: propString(p, "passwordHash"),
 		Role:         propString(p, "role"),
 	}
-	u.CreatedAt, _ = time.Parse(time.RFC3339, propString(p, "createdAt"))
-	u.UpdatedAt, _ = time.Parse(time.RFC3339, propString(p, "updatedAt"))
+	u.CreatedAt, _ = time.Parse(time.RFC3339, propString(p, "createdAt")) // ignored: best-effort timestamp parse
+	u.UpdatedAt, _ = time.Parse(time.RFC3339, propString(p, "updatedAt")) // ignored: best-effort timestamp parse
 	return u
 }
 
@@ -492,9 +495,9 @@ func apiKeyFromSearch(r graphql.SearchResult) ApiKey {
 		Label:   propString(p, "label"),
 		Prefix:  propString(p, "prefix"),
 	}
-	k.CreatedAt, _ = time.Parse(time.RFC3339, propString(p, "createdAt"))
+	k.CreatedAt, _ = time.Parse(time.RFC3339, propString(p, "createdAt")) // ignored: best-effort timestamp parse
 	if la := propString(p, "lastUsedAt"); la != "" {
-		k.LastUsedAt, _ = time.Parse(time.RFC3339, la)
+		k.LastUsedAt, _ = time.Parse(time.RFC3339, la) // ignored: best-effort timestamp parse
 	}
 	return k
 }

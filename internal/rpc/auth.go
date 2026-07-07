@@ -185,7 +185,7 @@ func (a *apiKeyAuth) touchDebounced(keyID string) {
 	go func() {
 		// context.Background: the request context may be cancelled by the time
 		// the goroutine runs. A missed write is harmless; we don't retry.
-		_ = a.store.TouchApiKeyLastUsed(context.Background(), keyID, now)
+		_ = a.store.TouchApiKeyLastUsed(context.Background(), keyID, now) // best-effort: a missed update only affects the display field
 	}()
 }
 

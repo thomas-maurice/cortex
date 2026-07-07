@@ -566,7 +566,7 @@ authenticate with `--token` / `CORTEX_AUTH_TOKEN`.
 | `cortex consolidate "<topic>" [-n '*'] [-l N] [-t tag] [-x tag]` | Print the cluster of memories about a topic + their manifest (read-only gather; the LLM does the merge). No tag flag = no tag filter (whole cluster). |
 | `cortex delete <id>` | Delete a memory by ID. |
 | `cortex export -o backup.json` | Dump all memories (text + metadata, no vectors) to JSON. |
-| `cortex import backup.json` | Restore a dump into the target via its NATS ingest queue (worker re-embeds). Preserves ids/links; point `--server` at the target. See [docs/PROD_TO_DEV.md](docs/PROD_TO_DEV.md). |
+| `cortex import backup.json` | Restore a dump into the target via its NATS ingest queue (worker re-embeds). Preserves ids/links; point `--server` at the target. See [scripts/prod-to-dev.sh](scripts/prod-to-dev.sh). |
 | `cortex reindex --yes` | Re-embed every memory through the worker (see below). |
 | `cortex migrate-mt [--yes]` | Migrate a non-MT store to multi-tenancy (one-shot; requires `CORTEX_MULTI_TENANT=true` on the server). |
 | `cortex users list \| get <u> \| add <u> [--role] \| delete <u> \| set-role <u> <role> \| reset-password <u>` | Manage users (multi-tenant mode; needs an **admin** `--token`). The break-glass path to fix accounts without the web UI. |

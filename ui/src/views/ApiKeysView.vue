@@ -37,7 +37,7 @@
       </button>
     </div>
 
-    <div v-if="loading" class="text-center text-muted py-5">
+    <div v-if="loading" class="text-center text-muted py-5" role="status" aria-label="Loading API keys">
       <font-awesome-icon :icon="['fas', 'spinner']" spin size="2x" />
     </div>
 
@@ -66,6 +66,7 @@
             <button
               class="btn btn-outline-danger btn-sm"
               title="Revoke key"
+              aria-label="Revoke key"
               :disabled="busy"
               @click="revokeKey(k)"
             >

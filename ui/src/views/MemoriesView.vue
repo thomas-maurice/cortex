@@ -38,7 +38,7 @@
 
     <div v-if="error" class="alert alert-danger py-2">{{ error }}</div>
 
-    <div v-if="loading" class="text-center text-muted py-5">
+    <div v-if="loading" class="text-center text-muted py-5" role="status" aria-live="polite" aria-label="Loading memories">
       <font-awesome-icon :icon="['fas', 'spinner']" spin size="2x" />
     </div>
 
@@ -65,10 +65,10 @@
           <div class="d-flex justify-content-between align-items-start">
             <div class="mb-1 me-3 markdown-body" v-html="renderMarkdown(m.text)"></div>
             <div class="d-flex gap-1 flex-shrink-0">
-              <button class="btn btn-outline-secondary btn-sm" title="Edit" @click="startEdit(m)">
+              <button class="btn btn-outline-secondary btn-sm" title="Edit" aria-label="Edit memory" @click="startEdit(m)">
                 <font-awesome-icon :icon="['fas', 'pen']" />
               </button>
-              <button class="btn btn-outline-danger btn-sm" title="Delete" @click="remove(m.id)">
+              <button class="btn btn-outline-danger btn-sm" title="Delete" aria-label="Delete memory" @click="remove(m.id)">
                 <font-awesome-icon :icon="['fas', 'trash']" />
               </button>
             </div>

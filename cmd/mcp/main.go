@@ -167,11 +167,17 @@ func main() {
 	cfg.SetDefault("mcp.fact-limit", 0)
 	cfg.SetDefault("mcp.timeout", "5s") // per-call fail-fast deadline so a slow/down server never blocks Claude
 	cfg.SetDefault("save.hostname-tag", false) // opt-in: stamp host:<hostname> on saves
-	_ = cfg.BindEnv("server", "CORTEX_SERVER_URL")
-	_ = cfg.BindEnv("token", "CORTEX_AUTH_TOKEN")
-	_ = cfg.BindEnv("source", "MEMORY_SOURCE")
-	_ = cfg.BindEnv("mcp.max-distance", "MAX_DISTANCE")
-	_ = cfg.BindEnv("mcp.timeout", "CORTEX_MCP_TIMEOUT")
+	for key, env := range map[string]string{
+		"server":           "CORTEX_SERVER_URL",
+		"token":            "CORTEX_AUTH_TOKEN",
+		"source":           "MEMORY_SOURCE",
+		"mcp.max-distance": "MAX_DISTANCE",
+		"mcp.timeout":      "CORTEX_MCP_TIMEOUT",
+	} {
+		if err := cfg.BindEnv(key, env); err != nil {
+			log.Debug("BindEnv failed", "key", key, "env", env, "err", err)
+		}
+	}
 
 	var (
 		serverURL   = cfg.GetString("server")

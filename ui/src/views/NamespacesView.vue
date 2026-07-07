@@ -57,10 +57,10 @@
               <button class="btn btn-outline-secondary btn-sm" :disabled="busy" @click="cancelRename">Cancel</button>
             </template>
             <template v-else>
-              <button class="btn btn-outline-secondary btn-sm me-1" title="Rename" :disabled="busy" @click="startRename(ns)">
+              <button class="btn btn-outline-secondary btn-sm me-1" title="Rename" aria-label="Rename" :disabled="busy" @click="startRename(ns)">
                 <font-awesome-icon :icon="['fas', 'pen']" />
               </button>
-              <button class="btn btn-outline-danger btn-sm" title="Delete namespace" :disabled="busy" @click="remove(ns)">
+              <button class="btn btn-outline-danger btn-sm" title="Delete namespace" aria-label="Delete namespace" :disabled="busy" @click="remove(ns)">
                 <font-awesome-icon :icon="['fas', 'trash']" />
               </button>
             </template>
