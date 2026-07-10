@@ -47,7 +47,8 @@ services:
       - ollama_data:/root/.ollama
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:11434/"]
+      # The image ships no wget/curl; the ollama CLI hits the local API itself.
+      test: ["CMD", "ollama", "ps"]
       interval: 10s
       timeout: 5s
       retries: 5
