@@ -85,9 +85,11 @@ and clears the macOS quarantine flag so the MCP binary launches. Overrides:
 | `CORTEX_INSTALL_DIR` | `~/bin` if present, else `~/.local/bin` | where binaries land |
 | `CORTEX_BINS` | `cortex-mcp cortex` | which binaries to install |
 
-After updating `cortex-mcp`, reconnect/restart the MCP server in Claude so it
-re-execs the new binary. Binaries come from CI (goreleaser); no local Go
-toolchain is needed.
+When it finishes, the script prints the installed paths and a ready-to-paste
+`claude mcp add` command (with the real `cortex-mcp` path filled in — and the
+server URL too if `CORTEX_SERVER_URL` is exported). After updating `cortex-mcp`,
+reconnect/restart the MCP server in Claude so it re-execs the new binary.
+Binaries come from CI (goreleaser); no local Go toolchain is needed.
 
 ## Wiring into Claude Code
 
@@ -102,27 +104,29 @@ There are two ways to register it:
   this repo. Claude Code auto-detects it whenever you launch from this directory.
   Good for working *on* Cortex.
 - **User scope (global — available in *every* project).** Register it once with
-  the Claude CLI:
+  the Claude CLI (the install script prints this exact command with your real
+  install path):
 
   ```bash
-  claude mcp add --scope user cortex /usr/local/bin/cortex-mcp \
+  claude mcp add --scope user cortex ~/.local/bin/cortex-mcp \
     -e CORTEX_SERVER_URL=http://localhost:8088 \
     -e CORTEX_AUTH_TOKEN=<your-token> \
     -e MEMORY_SOURCE=claude-code
   ```
 
-  Point `command` at your `cortex-mcp` binary — a release download placed on your
-  `PATH` (e.g. `/usr/local/bin/cortex-mcp`) or a local build (`./bin/cortex-mcp`
-  from `make build`). `--scope user` writes the server into your **global user
-  config**, `~/.claude.json`, under the top-level `mcpServers` key. The equivalent
-  manual entry (add it there yourself instead of running the CLI):
+  Point the command at your `cortex-mcp` binary — where the install script put
+  it (`~/bin` or `~/.local/bin`) or a local build (`./bin/cortex-mcp` from
+  `make build`). `--scope user` writes the server into your **global user
+  config**, `~/.claude.json`, under the top-level `mcpServers` key. The
+  equivalent manual entry (add it there yourself instead of running the CLI —
+  `command` must be an **absolute** path here, `~` is not expanded in JSON):
 
   ```jsonc
   // ~/.claude.json
   {
     "mcpServers": {
       "cortex": {
-        "command": "/usr/local/bin/cortex-mcp",
+        "command": "/absolute/path/to/cortex-mcp",
         "env": {
           "CORTEX_SERVER_URL": "http://localhost:8088",
           "CORTEX_AUTH_TOKEN": "<your-token>",

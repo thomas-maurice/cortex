@@ -31,10 +31,10 @@
         <CodeBlock :text="installCmd" />
         <p class="text-muted small mb-0">
           It detects your OS/arch, verifies checksums, and drops the binaries into
-          <code>~/bin</code> or <code>~/.local/bin</code>. To build from source instead, run
-          <code>make build</code> and use <code>./bin/cortex-mcp</code>. Note the full path to
-          <code>cortex-mcp</code> — you'll need it below (e.g.
-          <code>/usr/local/bin/cortex-mcp</code>).
+          <code>~/bin</code> or <code>~/.local/bin</code>. When it finishes it prints the
+          installed paths and a ready-to-paste <code>claude mcp add</code> command for step 3 —
+          with the real <code>cortex-mcp</code> path filled in. To build from source instead,
+          run <code>make build</code> and use <code>./bin/cortex-mcp</code>.
         </p>
       </div>
     </section>
@@ -67,7 +67,9 @@
         <h5 class="card-title">3. Configure Claude Code</h5>
         <p class="mb-2">
           Register the server once at <strong>user scope</strong> so it's available in every
-          project. The quickest way is the Claude CLI:
+          project. The quickest way is the Claude CLI — the install script prints this exact
+          command with your real install path; otherwise adjust the <code>cortex-mcp</code> path
+          to where step 1 put it:
         </p>
         <CodeBlock :text="claudeMcpAdd" />
         <p class="mb-2">
@@ -76,8 +78,9 @@
         </p>
         <CodeBlock :text="claudeCodeJson" lang="~/.claude.json" />
         <p class="text-muted small mb-0">
-          A project-scoped <code>.mcp.json</code> in a repo works too and is auto-detected when
-          you launch Claude Code from that directory.
+          In JSON configs <code>command</code> must be an <strong>absolute</strong> path
+          (<code>~</code> is not expanded there). A project-scoped <code>.mcp.json</code> in a
+          repo works too and is auto-detected when you launch Claude Code from that directory.
         </p>
       </div>
     </section>
@@ -162,7 +165,7 @@ const installCmd = 'curl -fsSL https://raw.githubusercontent.com/thomas-maurice/
 
 const claudeMcpAdd = computed(() =>
   [
-    'claude mcp add --scope user cortex /usr/local/bin/cortex-mcp \\',
+    'claude mcp add --scope user cortex ~/.local/bin/cortex-mcp \\',
     `  -e CORTEX_SERVER_URL=${serverUrl} \\`,
     `  -e CORTEX_AUTH_TOKEN=${tokenPlaceholder} \\`,
     '  -e MEMORY_SOURCE=claude-code',
@@ -180,7 +183,7 @@ function mcpJson(source) {
     {
       mcpServers: {
         cortex: {
-          command: '/usr/local/bin/cortex-mcp',
+          command: '/absolute/path/to/cortex-mcp',
           env: {
             CORTEX_SERVER_URL: serverUrl,
             CORTEX_AUTH_TOKEN: tokenPlaceholder,

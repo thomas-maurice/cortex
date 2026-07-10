@@ -103,9 +103,37 @@ log "done. Versions:"
 for bin in $BINS; do
   "$install_dir/$bin" --version 2>/dev/null || "$install_dir/$bin" version 2>/dev/null || true
 done
-cat <<EOF
 
-Next:
-  - Point your MCP client at $install_dir/cortex-mcp (restart/reconnect it to pick up a new build).
-  - The CLI/MCP talk to your server via CORTEX_SERVER_URL + CORTEX_AUTH_TOKEN.
+echo
+log "installed binaries:"
+for bin in $BINS; do
+  printf '  %s\n' "$install_dir/$bin"
+done
+
+# Print a ready-to-paste `claude mcp add` command (mirrors the server UI's
+# Documentation tab, but with the real install path filled in). Substitute the
+# server URL when the caller has it exported; never echo the auth token.
+case " $BINS " in
+  *" cortex-mcp "*)
+    server_url="${CORTEX_SERVER_URL:-<your-server-url>}"
+    cat <<EOF
+
+To hook it into Claude Code (user scope, available in every project):
+
+  claude mcp add --scope user cortex $install_dir/cortex-mcp \\
+    -e CORTEX_SERVER_URL=$server_url \\
+    -e CORTEX_AUTH_TOKEN=<your-token> \\
+    -e MEMORY_SOURCE=claude-code
+
+Replace <your-token> with an API key from the server UI's API Keys tab
+(or the server's shared CORTEX_AUTH_TOKEN in single-user mode).
 EOF
+    if [ -z "${CORTEX_SERVER_URL:-}" ]; then
+      echo "Replace <your-server-url> with your Cortex server address (e.g. http://localhost:8088)."
+    fi
+    cat <<'EOF'
+The Documentation tab of the server web UI has the same snippet pre-filled
+with the server's address, plus the Claude Desktop config.
+EOF
+    ;;
+esac
