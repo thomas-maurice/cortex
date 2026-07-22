@@ -66,6 +66,9 @@ jobs:
           push: false
           breaking: ${{ github.event_name == 'pull_request' }}
           breaking_against: "https://github.com/thomas-maurice/cortex.git#branch=master"
+          # The workflow token is contents:read only; without this the action
+          # tries to post a PR summary comment and 403s the whole step.
+          pr_comment: false
 
       - name: Test
         run: go test -race ./...

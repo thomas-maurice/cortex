@@ -1,46 +1,55 @@
 <template>
-  <div style="max-width: 560px">
-    <h4 class="mb-3"><font-awesome-icon :icon="['fas', 'server']" class="me-2" />Server status</h4>
+  <div class="space-y-4">
+    <h2 class="flex items-center gap-2 text-xl font-semibold tracking-tight">
+      <Server class="size-5" />Server status
+    </h2>
 
-    <div v-if="error" class="alert alert-danger py-2">{{ error }}</div>
+    <Alert v-if="error" variant="destructive">
+      <AlertDescription>{{ error }}</AlertDescription>
+    </Alert>
 
-    <div v-if="loading" class="text-center text-muted py-5">
-      <font-awesome-icon :icon="['fas', 'spinner']" spin size="2x" />
+    <div v-if="loading" class="py-16 text-center text-muted-foreground" role="status" aria-live="polite" aria-label="Loading status">
+      <Loader2 class="mx-auto size-8 animate-spin" />
     </div>
 
-    <table v-else-if="status" class="table table-sm">
-      <tbody>
-        <tr><th>NATS</th><td><health :ok="status.natsOk" /></td></tr>
-        <tr><th>Weaviate</th><td><health :ok="status.weaviateOk" /></td></tr>
-        <tr><th>Ollama</th><td><health :ok="status.ollamaOk" /></td></tr>
-        <tr>
-          <th>Model</th>
-          <td>
-            {{ status.model }}
-            <span v-if="status.ollamaOk && !status.modelPresent" class="badge bg-warning text-dark ms-2">not downloaded</span>
-          </td>
-        </tr>
-        <tr><th>Dimensions</th><td>{{ status.dims }}</td></tr>
-        <tr><th>Memories</th><td>{{ status.memoryCount }}</td></tr>
-        <tr><th>Version</th><td>{{ status.version }}</td></tr>
-      </tbody>
-    </table>
-
-    <div v-if="status && status.ollamaOk && !status.modelPresent" class="alert alert-warning py-2">
-      <div class="mb-2">
-        The embedding model <code>{{ status.model }}</code> is not downloaded in Ollama.
-        Nothing can be embedded or searched until it is pulled.
-      </div>
-      <div v-if="pullError" class="text-danger small mb-2">{{ pullError }}</div>
-      <button class="btn btn-warning btn-sm" :disabled="pulling || loading" @click="pullModel">
-        <font-awesome-icon :icon="['fas', pulling ? 'spinner' : 'download']" :spin="pulling" class="me-1" />
-        {{ pulling ? 'Pulling…' : 'Pull model' }}
-      </button>
+    <div v-else-if="status" class="rounded-md border">
+      <Table>
+        <TableBody>
+          <TableRow><TableHead>NATS</TableHead><TableCell><health :ok="status.natsOk" /></TableCell></TableRow>
+          <TableRow><TableHead>Weaviate</TableHead><TableCell><health :ok="status.weaviateOk" /></TableCell></TableRow>
+          <TableRow><TableHead>Ollama</TableHead><TableCell><health :ok="status.ollamaOk" /></TableCell></TableRow>
+          <TableRow>
+            <TableHead>Model</TableHead>
+            <TableCell>
+              {{ status.model }}
+              <Badge v-if="status.ollamaOk && !status.modelPresent" variant="secondary" class="ml-2 text-amber-600 dark:text-amber-400">not downloaded</Badge>
+            </TableCell>
+          </TableRow>
+          <TableRow><TableHead>Dimensions</TableHead><TableCell>{{ status.dims }}</TableCell></TableRow>
+          <TableRow><TableHead>Memories</TableHead><TableCell>{{ status.memoryCount }}</TableCell></TableRow>
+          <TableRow><TableHead>Version</TableHead><TableCell>{{ status.version }}</TableCell></TableRow>
+        </TableBody>
+      </Table>
     </div>
 
-    <button class="btn btn-primary btn-sm" :disabled="loading || pulling" @click="reload">
-      <font-awesome-icon :icon="['fas', 'rotate']" class="me-1" />Refresh
-    </button>
+    <Alert v-if="status && status.ollamaOk && !status.modelPresent" class="border-amber-500/50">
+      <AlertDescription class="space-y-2 text-amber-600 dark:text-amber-400">
+        <p>
+          The embedding model <code>{{ status.model }}</code> is not downloaded in Ollama.
+          Nothing can be embedded or searched until it is pulled.
+        </p>
+        <p v-if="pullError" class="text-sm text-destructive">{{ pullError }}</p>
+        <Button size="sm" variant="outline" class="border-amber-500/50 text-amber-600 hover:text-amber-600 dark:text-amber-400" :disabled="pulling || loading" @click="pullModel">
+          <Loader2 v-if="pulling" class="size-4 animate-spin" />
+          <Download v-else class="size-4" />
+          {{ pulling ? 'Pulling…' : 'Pull model' }}
+        </Button>
+      </AlertDescription>
+    </Alert>
+
+    <Button size="sm" :disabled="loading || pulling" @click="reload">
+      <RotateCw class="size-4" />Refresh
+    </Button>
   </div>
 </template>
 
@@ -50,6 +59,11 @@ import { useRouter } from 'vue-router'
 import { Code, ConnectError } from '@connectrpc/connect'
 import { memoryClient } from '@/utils/connect'
 import { useAuthStore } from '@/stores/auth'
+import { CircleCheck, CircleX, Download, Loader2, RotateCw, Server } from 'lucide-vue-next'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { Table, TableBody, TableCell, TableHead, TableRow } from '@/components/ui/table'
 
 const router = useRouter()
 const auth = useAuthStore()
@@ -64,8 +78,8 @@ const pullError = ref('')
 const health = (props) =>
   h(
     'span',
-    { class: props.ok ? 'text-success' : 'text-danger' },
-    props.ok ? '✓ ok' : '✗ down'
+    { class: 'inline-flex items-center gap-1 ' + (props.ok ? 'text-emerald-600 dark:text-emerald-400' : 'text-destructive') },
+    [h(props.ok ? CircleCheck : CircleX, { class: 'size-4' }), props.ok ? 'ok' : 'down']
   )
 health.props = ['ok']
 

@@ -1,125 +1,89 @@
 <template>
-  <div>
-    <div class="row g-2 align-items-end mb-2">
-      <div class="col-auto" style="width: 160px">
-        <label class="form-label small mb-1">Namespace</label>
-        <input v-model="namespace" class="form-control form-control-sm" placeholder="* = all" @keyup.enter="reload" />
+  <div class="space-y-4">
+    <div class="flex flex-wrap items-end gap-2">
+      <div class="grid gap-1.5" style="width: 160px">
+        <Label class="text-xs">Namespace</Label>
+        <Input v-model="namespace" placeholder="* = all" @keyup.enter="reload" />
       </div>
-      <div class="col-auto" style="width: 110px">
-        <label class="form-label small mb-1">Max nodes</label>
-        <input v-model.number="limit" type="number" min="1" max="500" class="form-control form-control-sm" />
+      <div class="grid gap-1.5" style="width: 110px">
+        <Label class="text-xs">Max nodes</Label>
+        <Input v-model.number="limit" type="number" min="1" max="500" />
       </div>
-      <div class="col-auto" style="width: 120px">
-        <label class="form-label small mb-1" title="Find similar drops matches whose vector distance exceeds this">Similar ≤ dist</label>
-        <input v-model.number="cutoff" type="number" min="0.1" max="1" step="0.05" class="form-control form-control-sm" />
+      <div class="grid gap-1.5" style="width: 120px">
+        <Label class="text-xs" title="Find similar drops matches whose vector distance exceeds this">Similar ≤ dist</Label>
+        <Input v-model.number="cutoff" type="number" min="0.1" max="1" step="0.05" />
       </div>
-      <div class="col-auto">
-        <button class="btn btn-primary btn-sm" :disabled="loading" @click="reload">
-          <font-awesome-icon :icon="['fas', 'rotate']" class="me-1" />Reload
-        </button>
+      <Button size="sm" :disabled="loading" @click="reload">
+        <RotateCw class="size-4" />Reload
+      </Button>
+      <Button size="sm" :variant="connectMode ? 'default' : 'outline'" @click="toggleConnect">
+        <component :is="connectMode ? Unlink : Link2" class="size-4" />
+        {{ connectMode ? 'Connecting…' : 'Connect' }}
+      </Button>
+      <Button size="sm" variant="outline" :disabled="!hasNeighbours" @click="clearNeighbours">
+        Clear added
+      </Button>
+      <div class="flex items-center gap-2">
+        <Switch id="physics" v-model="physicsOn" @update:modelValue="togglePhysics" />
+        <Label for="physics" class="text-xs">Physics</Label>
       </div>
-      <div class="col-auto">
-        <button class="btn btn-sm" :class="connectMode ? 'btn-success' : 'btn-outline-success'" @click="toggleConnect">
-          <font-awesome-icon :icon="['fas', connectMode ? 'link-slash' : 'link']" class="me-1" />
-          {{ connectMode ? 'Connecting…' : 'Connect' }}
-        </button>
-      </div>
-      <div class="col-auto">
-        <button class="btn btn-outline-secondary btn-sm" :disabled="!hasNeighbours" @click="clearNeighbours">
-          Clear added
-        </button>
-      </div>
-      <div class="col-auto form-check form-switch mt-3">
-        <input id="physics" v-model="physicsOn" class="form-check-input" type="checkbox" @change="togglePhysics" />
-        <label for="physics" class="form-check-label small">Physics</label>
-      </div>
-      <div class="col text-end small text-muted">{{ memoryCount }} memories</div>
+      <div class="ml-auto text-sm text-muted-foreground">{{ memoryCount }} memories</div>
     </div>
 
-    <div v-if="connectMode" class="alert alert-success py-1 px-2 small mb-2">
+    <p v-if="connectMode" class="text-sm text-emerald-600 dark:text-emerald-400">
       Connect mode: click a memory, then another, to link them.
       <span v-if="pendingLink">First memory selected — pick the second.</span>
-    </div>
-    <div v-else class="small text-muted mb-2">
+    </p>
+    <p v-else class="text-sm text-muted-foreground">
       Click a memory to inspect it · <strong>double-click</strong> (or “Find similar”) to add its semantic
-      neighbours · click a <span class="text-success">green link</span> to remove it · click an
+      neighbours · click a <span class="text-emerald-600 dark:text-emerald-400">green link</span> to remove it · click an
       <span style="color: #fd7e14">orange dashed</span> edge to mark the pair not-a-duplicate.
+    </p>
+
+    <Alert v-if="error" variant="destructive">
+      <AlertDescription>{{ error }}</AlertDescription>
+    </Alert>
+
+    <!-- Legend: one chip per namespace currently present in the loaded nodes,
+         colored to match the node fill so the graph is readable at a glance. -->
+    <div v-if="presentNamespaces.length" class="flex flex-wrap gap-1">
+      <Badge v-for="ns in presentNamespaces" :key="ns" variant="outline" :style="nsChipStyle(ns, theme === 'dark')">
+        {{ ns }}
+      </Badge>
     </div>
 
-    <div v-if="notice" class="alert alert-info py-1 px-2 small mb-2">{{ notice }}</div>
-    <div v-if="error" class="alert alert-danger py-2">{{ error }}</div>
-
-    <div class="position-relative border rounded" style="height: 72vh">
-      <div v-if="loading" class="position-absolute top-50 start-50 translate-middle text-muted">
-        <font-awesome-icon :icon="['fas', 'spinner']" spin size="2x" />
+    <div class="relative rounded-md border" style="height: 72vh">
+      <div v-if="loading" class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-muted-foreground">
+        <Loader2 class="size-8 animate-spin" />
       </div>
       <div ref="container" style="height: 100%"></div>
 
-      <!-- Details panel for the selected memory. Read-only; no graph mutation. -->
-      <div
-        v-if="selected"
-        class="card shadow-sm position-absolute top-0 end-0 m-2"
-        style="width: 320px; max-height: calc(72vh - 1rem); overflow: auto"
-      >
-        <div class="card-body py-2">
-          <div class="d-flex justify-content-between align-items-start mb-1">
-            <span class="badge bg-secondary">
-              <font-awesome-icon :icon="['fas', 'layer-group']" class="me-1" />{{ selected.namespace }}
-            </span>
-            <button class="btn-close btn-sm" aria-label="Close details panel" @click="deselect"></button>
-          </div>
-          <!-- Edit mode: textarea + tags, replaces the read view in place. -->
-          <div v-if="editing">
-            <textarea v-model="editText" class="form-control form-control-sm mb-2" rows="8" placeholder="Memory text (Markdown)…"></textarea>
-            <input v-model="editTags" class="form-control form-control-sm mb-2" placeholder="tags, comma separated" />
-            <div class="d-flex gap-2">
-              <button class="btn btn-primary btn-sm flex-fill" :disabled="!editText.trim() || savingEdit" @click="saveEdit">
-                <font-awesome-icon :icon="['fas', 'pen']" class="me-1" />Save
-              </button>
-              <button class="btn btn-outline-secondary btn-sm flex-fill" :disabled="savingEdit" @click="editing = false">Cancel</button>
-            </div>
-            <div v-if="savingEdit" class="small text-muted mt-1">Queued for re-indexing…</div>
-          </div>
-          <template v-else>
-            <div class="small mb-2 markdown-body" v-html="renderMarkdown(selected.text)"></div>
-            <div class="small text-muted mb-2">
-              <span v-for="t in selected.tags" :key="t" class="badge bg-info text-dark me-1">#{{ t }}</span>
-            </div>
-            <div v-if="selected.conversationId" class="small text-muted mb-2">
-              <font-awesome-icon :icon="['fas', 'comments']" class="me-1" />
-              <span class="font-monospace">{{ selected.conversationId }}</span>
-            </div>
-            <div class="small text-muted mb-2">
+      <!-- Slim panel for the selected memory's link/similar controls only.
+           Text display, edit, and delete live in the shared MemoryInspector
+           (opened on click) so they stay in sync with every other view. -->
+      <Card v-if="selected" class="absolute top-0 right-0 m-2 shadow-sm" style="width: 220px">
+        <CardContent class="py-2">
+          <div class="mb-2 flex items-start justify-between gap-2">
+            <div class="text-sm text-muted-foreground">
               {{ (selected.linkedIds || []).length }} explicit link(s)
               <span v-if="(selected.dupCandidates || []).length" style="color: #fd7e14">
                 · {{ selected.dupCandidates.length }} duplicate candidate(s)
               </span>
             </div>
-            <div v-if="selected.accessCount || selected.lastAccessedAt" class="small text-muted mb-2 d-flex flex-wrap gap-2 align-items-center">
-              <span v-if="selected.accessCount" class="badge bg-warning text-dark" title="times the agent recalled this memory (living memory)">
-                <font-awesome-icon :icon="['fas', 'fire']" class="me-1" />{{ selected.accessCount }} recall(s)
-              </span>
-              <span v-if="selected.lastAccessedAt" title="when this memory was last recalled">
-                <font-awesome-icon :icon="['fas', 'clock-rotate-left']" class="me-1" />{{ fmtDate(selected.lastAccessedAt) }}
-              </span>
-            </div>
-            <button class="btn btn-outline-primary btn-sm w-100 mb-2" @click="expandSemantic('m:' + selected.id)">
-              <font-awesome-icon :icon="['fas', 'magnifying-glass']" class="me-1" />Find similar
-            </button>
-            <button class="btn btn-outline-secondary btn-sm w-100 mb-2" @click="startEdit">
-              <font-awesome-icon :icon="['fas', 'pen']" class="me-1" />Edit memory
-            </button>
-            <button class="btn btn-outline-danger btn-sm w-100" @click="deleteSelected">
-              <font-awesome-icon :icon="['fas', 'trash']" class="me-1" />Delete memory
-            </button>
-          </template>
-        </div>
-      </div>
+            <Button variant="ghost" size="icon" class="size-6 shrink-0" aria-label="Close details panel" @click="deselect">
+              <X class="size-3.5" />
+            </Button>
+          </div>
+          <Button variant="outline" size="sm" class="w-full" @click="expandSemantic('m:' + selected.id)">
+            <Search class="size-4" />Find similar
+          </Button>
+        </CardContent>
+      </Card>
     </div>
 
-    <div class="small text-muted mt-2">
+    <div class="text-sm text-muted-foreground">
       node colour = namespace &nbsp;·&nbsp;
-      <span class="text-success">green</span> = explicit link &nbsp;·&nbsp;
+      <span class="text-emerald-600 dark:text-emerald-400">green</span> = explicit link &nbsp;·&nbsp;
       <span style="color: #fd7e14">orange dashed</span> = likely duplicate (flagged) &nbsp;·&nbsp;
       <span class="text-primary">blue dashed</span> = semantic neighbour (added on demand)
     </div>
@@ -131,10 +95,22 @@ import { ref, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import { Network, DataSet } from 'vis-network/standalone'
 import { Code, ConnectError } from '@connectrpc/connect'
+import { toast } from 'vue-sonner'
 import { memoryClient } from '@/utils/connect'
-import { renderMarkdown } from '@/utils/markdown'
 import { useAuthStore } from '@/stores/auth'
+import { theme } from '@/lib/theme'
+import { nsNodeColors, nsChipStyle } from '@/lib/nsColor'
+import { confirmDialog } from '@/lib/confirm'
+import { openInspector, inspectorChanged } from '@/lib/inspector'
 import { truncate } from '@/utils/text'
+import { Link2, Loader2, RotateCw, Search, Unlink, X } from 'lucide-vue-next'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Switch } from '@/components/ui/switch'
 
 const router = useRouter()
 const auth = useAuthStore()
@@ -145,21 +121,20 @@ const limit = ref(150)
 const cutoff = ref(0.45)
 const loading = ref(false)
 const error = ref('')
-const notice = ref('')
 const physicsOn = ref(true)
 const connectMode = ref(false)
 const pendingLink = ref(null)
 const selected = ref(null)
 const hasNeighbours = ref(false)
 const memoryCount = ref(0)
+// Distinct namespaces among the currently loaded nodes, for the legend.
+const presentNamespaces = ref([])
 
-// Inline edit state for the selected memory's card.
-const editing = ref(false)
-const editText = ref('')
-const editTags = ref('')
-const savingEdit = ref(false)
-// Changing/closing the selection always drops out of edit mode.
-watch(selected, () => { editing.value = false })
+// Recolor nodes and labels when the theme toggles while a graph is on screen.
+watch(theme, () => { if (network) { recolorNodes(); render() } })
+// Text/edit/delete now live in the shared MemoryInspector; reload once it
+// reports a change so the graph reflects it.
+watch(inspectorChanged, reload)
 
 let network = null
 let nodes = null
@@ -180,25 +155,35 @@ function handleError(e) {
   error.value = e.message || 'Request failed'
 }
 
-// fmtDate renders a protobuf Timestamp for display, empty on any failure.
-function fmtDate(ts) {
-  try {
-    return ts.toDate().toLocaleString()
-  } catch {
-    return ''
-  }
-}
-
 function memNode(m) {
   return {
     id: 'm:' + m.id,
     label: truncate(m.text, 36),
     title: m.text,
-    group: m.namespace || 'global',
+    color: nsNodeColors(m.namespace || 'global', theme.value === 'dark'),
     shape: 'dot',
     size: 16,
     mem: m,
   }
+}
+
+// Recompute node fill colors in place after a theme change (the DataSet holds
+// the color objects computed at creation time, so they'd otherwise go stale).
+function recolorNodes() {
+  if (!nodes) return
+  const dark = theme.value === 'dark'
+  nodes.update(nodes.get().map((n) => ({ id: n.id, color: nsNodeColors(n.mem?.namespace || 'global', dark) })))
+}
+
+// Legend: distinct namespaces among the nodes currently on screen.
+function refreshNamespaces() {
+  presentNamespaces.value = nodes ? [...new Set(nodes.get().map((n) => n.mem?.namespace || 'global'))].sort() : []
+}
+
+// Resolver passed to the inspector so it can follow a memory's linkedIds
+// within this view's already-loaded nodes (there is no get-by-id RPC).
+function resolveMemory(id) {
+  return nodes?.get('m:' + id)?.mem
 }
 
 function linkKey(a, b) {
@@ -228,7 +213,6 @@ function dupEdge(a, b) {
 async function reload() {
   loading.value = true
   error.value = ''
-  notice.value = ''
   clearPending()
   selected.value = null
   hasNeighbours.value = false
@@ -274,6 +258,7 @@ async function reload() {
     nodes = new DataSet(nodeList)
     edges = new DataSet(edgeList)
     baseNodeIds = new Set(nodeList.map((n) => n.id))
+    refreshNamespaces()
     render()
     network.off('stabilizationIterationsDone')
     network.once('stabilizationIterationsDone', () => network && network.fit({ animation: { duration: 400 } }))
@@ -290,7 +275,9 @@ function render() {
     // Fixed seed so the layout is reproducible across reloads instead of
     // re-scrambling every time.
     layout: { randomSeed: 7, improvedLayout: true },
-    nodes: { borderWidth: 1, font: { size: 12 } },
+    // Label color follows the app theme — vis-network defaults to near-black,
+    // which is unreadable on the dark background.
+    nodes: { borderWidth: 1, font: { size: 12, color: theme.value === 'dark' ? '#e4e4e7' : '#18181b' } },
     edges: { smooth: { type: 'continuous' } },
     physics: {
       enabled: physicsOn.value,
@@ -334,6 +321,7 @@ function onClick(params) {
   }
   const node = nodes.get(id)
   selected.value = node?.mem || null
+  if (selected.value) openInspector(selected.value, resolveMemory)
 }
 
 // Double click is the explicit "expand semantic neighbours" gesture.
@@ -382,7 +370,7 @@ async function handleConnectClick(id) {
 async function maybeUnlink(eid) {
   const e = edges.get(eid)
   if (!e) return
-  if (!confirm('Remove this link?')) return
+  if (!(await confirmDialog('Remove this link?', { actionLabel: 'Remove' }))) return
   try {
     await memoryClient.unlink({ id: String(e.from).slice(2), targetId: String(e.to).slice(2) })
     edges.remove(eid)
@@ -391,61 +379,12 @@ async function maybeUnlink(eid) {
   }
 }
 
-// Delete the selected memory (e.g. the redundant half of a duplicate pair). Also
-// prunes the node and any edges touching it from the graph so the view stays
-// consistent without a full reload.
-// startEdit seeds the edit form from the selected memory. saveEdit calls
-// UpdateMemory (text + tags; namespace is left untouched so the memory does not
-// move) and patches the node in place so the graph reflects the change without a
-// full reload — the worker re-embeds asynchronously.
-function startEdit() {
-  if (!selected.value) return
-  editText.value = selected.value.text
-  editTags.value = (selected.value.tags || []).join(', ')
-  editing.value = true
-}
-
-async function saveEdit() {
-  const mem = selected.value
-  if (!mem) return
-  savingEdit.value = true
-  error.value = ''
-  try {
-    const tags = editTags.value.split(',').map((t) => t.trim()).filter(Boolean)
-    await memoryClient.updateMemory({ id: mem.id, text: editText.value, tags, replaceTags: true })
-    const updated = { ...mem, text: editText.value, tags }
-    nodes.update({ id: 'm:' + mem.id, label: truncate(editText.value, 30), title: editText.value, mem: updated })
-    selected.value = updated // resets editing via the watch
-  } catch (e) {
-    handleError(e)
-  } finally {
-    savingEdit.value = false
-  }
-}
-
-async function deleteSelected() {
-  const mem = selected.value
-  if (!mem) return
-  if (!confirm('Delete this memory? This cannot be undone.')) return
-  try {
-    await memoryClient.delete({ id: mem.id })
-    const nid = 'm:' + mem.id
-    const touching = edges.get({ filter: (e) => e.from === nid || e.to === nid }).map((e) => e.id)
-    edges.remove(touching)
-    nodes.remove(nid)
-    baseNodeIds.delete(nid)
-    selected.value = null
-  } catch (e) {
-    handleError(e)
-  }
-}
-
 // Clicking an orange duplicate-candidate edge dismisses it: the pair is recorded
 // as confirmed-not-a-duplicate so the worker never re-flags it.
 async function maybeDismiss(eid) {
   const e = edges.get(eid)
   if (!e) return
-  if (!confirm('Mark these two memories as NOT duplicates? They won’t be flagged again.')) return
+  if (!(await confirmDialog('Mark these two memories as NOT duplicates? They won’t be flagged again.', { actionLabel: 'Mark not duplicate' }))) return
   try {
     await memoryClient.dismissDuplicate({ id: String(e.from).slice(2), targetId: String(e.to).slice(2) })
     edges.remove(eid)
@@ -457,7 +396,6 @@ async function maybeDismiss(eid) {
 async function expandSemantic(id) {
   const node = nodes.get(id)
   if (!node?.mem) return
-  notice.value = ''
   try {
     // searchSimilar reuses the memory's stored vector server-side (Weaviate
     // nearObject) — it does NOT re-embed the text, so big memories cost no
@@ -466,7 +404,7 @@ async function expandSemantic(id) {
     const res = await memoryClient.searchSimilar({ id: node.mem.id, namespace: '*', limit: 6, maxDistance: cutoff.value })
     const hits = res.hits.filter((h) => 'm:' + h.memory.id !== id)
     if (hits.length === 0) {
-      notice.value = `No memories within distance ${cutoff.value} of "${truncate(node.mem.text, 30)}".`
+      toast.info(`No memories within distance ${cutoff.value} of "${truncate(node.mem.text, 30)}".`)
       return
     }
     for (const h of hits) {
@@ -486,6 +424,7 @@ async function expandSemantic(id) {
         hasNeighbours.value = true
       }
     }
+    refreshNamespaces()
   } catch (e) {
     handleError(e)
   }
@@ -499,6 +438,7 @@ function clearNeighbours() {
   const extra = nodes.get({ filter: (n) => !baseNodeIds.has(n.id) }).map((n) => n.id)
   nodes.remove(extra)
   hasNeighbours.value = false
+  refreshNamespaces()
 }
 
 function togglePhysics() {

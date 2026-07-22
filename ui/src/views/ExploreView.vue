@@ -1,111 +1,50 @@
 <template>
-  <div>
-    <div class="row g-2 align-items-end mb-2">
-      <div class="col">
-        <label class="form-label small mb-1">Query</label>
-        <input
+  <div class="space-y-4">
+    <div class="flex flex-wrap items-end gap-2">
+      <div class="grid flex-1 gap-1.5">
+        <Label class="text-xs">Query</Label>
+        <Input
           v-model="query"
-          class="form-control form-control-sm"
           placeholder="type anything — it gets vectorised and matched against your memories"
           @keyup.enter="run"
         />
       </div>
-      <div class="col-auto" style="width: 120px">
-        <label class="form-label small mb-1">Namespace</label>
-        <input v-model="namespace" class="form-control form-control-sm" placeholder="* = all" />
+      <div class="grid gap-1.5" style="width: 120px">
+        <Label class="text-xs">Namespace</Label>
+        <Input v-model="namespace" placeholder="* = all" />
       </div>
-      <div class="col-auto" style="width: 90px">
-        <label class="form-label small mb-1">Limit</label>
-        <input v-model.number="limit" type="number" min="1" max="100" class="form-control form-control-sm" />
+      <div class="grid gap-1.5" style="width: 90px">
+        <Label class="text-xs">Limit</Label>
+        <Input v-model.number="limit" type="number" min="1" max="100" />
       </div>
-      <div class="col-auto" style="width: 110px">
-        <label class="form-label small mb-1" title="relevance cutoff (lower = closer match). Search is hybrid (keyword + vector), so this blends both; raise it to surface weaker matches, lower it to tighten.">Max dist</label>
-        <input v-model.number="cutoff" type="number" min="0.1" max="1.5" step="0.05" class="form-control form-control-sm" />
+      <div class="grid gap-1.5" style="width: 110px">
+        <Label class="text-xs" title="relevance cutoff (lower = closer match). Search is hybrid (keyword + vector), so this blends both; raise it to surface weaker matches, lower it to tighten.">Max dist</Label>
+        <Input v-model.number="cutoff" type="number" min="0.1" max="1.5" step="0.05" />
       </div>
-      <div class="col-auto">
-        <button class="btn btn-primary btn-sm" :disabled="loading || !query.trim()" @click="run">
-          <font-awesome-icon :icon="['fas', 'magnifying-glass']" class="me-1" />Explore
-        </button>
-      </div>
-      <div class="col-auto">
-        <button class="btn btn-outline-secondary btn-sm" :disabled="!searched" @click="clearCloud">Clear</button>
-      </div>
+      <Button size="sm" :disabled="loading || !query.trim()" @click="run">
+        <Search class="size-4" />Explore
+      </Button>
+      <Button size="sm" variant="outline" :disabled="!searched" @click="clearCloud">Clear</Button>
     </div>
 
-    <div v-if="notice" class="alert alert-info py-1 px-2 small mb-2">{{ notice }}</div>
-    <div v-if="error" class="alert alert-danger py-2">{{ error }}</div>
+    <Alert v-if="error" variant="destructive">
+      <AlertDescription>{{ error }}</AlertDescription>
+    </Alert>
 
-    <div class="position-relative border rounded" style="height: 74vh">
-      <div v-if="loading" class="position-absolute top-50 start-50 translate-middle text-muted">
-        <font-awesome-icon :icon="['fas', 'spinner']" spin size="2x" />
+    <div class="relative rounded-md border" style="height: 74vh">
+      <div v-if="loading" class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-muted-foreground">
+        <Loader2 class="size-8 animate-spin" />
       </div>
-      <div v-if="!searched && !loading" class="position-absolute top-50 start-50 translate-middle text-muted text-center">
-        <font-awesome-icon :icon="['fas', 'cloud']" size="2x" class="mb-2 d-block" />
+      <div v-if="!searched && !loading" class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-center text-muted-foreground">
+        <Cloud class="mx-auto mb-2 size-8" />
         Enter a query to see a cloud of related memories.
       </div>
       <div ref="container" style="height: 100%"></div>
-
-      <div
-        v-if="selected"
-        class="card shadow-sm position-absolute top-0 end-0 m-2"
-        style="width: 320px; max-height: calc(74vh - 1rem); overflow: auto"
-      >
-        <div class="card-body py-2">
-          <div class="d-flex justify-content-between align-items-start mb-1">
-            <span class="badge bg-secondary">
-              <font-awesome-icon :icon="['fas', 'layer-group']" class="me-1" />{{ selected.namespace }}
-            </span>
-            <button class="btn-close btn-sm" aria-label="Close details panel" @click="deselect"></button>
-          </div>
-          <!-- Edit mode: textarea + tags, replaces the read view in place. -->
-          <div v-if="editing">
-            <textarea v-model="editText" class="form-control form-control-sm mb-2" rows="8" placeholder="Memory text (Markdown)…"></textarea>
-            <input v-model="editTags" class="form-control form-control-sm mb-2" placeholder="tags, comma separated" />
-            <div class="d-flex gap-2">
-              <button class="btn btn-primary btn-sm flex-fill" :disabled="!editText.trim() || savingEdit" @click="saveEdit">
-                <font-awesome-icon :icon="['fas', 'pen']" class="me-1" />Save
-              </button>
-              <button class="btn btn-outline-secondary btn-sm flex-fill" :disabled="savingEdit" @click="editing = false">Cancel</button>
-            </div>
-            <div v-if="savingEdit" class="small text-muted mt-1">Queued for re-indexing…</div>
-          </div>
-          <template v-else>
-            <div class="small mb-2 markdown-body" v-html="renderMarkdown(selected.text)"></div>
-            <div v-if="(selected.tags || []).length" class="small text-muted mb-2">
-              <span v-for="t in selected.tags" :key="t" class="badge bg-info text-dark me-1">#{{ t }}</span>
-            </div>
-            <div v-if="selected.conversationId" class="small text-muted mb-2">
-              <font-awesome-icon :icon="['fas', 'comments']" class="me-1" />
-              <span class="font-monospace">{{ selected.conversationId }}</span>
-            </div>
-            <div class="small text-muted mb-2">
-              {{ (selected.linkedIds || []).length }} explicit link(s)
-              <span v-if="(selected.dupCandidates || []).length" style="color: #fd7e14">
-                · {{ selected.dupCandidates.length }} duplicate candidate(s)
-              </span>
-            </div>
-            <div v-if="selected.accessCount || selected.lastAccessedAt" class="small text-muted mb-2 d-flex flex-wrap gap-2 align-items-center">
-              <span v-if="selected.accessCount" class="badge bg-warning text-dark" title="times the agent recalled this memory (living memory)">
-                <font-awesome-icon :icon="['fas', 'fire']" class="me-1" />{{ selected.accessCount }} recall(s)
-              </span>
-              <span v-if="selected.lastAccessedAt" title="when this memory was last recalled">
-                <font-awesome-icon :icon="['fas', 'clock-rotate-left']" class="me-1" />{{ fmtDate(selected.lastAccessedAt) }}
-              </span>
-            </div>
-            <button class="btn btn-outline-secondary btn-sm w-100 mb-2" @click="startEdit">
-              <font-awesome-icon :icon="['fas', 'pen']" class="me-1" />Edit memory
-            </button>
-            <button class="btn btn-outline-danger btn-sm w-100" @click="deleteSelected">
-              <font-awesome-icon :icon="['fas', 'trash']" class="me-1" />Delete memory
-            </button>
-          </template>
-        </div>
-      </div>
     </div>
 
-    <div class="small text-muted mt-2">
+    <div class="text-sm text-muted-foreground">
       <span v-if="searched">{{ resultCount }} match(es) · </span>
-      Central <span class="text-danger">★</span> = your query · closer + bigger = more relevant · edge number = vector distance.
+      Central <span class="text-destructive">★</span> = your query · closer + bigger = more relevant · edge number = vector distance.
     </div>
   </div>
 </template>
@@ -115,10 +54,18 @@ import { ref, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import { Network, DataSet } from 'vis-network/standalone'
 import { Code, ConnectError } from '@connectrpc/connect'
+import { toast } from 'vue-sonner'
 import { memoryClient } from '@/utils/connect'
-import { renderMarkdown } from '@/utils/markdown'
 import { useAuthStore } from '@/stores/auth'
+import { theme } from '@/lib/theme'
 import { truncate } from '@/utils/text'
+import { nsNodeColors } from '@/lib/nsColor'
+import { openInspector, inspectorChanged } from '@/lib/inspector'
+import { Cloud, Loader2, Search } from 'lucide-vue-next'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 
 const router = useRouter()
 const auth = useAuthStore()
@@ -130,18 +77,14 @@ const limit = ref(25)
 const cutoff = ref(0.6)
 const loading = ref(false)
 const error = ref('')
-const notice = ref('')
 const searched = ref(false)
-const selected = ref(null)
 const resultCount = ref(0)
 
-// Inline edit state for the selected memory's card.
-const editing = ref(false)
-const editText = ref('')
-const editTags = ref('')
-const savingEdit = ref(false)
-// Changing/closing the selection always drops out of edit mode.
-watch(selected, () => { editing.value = false })
+// Recolor nodes + labels when the theme toggles while a graph is on screen.
+watch(theme, () => { if (network) { recolorNodes(); render() } })
+// An inspector edit/delete can change the memory this view is showing —
+// re-run the active search so the cloud reflects it.
+watch(inspectorChanged, () => { if (searched.value) run() })
 
 let network = null
 let nodes = null
@@ -160,57 +103,10 @@ function handleError(e) {
   error.value = e.message || 'Request failed'
 }
 
-// fmtDate renders a protobuf Timestamp for display, empty on any failure.
-function fmtDate(ts) {
-  try {
-    return ts.toDate().toLocaleString()
-  } catch {
-    return ''
-  }
-}
-
-// startEdit seeds the edit form from the selected memory. saveEdit calls
-// UpdateMemory (text + tags; namespace untouched so the memory does not move) and
-// patches the cloud node in place; the worker re-embeds asynchronously.
-function startEdit() {
-  if (!selected.value) return
-  editText.value = selected.value.text
-  editTags.value = (selected.value.tags || []).join(', ')
-  editing.value = true
-}
-
-async function saveEdit() {
-  const mem = selected.value
-  if (!mem) return
-  savingEdit.value = true
-  error.value = ''
-  try {
-    const tags = editTags.value.split(',').map((t) => t.trim()).filter(Boolean)
-    await memoryClient.updateMemory({ id: mem.id, text: editText.value, tags, replaceTags: true })
-    const updated = { ...mem, text: editText.value, tags }
-    nodes.update({ id: 'm:' + mem.id, label: truncate(editText.value, 30), title: editText.value, mem: updated })
-    selected.value = updated // resets editing via the watch
-  } catch (e) {
-    handleError(e)
-  } finally {
-    savingEdit.value = false
-  }
-}
-
-async function deleteSelected() {
-  const mem = selected.value
-  if (!mem) return
-  if (!confirm('Delete this memory? This cannot be undone.')) return
-  try {
-    await memoryClient.delete({ id: mem.id })
-    const nid = 'm:' + mem.id
-    const touching = edges.get({ filter: (e) => e.from === nid || e.to === nid }).map((e) => e.id)
-    edges.remove(touching)
-    nodes.remove(nid)
-    selected.value = null
-  } catch (e) {
-    handleError(e)
-  }
+// resolveMemory looks up a linked id within the currently loaded result set,
+// for the inspector to follow links without a get-memory-by-id RPC.
+function resolveMemory(id) {
+  return nodes?.get('m:' + id)?.mem
 }
 
 // Map a 0..~1 distance to a node size (closer = bigger) and edge length
@@ -228,8 +124,6 @@ async function run() {
   const my = ++reqId
   loading.value = true
   error.value = ''
-  notice.value = ''
-  selected.value = null
   try {
     // noReinforce: exploring is not a recall — never inflate the usage signal.
     const res = await memoryClient.search({ query: q, namespace: namespace.value, limit: limit.value, maxDistance: cutoff.value, noReinforce: true })
@@ -241,13 +135,14 @@ async function run() {
       { id: QUERY_ID, label: truncate(q, 40), title: q, shape: 'star', color: '#dc3545', size: 28, x: 0, y: 0, fixed: true, physics: false },
     ]
     const edgeList = []
+    const dark = theme.value === 'dark'
     for (const h of res.hits) {
       const m = h.memory
       nodeList.push({
         id: 'm:' + m.id,
         label: truncate(m.text, 30),
         title: m.text,
-        group: m.namespace || 'global',
+        color: nsNodeColors(m.namespace, dark),
         shape: 'dot',
         size: sizeFor(h.distance),
         mem: m,
@@ -264,7 +159,7 @@ async function run() {
     }
 
     if (res.hits.length === 0) {
-      notice.value = `No memories within distance ${cutoff.value} of "${truncate(q, 40)}".`
+      toast.info(`No memories within distance ${cutoff.value} of "${truncate(q, 40)}".`)
     }
 
     nodes = new DataSet(nodeList)
@@ -286,15 +181,26 @@ function clearCloud() {
   if (edges) edges.clear()
   searched.value = false
   resultCount.value = 0
-  selected.value = null
-  notice.value = ''
+}
+
+// Repaint memory-node colors in place when the theme toggles, so an existing
+// cloud doesn't stay stuck with the previous theme's palette.
+function recolorNodes() {
+  if (!nodes) return
+  const dark = theme.value === 'dark'
+  const updates = nodes
+    .get({ filter: (n) => n.id !== QUERY_ID })
+    .map((n) => ({ id: n.id, color: nsNodeColors(n.mem?.namespace, dark) }))
+  if (updates.length) nodes.update(updates)
 }
 
 function render() {
   const data = { nodes, edges }
   const options = {
     layout: { randomSeed: 7 },
-    nodes: { borderWidth: 1, font: { size: 12 } },
+    // Label color follows the app theme — vis-network defaults to near-black,
+    // which is unreadable on the dark background.
+    nodes: { borderWidth: 1, font: { size: 12, color: theme.value === 'dark' ? '#e4e4e7' : '#18181b' } },
     edges: { smooth: { type: 'continuous' } },
     physics: {
       enabled: true,
@@ -313,21 +219,11 @@ function render() {
 }
 
 function onClick(params) {
-  if (!params.nodes.length) {
-    selected.value = null
-    return
-  }
+  if (!params.nodes.length) return
   const id = params.nodes[0]
-  if (!String(id).startsWith('m:')) {
-    selected.value = null
-    return
-  }
-  selected.value = nodes.get(id)?.mem || null
-}
-
-function deselect() {
-  selected.value = null
-  if (network) network.unselectAll()
+  if (!String(id).startsWith('m:')) return
+  const mem = nodes.get(id)?.mem
+  if (mem) openInspector(mem, resolveMemory)
 }
 
 onMounted(() => {

@@ -1,65 +1,81 @@
 <template>
-  <div>
-    <h4 class="mb-3"><font-awesome-icon :icon="['fas', 'list-check']" class="me-2" />Indexing</h4>
+  <div class="space-y-4">
+    <h2 class="flex items-center gap-2 text-xl font-semibold tracking-tight">
+      <ListChecks class="size-5" />Indexing
+    </h2>
 
-    <div v-if="error" class="alert alert-danger py-2">{{ error }}</div>
+    <Alert v-if="error" variant="destructive">
+      <AlertDescription>{{ error }}</AlertDescription>
+    </Alert>
 
-    <div class="row g-2 mb-3">
-      <div class="col">
-        <div class="card text-center">
-          <div class="card-body py-2">
-            <div class="h4 mb-0">{{ counts.pending }}</div>
-            <div class="small text-muted">Pending</div>
-          </div>
-        </div>
-      </div>
-      <div class="col">
-        <div class="card text-center">
-          <div class="card-body py-2">
-            <div class="h4 mb-0">{{ counts.inFlight }}</div>
-            <div class="small text-muted">In flight</div>
-          </div>
-        </div>
-      </div>
-      <div class="col">
-        <div class="card text-center" :class="{ 'border-danger': counts.dead > 0 }">
-          <div class="card-body py-2">
-            <div class="h4 mb-0" :class="{ 'text-danger': counts.dead > 0 }">{{ counts.dead }}</div>
-            <div class="small text-muted">Dead-lettered</div>
-          </div>
-        </div>
-      </div>
+    <div class="grid gap-2 md:grid-cols-3">
+      <Card class="text-center">
+        <CardContent class="py-4">
+          <div class="text-2xl font-semibold">{{ counts.pending }}</div>
+          <div class="text-sm text-muted-foreground">Pending</div>
+        </CardContent>
+      </Card>
+      <Card class="text-center">
+        <CardContent class="py-4">
+          <div class="text-2xl font-semibold">{{ counts.inFlight }}</div>
+          <div class="text-sm text-muted-foreground">In flight</div>
+        </CardContent>
+      </Card>
+      <Card class="text-center" :class="{ 'border-destructive': counts.dead > 0 }">
+        <CardContent class="py-4">
+          <div class="text-2xl font-semibold" :class="{ 'text-destructive': counts.dead > 0 }">{{ counts.dead }}</div>
+          <div class="text-sm text-muted-foreground">Dead-lettered</div>
+        </CardContent>
+      </Card>
     </div>
 
-    <div class="d-flex align-items-center gap-2 mb-3">
-      <button class="btn btn-primary btn-sm" :disabled="loading" @click="reload()">
-        <font-awesome-icon :icon="['fas', 'rotate']" class="me-1" />Refresh
-      </button>
-      <button class="btn btn-outline-warning btn-sm" :disabled="busy || counts.dead === 0" @click="requeue">
-        <font-awesome-icon :icon="['fas', 'arrow-rotate-left']" class="me-1" />Requeue all
-      </button>
-      <button class="btn btn-outline-danger btn-sm" :disabled="busy || counts.dead === 0" @click="purge">
-        <font-awesome-icon :icon="['fas', 'trash']" class="me-1" />Purge all
-      </button>
-      <span v-if="!consumerPresent" class="badge bg-secondary">worker offline</span>
+    <div class="flex items-center gap-2">
+      <Button size="sm" :disabled="loading" @click="reload()">
+        <RotateCw class="size-4" />Refresh
+      </Button>
+      <Button variant="outline" size="sm" class="text-amber-600 hover:text-amber-600 dark:text-amber-400" :disabled="busy || counts.dead === 0" @click="requeue">
+        <RotateCcw class="size-4" />Requeue all
+      </Button>
+      <Button variant="outline" size="sm" class="text-destructive hover:text-destructive" :disabled="busy || counts.dead === 0" @click="purge">
+        <Trash2 class="size-4" />Purge all
+      </Button>
+      <Badge v-if="!consumerPresent" variant="secondary">worker offline</Badge>
     </div>
 
-    <h6 class="text-muted">Failed memories</h6>
-    <div v-if="dead.length === 0" class="text-center text-muted py-4">
-      <font-awesome-icon :icon="['fas', 'circle-check']" size="2x" class="mb-2 d-block" />
-      No dead-lettered memories.
-    </div>
+    <div class="space-y-2">
+      <h3 class="text-sm font-medium text-muted-foreground">Failed memories</h3>
+      <div v-if="dead.length === 0" class="py-8 text-center text-muted-foreground">
+        <CircleCheck class="mx-auto mb-2 size-8 text-emerald-600 dark:text-emerald-400" />
+        No dead-lettered memories.
+      </div>
 
-    <div v-for="(dl, i) in dead" :key="i" class="card mb-2 border-danger">
-      <div class="card-body py-2">
-        <p class="mb-1" style="white-space: pre-wrap">{{ dl.record?.text }}</p>
-        <div class="small text-danger mb-1"><font-awesome-icon :icon="['fas', 'triangle-exclamation']" class="me-1" />{{ dl.error }}</div>
-        <div class="small text-muted d-flex flex-wrap gap-2">
-          <span v-if="dl.record?.namespace" class="badge bg-secondary">{{ dl.record.namespace }}</span>
-          <span>{{ dl.deliveries }} attempts</span>
-          <span v-if="dl.failedAt">failed {{ formatDate(dl.failedAt) }}</span>
-          <span v-if="dl.record?.id" class="text-muted">{{ dl.record.id }}</span>
-        </div>
+      <div v-else class="rounded-md border">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Memory</TableHead>
+              <TableHead>Error</TableHead>
+              <TableHead>Namespace</TableHead>
+              <TableHead>Attempts</TableHead>
+              <TableHead>Failed</TableHead>
+              <TableHead>ID</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            <TableRow v-for="(dl, i) in dead" :key="i">
+              <TableCell class="max-w-sm whitespace-pre-wrap">{{ dl.record?.text }}</TableCell>
+              <TableCell class="whitespace-normal text-destructive">
+                <span class="inline-flex items-center gap-1"><TriangleAlert class="size-3.5" />{{ dl.error }}</span>
+              </TableCell>
+              <TableCell>
+                <Badge v-if="dl.record?.namespace" variant="secondary">{{ dl.record.namespace }}</Badge>
+              </TableCell>
+              <TableCell>{{ dl.deliveries }}</TableCell>
+              <TableCell>{{ dl.failedAt ? formatDate(dl.failedAt) : '' }}</TableCell>
+              <TableCell class="text-muted-foreground">{{ dl.record?.id }}</TableCell>
+            </TableRow>
+          </TableBody>
+        </Table>
       </div>
     </div>
   </div>
@@ -68,10 +84,18 @@
 <script setup>
 import { ref, reactive, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
+import { toast } from 'vue-sonner'
 import { Code, ConnectError } from '@connectrpc/connect'
 import { memoryClient } from '@/utils/connect'
 import { DeadAction } from '@/gen/cortex/v1/cortex_pb'
 import { useAuthStore } from '@/stores/auth'
+import { confirmDialog } from '@/lib/confirm'
+import { CircleCheck, ListChecks, RotateCcw, RotateCw, Trash2, TriangleAlert } from 'lucide-vue-next'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent } from '@/components/ui/card'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 
 const router = useRouter()
 const auth = useAuthStore()
@@ -144,10 +168,11 @@ function stopPolling() {
 }
 
 async function requeue() {
-  if (!confirm('Requeue all dead-lettered memories for indexing?')) return
+  if (!(await confirmDialog('Requeue all dead-lettered items for indexing?', { actionLabel: 'Requeue', destructive: false }))) return
   busy.value = true
   try {
     await memoryClient.dead({ action: DeadAction.REQUEUE })
+    toast.success('Requeued all dead-lettered items.')
     await reload()
   } catch (e) {
     handleError(e)
@@ -157,10 +182,11 @@ async function requeue() {
 }
 
 async function purge() {
-  if (!confirm('Permanently purge all dead-lettered memories? This cannot be undone.')) return
+  if (!(await confirmDialog('Permanently purge all dead-lettered items? This cannot be undone.', { actionLabel: 'Purge' }))) return
   busy.value = true
   try {
     await memoryClient.dead({ action: DeadAction.PURGE })
+    toast.success('Purged all dead-lettered items.')
     await reload()
   } catch (e) {
     handleError(e)
