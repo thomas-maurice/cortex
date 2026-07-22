@@ -6,6 +6,7 @@ import App from './App.vue'
 
 import './assets/main.css'
 import './assets/markdown.css'
+import 'vue-sonner/style.css'
 import { initTheme } from './lib/theme'
 
 initTheme()

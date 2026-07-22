@@ -35,14 +35,19 @@
         </div>
         <template v-else>
           <div class="flex items-start justify-between gap-3">
-            <div class="markdown-body min-w-0 text-sm" v-html="renderMarkdown(s.text)"></div>
+            <ClampedMarkdown class="min-w-0" :html="renderMarkdown(s.text)" />
             <Button variant="outline" size="icon" class="size-8 shrink-0" title="Edit" aria-label="Edit session" @click="startEdit(s)">
               <Pencil class="size-3.5" />
             </Button>
           </div>
         </template>
         <div class="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-          <Badge variant="secondary">
+          <Badge
+            variant="secondary"
+            class="cursor-pointer hover:bg-secondary/80"
+            title="Filter by this namespace"
+            @click="filterByNamespace(s.namespace)"
+          >
             <Layers class="size-3" />{{ s.namespace }}
           </Badge>
           <span class="inline-flex items-center gap-1 font-mono">
@@ -63,6 +68,7 @@
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { Code, ConnectError } from '@connectrpc/connect'
+import { toast } from 'vue-sonner'
 import { memoryClient } from '@/utils/connect'
 import { renderMarkdown } from '@/utils/markdown'
 import { useAuthStore } from '@/stores/auth'
@@ -72,6 +78,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
+import ClampedMarkdown from '@/components/ClampedMarkdown.vue'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
@@ -93,6 +100,11 @@ function startEdit(s) {
   editText.value = s.text
 }
 
+function filterByNamespace(ns) {
+  namespace.value = ns
+  reload()
+}
+
 async function saveEdit(s) {
   editing.value = true
   error.value = ''
@@ -105,6 +117,7 @@ async function saveEdit(s) {
       namespace: s.namespace,
     })
     editId.value = null
+    toast.success('Queued for re-indexing — changes appear shortly')
     setTimeout(reload, 1200)
   } catch (e) {
     if (e instanceof ConnectError && e.code === Code.Unauthenticated) {

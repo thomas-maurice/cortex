@@ -33,7 +33,6 @@
             {{ exporting ? 'Exporting…' : 'Export to JSON' }}
           </Button>
         </div>
-        <p v-if="exportMsg" class="text-sm text-emerald-600 dark:text-emerald-400">{{ exportMsg }}</p>
       </CardContent>
     </Card>
 
@@ -62,7 +61,6 @@
           </Button>
         </div>
         <p v-if="importInfo" class="text-sm text-muted-foreground">{{ importInfo }}</p>
-        <p v-if="importMsg" class="text-sm text-emerald-600 dark:text-emerald-400">{{ importMsg }}</p>
       </CardContent>
     </Card>
 
@@ -87,7 +85,6 @@
             <component :is="selfBacking ? Loader2 : Download" :class="['size-4', selfBacking && 'animate-spin']" />
             {{ selfBacking ? 'Preparing…' : 'Download my backup' }}
           </Button>
-          <span v-if="selfBackupMsg" class="text-sm text-emerald-600 dark:text-emerald-400">{{ selfBackupMsg }}</span>
         </div>
 
         <!-- Restore my backup -->
@@ -105,22 +102,6 @@
               {{ selfRestoring ? 'Restoring…' : 'Restore' }}
             </Button>
           </div>
-          <Alert v-if="selfRestoreMsg" class="relative border-emerald-500/50 text-emerald-600 dark:text-emerald-400">
-            <Button
-              variant="ghost"
-              size="icon"
-              class="absolute top-1 right-1 size-6 text-emerald-600 hover:text-emerald-600 dark:text-emerald-400"
-              aria-label="Dismiss message"
-              @click="selfRestoreMsg = ''"
-            >
-              <X class="size-3.5" />
-            </Button>
-            <AlertDescription class="pr-8">
-              {{ selfRestoreMsg }}
-              Memories and summaries are re-embedded asynchronously — check the
-              <router-link :to="{ name: 'queue' }">Indexing</router-link> view for progress.
-            </AlertDescription>
-          </Alert>
         </div>
       </CardContent>
     </Card>
@@ -152,27 +133,6 @@
             <component :is="backingUp ? Loader2 : Save" :class="['size-4', backingUp && 'animate-spin']" />
             {{ backingUp ? 'Backing up…' : 'Run full backup now' }}
           </Button>
-
-          <Alert v-if="backupSuccess" class="relative border-emerald-500/50 text-emerald-600 dark:text-emerald-400">
-            <Button
-              variant="ghost"
-              size="icon"
-              class="absolute top-1 right-1 size-6 text-emerald-600 hover:text-emerald-600 dark:text-emerald-400"
-              aria-label="Dismiss message"
-              @click="backupSuccess = null"
-            >
-              <X class="size-3.5" />
-            </Button>
-            <AlertDescription class="pr-8">
-              <strong>Backup written:</strong> <code>{{ backupSuccess.path }}</code><br />
-              {{ backupSuccess.tenants }} tenant(s), {{ backupSuccess.memories }} memories,
-              {{ backupSuccess.summaries }} summaries, {{ backupSuccess.users }} users,
-              {{ backupSuccess.apiKeys }} API key(s).
-              <span v-if="backupSuccess.s3Result">
-                <br /><strong>Offsite:</strong> {{ backupSuccess.s3Result }}
-              </span>
-            </AlertDescription>
-          </Alert>
         </CardContent>
       </Card>
 
@@ -252,23 +212,6 @@
               </TableBody>
             </Table>
           </div>
-
-          <Alert v-if="restoreMsg" class="relative border-emerald-500/50 text-emerald-600 dark:text-emerald-400">
-            <Button
-              variant="ghost"
-              size="icon"
-              class="absolute top-1 right-1 size-6 text-emerald-600 hover:text-emerald-600 dark:text-emerald-400"
-              aria-label="Dismiss message"
-              @click="restoreMsg = ''"
-            >
-              <X class="size-3.5" />
-            </Button>
-            <AlertDescription class="pr-8">
-              {{ restoreMsg }}
-              Memories and summaries are re-embedded asynchronously — check the
-              <router-link :to="{ name: 'queue' }">Indexing</router-link> view for progress.
-            </AlertDescription>
-          </Alert>
         </CardContent>
       </Card>
 
@@ -347,10 +290,12 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
+import { toast } from 'vue-sonner'
 import { Timestamp } from '@bufbuild/protobuf'
 import { Code, ConnectError } from '@connectrpc/connect'
 import { memoryClient } from '@/utils/connect'
 import { useAuthStore } from '@/stores/auth'
+import { confirmDialog } from '@/lib/confirm'
 import { formatTimestamp } from '@/utils/text'
 import {
   Archive,
@@ -366,7 +311,6 @@ import {
   ShieldCheck,
   Trash2,
   Upload,
-  X,
 } from 'lucide-vue-next'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
@@ -389,25 +333,20 @@ const error = ref('')
 
 const exportNs = ref('*')
 const exporting = ref(false)
-const exportMsg = ref('')
 
 const fileInput = ref(null)
 const file = ref(null)
 const importing = ref(false)
 const importInfo = ref('')
-const importMsg = ref('')
 
 // My data (self) backup state
 const selfBacking = ref(false)
-const selfBackupMsg = ref('')
 const selfFileInput = ref(null)
 const selfFile = ref(null)
 const selfRestoring = ref(false)
-const selfRestoreMsg = ref('')
 
 // Server-backup state (admin only)
 const backingUp = ref(false)
-const backupSuccess = ref(null)   // BackupAllResponse fields when last backup succeeded
 const backups = ref([])
 const backupsLoading = ref(false)
 const restoring = ref(false)
@@ -417,7 +356,6 @@ const restoring = ref(false)
 const s3Backups = ref([])
 const s3Loading = ref(false)
 const s3Unavailable = ref(false)
-const restoreMsg = ref('')
 const downloading = ref(false)
 const deleting = ref(false)
 
@@ -465,7 +403,6 @@ function toExportRecord(m) {
 async function doExport() {
   exporting.value = true
   error.value = ''
-  exportMsg.value = ''
   try {
     const ns = exportNs.value.trim() || '*'
     const res = await memoryClient.list({ namespace: ns, limit: MAX_EXPORT })
@@ -480,7 +417,7 @@ async function doExport() {
     if (recs.length >= MAX_EXPORT) {
       msg += ` (capped at ${MAX_EXPORT} — the store may hold more; export per-namespace to be sure.)`
     }
-    exportMsg.value = msg
+    toast.success(msg)
   } catch (e) {
     handleError(e)
   } finally {
@@ -512,25 +449,22 @@ function downloadBytes(data, filename) {
 
 function onFile(e) {
   file.value = e.target.files?.[0] || null
-  importMsg.value = ''
   importInfo.value = file.value ? `Selected: ${file.value.name} (${(file.value.size / 1024).toFixed(1)} KB)` : ''
 }
 
 function onSelfFile(e) {
   selfFile.value = e.target.files?.[0] || null
-  selfRestoreMsg.value = ''
 }
 
 // ---- My data (self) backup ----
 
 async function doBackupSelf() {
   selfBacking.value = true
-  selfBackupMsg.value = ''
   error.value = ''
   try {
     const res = await memoryClient.backupSelf({})
     downloadBytes(res.data, res.name)
-    selfBackupMsg.value = `Downloaded: ${res.memories} memories, ${res.summaries} summaries.`
+    toast.success(`Downloaded: ${res.memories} memories, ${res.summaries} summaries.`)
   } catch (e) {
     handleError(e)
   } finally {
@@ -540,19 +474,19 @@ async function doBackupSelf() {
 
 async function doRestoreSelf() {
   if (!selfFile.value) return
-  if (!window.confirm(
-    `Restore "${selfFile.value.name}" into your account?\n\n` +
-    `Existing memories are upserted by id — re-running is safe.`
-  )) return
+  if (!(await confirmDialog(
+    `Restore "${selfFile.value.name}" into your account? Existing memories are upserted by id — re-running is safe.`,
+    { actionLabel: 'Restore' }
+  ))) return
 
   selfRestoring.value = true
-  selfRestoreMsg.value = ''
   error.value = ''
   try {
     const buf = await selfFile.value.arrayBuffer()
     const res = await memoryClient.restoreSelf({ data: new Uint8Array(buf) })
-    selfRestoreMsg.value =
+    toast.success(
       `Queued ${res.memoriesQueued} memories and ${res.summariesQueued} summaries for re-indexing.`
+    )
     selfFile.value = null
     if (selfFileInput.value) selfFileInput.value.value = ''
   } catch (e) {
@@ -580,18 +514,12 @@ async function loadBackups() {
 async function doBackupAll() {
   backingUp.value = true
   error.value = ''
-  backupSuccess.value = null
   try {
     const res = await memoryClient.backupAll({})
-    backupSuccess.value = {
-      path: res.path,
-      tenants: res.tenants,
-      memories: res.memories,
-      summaries: res.summaries,
-      users: res.users,
-      apiKeys: res.apiKeys,
-      s3Result: res.s3Result,
-    }
+    let msg = `Backup written: ${res.path} — ${res.tenants} tenant(s), ${res.memories} memories, ` +
+      `${res.summaries} summaries, ${res.users} users, ${res.apiKeys} API key(s).`
+    if (res.s3Result) msg += ` Offsite: ${res.s3Result}`
+    toast.success(msg)
     await loadBackups()
   } catch (e) {
     handleError(e)
@@ -614,21 +542,21 @@ async function doDownloadBackup(b) {
 }
 
 async function doRestoreAll(b) {
-  if (!window.confirm(
-    `Restore backup "${b.name}"?\n\n` +
-    `Existing users and API keys are left untouched. Memories and summaries will be queued ` +
-    `for re-embedding — this may take a while.`
-  )) return
+  if (!(await confirmDialog(
+    `Restore backup "${b.name}"? Existing users and API keys are left untouched. Memories and ` +
+    `summaries will be queued for re-embedding — this may take a while.`,
+    { actionLabel: 'Restore' }
+  ))) return
 
   restoring.value = true
-  restoreMsg.value = ''
   error.value = ''
   try {
     const res = await memoryClient.restoreAll({ name: b.name })
-    restoreMsg.value =
+    toast.success(
       `Restore complete: ${res.usersCreated} user(s) created, ${res.usersSkipped} skipped; ` +
       `${res.apiKeysCreated} API key(s) created, ${res.apiKeysSkipped} skipped; ` +
       `${res.memoriesQueued} memories and ${res.summariesQueued} summaries queued for re-indexing.`
+    )
   } catch (e) {
     handleError(e)
   } finally {
@@ -637,7 +565,7 @@ async function doRestoreAll(b) {
 }
 
 async function doDeleteBackup(b) {
-  if (!window.confirm(`Delete backup "${b.name}"? This cannot be undone.`)) return
+  if (!(await confirmDialog(`Delete backup "${b.name}"? This cannot be undone.`, { actionLabel: 'Delete' }))) return
 
   deleting.value = true
   error.value = ''
@@ -672,21 +600,21 @@ async function loadS3Backups() {
 }
 
 async function doRestoreS3(b) {
-  if (!window.confirm(
-    `Restore backup "${b.name}" from S3?\n\n` +
-    `Existing users and API keys are left untouched. Memories and summaries will be queued ` +
-    `for re-embedding — this may take a while.`
-  )) return
+  if (!(await confirmDialog(
+    `Restore backup "${b.name}" from S3? Existing users and API keys are left untouched. Memories ` +
+    `and summaries will be queued for re-embedding — this may take a while.`,
+    { actionLabel: 'Restore' }
+  ))) return
 
   restoring.value = true
-  restoreMsg.value = ''
   error.value = ''
   try {
     const res = await memoryClient.restoreAll({ s3Key: b.name })
-    restoreMsg.value =
+    toast.success(
       `Restore complete: ${res.usersCreated} user(s) created, ${res.usersSkipped} skipped; ` +
       `${res.apiKeysCreated} API key(s) created, ${res.apiKeysSkipped} skipped; ` +
       `${res.memoriesQueued} memories and ${res.summariesQueued} summaries queued for re-indexing.`
+    )
   } catch (e) {
     handleError(e)
   } finally {
@@ -705,7 +633,6 @@ onMounted(() => {
 async function doImport() {
   if (!file.value) return
   error.value = ''
-  importMsg.value = ''
   try {
     const text = await file.value.text()
     let recs
@@ -752,7 +679,10 @@ async function doImport() {
       error.value = `Nothing to import (${skipped} record(s) had no text).`
       return
     }
-    if (!confirm(`Import ${mems.length} memor${mems.length === 1 ? 'y' : 'ies'}? Existing ids will be overwritten.`)) {
+    if (!(await confirmDialog(
+      `Import ${mems.length} memor${mems.length === 1 ? 'y' : 'ies'}? Existing ids will be overwritten.`,
+      { actionLabel: 'Import' }
+    ))) {
       return
     }
 
@@ -764,9 +694,9 @@ async function doImport() {
       const resp = await memoryClient.restoreMemories({ memories: batch })
       queued += resp.queued
     }
-    importMsg.value = `Queued ${queued}/${mems.length} for re-indexing` +
+    toast.success(`Queued ${queued}/${mems.length} for re-indexing` +
       (skipped ? ` (${skipped} skipped — no text).` : '.') +
-      ' They will appear once the worker re-embeds them.'
+      ' They will appear once the worker re-embeds them.')
     importInfo.value = ''
     file.value = null
     if (fileInput.value) fileInput.value.value = ''

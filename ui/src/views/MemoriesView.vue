@@ -12,9 +12,6 @@
             <Input v-model="draft.tags" class="flex-1" placeholder="tags, comma separated" />
             <Button size="sm" :disabled="!draft.text.trim() || saving" @click="save">Save</Button>
           </div>
-          <p v-if="saved" class="text-sm text-emerald-600 dark:text-emerald-400">
-            Queued for indexing — it will appear shortly.
-          </p>
         </CardContent>
       </Card>
     </div>
@@ -34,6 +31,21 @@
       </Button>
     </div>
 
+    <div v-if="activeTags.length" class="flex flex-wrap items-center gap-2">
+      <span class="text-xs text-muted-foreground">Filtering by tag:</span>
+      <Badge
+        v-for="t in activeTags"
+        :key="t"
+        variant="secondary"
+        class="cursor-pointer hover:bg-secondary/80"
+        title="Remove tag filter"
+        @click="toggleTag(t)"
+      >
+        <Tag class="size-3" />{{ t }}
+        <X class="size-3" />
+      </Badge>
+    </div>
+
     <Alert v-if="error" variant="destructive">
       <AlertDescription>{{ error }}</AlertDescription>
     </Alert>
@@ -49,36 +61,36 @@
 
     <Card v-for="m in memories" :key="m.id">
       <CardContent class="py-4">
-        <div v-if="editId === m.id" class="space-y-2">
-          <Textarea v-model="editDraft.text" rows="5" placeholder="Memory text (Markdown)…" />
-          <div class="flex flex-wrap gap-2">
-            <Input v-model="editDraft.namespace" class="flex-1" placeholder="namespace" />
-            <Input v-model="editDraft.tags" class="flex-1" placeholder="tags, comma separated" />
+        <div class="flex items-start justify-between gap-3">
+          <div class="min-w-0 flex-1 cursor-pointer" @click="openInspector(m, resolveMemory)">
+            <ClampedMarkdown :html="renderMarkdown(m.text)" />
           </div>
-          <div class="flex items-center gap-2">
-            <Button size="sm" :disabled="!editDraft.text.trim() || editing" @click="saveEdit(m)">Save</Button>
-            <Button size="sm" variant="outline" :disabled="editing" @click="cancelEdit">Cancel</Button>
-            <span v-if="editing" class="text-sm text-muted-foreground">Queued for re-indexing…</span>
+          <div class="flex shrink-0 gap-1">
+            <Button variant="outline" size="icon" class="size-8" title="Edit" aria-label="Edit memory" @click="openInspector(m, resolveMemory)">
+              <Pencil class="size-3.5" />
+            </Button>
+            <Button variant="outline" size="icon" class="size-8 text-destructive hover:text-destructive" title="Delete" aria-label="Delete memory" @click="remove(m.id)">
+              <Trash2 class="size-3.5" />
+            </Button>
           </div>
         </div>
-        <template v-else>
-          <div class="flex items-start justify-between gap-3">
-            <div class="markdown-body min-w-0 text-sm" v-html="renderMarkdown(m.text)"></div>
-            <div class="flex shrink-0 gap-1">
-              <Button variant="outline" size="icon" class="size-8" title="Edit" aria-label="Edit memory" @click="startEdit(m)">
-                <Pencil class="size-3.5" />
-              </Button>
-              <Button variant="outline" size="icon" class="size-8 text-destructive hover:text-destructive" title="Delete" aria-label="Delete memory" @click="remove(m.id)">
-                <Trash2 class="size-3.5" />
-              </Button>
-            </div>
-          </div>
-        </template>
         <div class="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-          <Badge variant="secondary">
+          <Badge
+            variant="secondary"
+            class="cursor-pointer hover:bg-secondary/80"
+            title="Filter by namespace"
+            @click="filterByNamespace(m.namespace)"
+          >
             <Layers class="size-3" />{{ m.namespace }}
           </Badge>
-          <Badge v-for="t in m.tags" :key="t" variant="outline">
+          <Badge
+            v-for="t in m.tags"
+            :key="t"
+            variant="outline"
+            class="cursor-pointer hover:bg-accent"
+            title="Filter by tag"
+            @click="toggleTag(t)"
+          >
             <Tag class="size-3" />{{ t }}
           </Badge>
           <span v-if="m.source">src: {{ m.source }}</span>
@@ -100,12 +112,16 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { Code, ConnectError } from '@connectrpc/connect'
+import { toast } from 'vue-sonner'
 import { memoryClient } from '@/utils/connect'
 import { renderMarkdown } from '@/utils/markdown'
 import { useAuthStore } from '@/stores/auth'
+import { confirmDialog } from '@/lib/confirm'
+import { openInspector, inspectorChanged } from '@/lib/inspector'
+import ClampedMarkdown from '@/components/ClampedMarkdown.vue'
 import {
   Database,
   Flame,
@@ -119,6 +135,7 @@ import {
   Search as SearchIcon,
   Tag,
   Trash2,
+  X,
 } from 'lucide-vue-next'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
@@ -133,18 +150,14 @@ const auth = useAuthStore()
 
 const namespace = ref('*')
 const query = ref('')
+const activeTags = ref([])
 const memories = ref([])
 const loading = ref(false)
 const error = ref('')
 
 const showNew = ref(false)
 const saving = ref(false)
-const saved = ref(false)
 const draft = ref({ text: '', namespace: '', tags: '' })
-
-const editId = ref(null)
-const editing = ref(false)
-const editDraft = ref({ text: '', namespace: '', tags: '' })
 
 function formatDate(ts) {
   try {
@@ -170,10 +183,10 @@ async function reload() {
     if (query.value.trim()) {
       // noReinforce: browsing in the UI must not count as a recall — only the
       // agent's (MCP) searches feed the living-memory usage signal.
-      const res = await memoryClient.search({ query: query.value, namespace: namespace.value, limit: 50, noReinforce: true })
+      const res = await memoryClient.search({ query: query.value, namespace: namespace.value, limit: 50, tags: activeTags.value, noReinforce: true })
       memories.value = res.hits.map((h) => ({ ...h.memory, _distance: h.distance }))
     } else {
-      const res = await memoryClient.list({ namespace: namespace.value, limit: 50 })
+      const res = await memoryClient.list({ namespace: namespace.value, limit: 50, tags: activeTags.value })
       memories.value = res.memories
     }
   } catch (e) {
@@ -183,15 +196,30 @@ async function reload() {
   }
 }
 
+function filterByNamespace(ns) {
+  namespace.value = ns
+  reload()
+}
+
+function toggleTag(t) {
+  const i = activeTags.value.indexOf(t)
+  if (i === -1) activeTags.value.push(t)
+  else activeTags.value.splice(i, 1)
+  reload()
+}
+
+function resolveMemory(id) {
+  return memories.value.find((x) => x.id === id)
+}
+
 async function save() {
   saving.value = true
-  saved.value = false
   error.value = ''
   try {
     const tags = draft.value.tags.split(',').map((t) => t.trim()).filter(Boolean)
     await memoryClient.save({ text: draft.value.text, namespace: draft.value.namespace, tags })
     draft.value = { text: '', namespace: '', tags: '' }
-    saved.value = true
+    toast.success('Queued for indexing — it will appear shortly.')
   } catch (e) {
     handleError(e)
   } finally {
@@ -199,46 +227,18 @@ async function save() {
   }
 }
 
-function startEdit(m) {
-  editId.value = m.id
-  editDraft.value = { text: m.text, namespace: m.namespace || '', tags: (m.tags || []).join(', ') }
-}
-
-function cancelEdit() {
-  editId.value = null
-}
-
-async function saveEdit(m) {
-  editing.value = true
-  error.value = ''
-  try {
-    const tags = editDraft.value.tags.split(',').map((t) => t.trim()).filter(Boolean)
-    await memoryClient.updateMemory({
-      id: m.id,
-      text: editDraft.value.text,
-      tags,
-      replaceTags: true,
-      namespace: editDraft.value.namespace,
-    })
-    editId.value = null
-    // Re-indexing is async; give the worker a moment, then refresh.
-    setTimeout(reload, 1200)
-  } catch (e) {
-    handleError(e)
-  } finally {
-    editing.value = false
-  }
-}
-
 async function remove(id) {
-  if (!confirm('Delete this memory?')) return
+  if (!(await confirmDialog('Delete this memory?', { actionLabel: 'Delete' }))) return
   try {
     await memoryClient.delete({ id })
     memories.value = memories.value.filter((m) => m.id !== id)
+    toast.success('Memory deleted')
   } catch (e) {
     handleError(e)
   }
 }
+
+watch(inspectorChanged, reload)
 
 onMounted(reload)
 </script>

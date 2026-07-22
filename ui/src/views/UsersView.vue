@@ -3,7 +3,6 @@
     <h4 class="flex items-center gap-2 text-lg font-semibold"><Users class="size-5" />Users</h4>
 
     <Alert v-if="error" variant="destructive"><AlertDescription>{{ error }}</AlertDescription></Alert>
-    <p v-if="notice" class="text-sm text-emerald-600 dark:text-emerald-400">{{ notice }}</p>
 
     <!-- Create user form -->
     <Card>
@@ -153,9 +152,11 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
+import { toast } from 'vue-sonner'
 import { Code, ConnectError } from '@connectrpc/connect'
 import { memoryClient } from '@/utils/connect'
 import { useAuthStore } from '@/stores/auth'
+import { confirmDialog } from '@/lib/confirm'
 import { formatTimestamp } from '@/utils/text'
 import { ArrowDown, ArrowUp, KeyRound, Loader2, RotateCw, Trash2, UserPlus, Users } from 'lucide-vue-next'
 import { Alert, AlertDescription } from '@/components/ui/alert'
@@ -175,7 +176,6 @@ const users = ref([])
 const loading = ref(false)
 const busy = ref(false)
 const error = ref('')
-const notice = ref('')
 
 const newUser = ref({ username: '', password: '', role: 'user' })
 
@@ -222,14 +222,14 @@ async function createUser() {
   if (!newUser.value.username.trim() || !newUser.value.password) return
   busy.value = true
   error.value = ''
-  notice.value = ''
   try {
+    const username = newUser.value.username.trim()
     await memoryClient.createUser({
-      username: newUser.value.username.trim(),
+      username,
       password: newUser.value.password,
       role: newUser.value.role,
     })
-    notice.value = `User "${newUser.value.username.trim()}" created.`
+    toast.success(`User "${username}" created.`)
     newUser.value = { username: '', password: '', role: 'user' }
     await reload()
   } catch (e) {
@@ -240,13 +240,12 @@ async function createUser() {
 }
 
 async function deleteUser(u) {
-  if (!window.confirm(`Delete user "${u.username}"? This removes their API keys and all their memories.`)) return
+  if (!(await confirmDialog(`Delete user "${u.username}"? This removes their API keys and all their memories.`, { actionLabel: 'Delete' }))) return
   busy.value = true
   error.value = ''
-  notice.value = ''
   try {
     await memoryClient.deleteUser({ username: u.username })
-    notice.value = `User "${u.username}" deleted.`
+    toast.success(`User "${u.username}" deleted.`)
     await reload()
   } catch (e) {
     handleError(e)
@@ -258,13 +257,12 @@ async function deleteUser(u) {
 async function toggleRole(u) {
   const newRole = u.role === 'admin' ? 'user' : 'admin'
   const action = newRole === 'admin' ? 'promote to admin' : 'demote to user'
-  if (!window.confirm(`${action} "${u.username}"?`)) return
+  if (!(await confirmDialog(`${action} "${u.username}"?`, { actionLabel: newRole === 'admin' ? 'Promote' : 'Demote', destructive: false }))) return
   busy.value = true
   error.value = ''
-  notice.value = ''
   try {
     await memoryClient.setUserRole({ username: u.username, role: newRole })
-    notice.value = `Role updated for "${u.username}".`
+    toast.success(`Role updated for "${u.username}".`)
     await reload()
   } catch (e) {
     handleError(e)
@@ -275,7 +273,6 @@ async function toggleRole(u) {
 
 function startResetPassword(u) {
   error.value = ''
-  notice.value = ''
   resetTarget.value = u
   resetPassword.value = ''
 }
@@ -294,7 +291,7 @@ async function confirmReset() {
       username: resetTarget.value.username,
       newPassword: resetPassword.value,
     })
-    notice.value = `Password reset for "${resetTarget.value.username}".`
+    toast.success(`Password reset for "${resetTarget.value.username}".`)
     cancelReset()
   } catch (e) {
     handleError(e)

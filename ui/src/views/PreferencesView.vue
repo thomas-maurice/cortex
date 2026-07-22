@@ -21,7 +21,6 @@
             <Input v-model="draft.tags" class="flex-1" placeholder="extra tags, comma separated (optional)" />
             <Button size="sm" :disabled="!draft.text.trim() || saving" @click="save">Save</Button>
           </div>
-          <p v-if="saved" class="text-sm text-emerald-600 dark:text-emerald-400">Queued for indexing — it will appear shortly.</p>
         </CardContent>
       </Card>
     </div>
@@ -81,6 +80,8 @@ import { Code, ConnectError } from '@connectrpc/connect'
 import { memoryClient } from '@/utils/connect'
 import { renderMarkdown } from '@/utils/markdown'
 import { useAuthStore } from '@/stores/auth'
+import { confirmDialog } from '@/lib/confirm'
+import { toast } from 'vue-sonner'
 import { Loader2, Pencil, Plus, SlidersHorizontal, Tag, Trash2 } from 'lucide-vue-next'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
@@ -103,7 +104,6 @@ const error = ref('')
 
 const showNew = ref(false)
 const saving = ref(false)
-const saved = ref(false)
 const draft = ref({ text: '', tags: '' })
 
 const editId = ref(null)
@@ -155,12 +155,11 @@ async function reload() {
 
 async function save() {
   saving.value = true
-  saved.value = false
   error.value = ''
   try {
     await memoryClient.save({ text: draft.value.text, namespace: PREF_NAMESPACE, tags: withPrefTag(draft.value.tags) })
     draft.value = { text: '', tags: '' }
-    saved.value = true
+    toast.success('Queued for indexing — it will appear shortly.')
     setTimeout(reload, 1200) // indexing is async; give the worker a moment
   } catch (e) {
     handleError(e)
@@ -200,11 +199,12 @@ async function saveEdit(m) {
 }
 
 async function remove(id) {
-  if (!confirm('Delete this preference? This cannot be undone.')) return
+  if (!(await confirmDialog('Delete this preference? This cannot be undone.', { title: 'Delete preference', actionLabel: 'Delete' }))) return
   error.value = ''
   try {
     await memoryClient.delete({ id })
     prefs.value = prefs.value.filter((m) => m.id !== id)
+    toast.success('Preference deleted')
   } catch (e) {
     handleError(e)
   }

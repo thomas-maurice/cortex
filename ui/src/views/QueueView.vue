@@ -84,10 +84,12 @@
 <script setup>
 import { ref, reactive, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
+import { toast } from 'vue-sonner'
 import { Code, ConnectError } from '@connectrpc/connect'
 import { memoryClient } from '@/utils/connect'
 import { DeadAction } from '@/gen/cortex/v1/cortex_pb'
 import { useAuthStore } from '@/stores/auth'
+import { confirmDialog } from '@/lib/confirm'
 import { CircleCheck, ListChecks, RotateCcw, RotateCw, Trash2, TriangleAlert } from 'lucide-vue-next'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
@@ -166,10 +168,11 @@ function stopPolling() {
 }
 
 async function requeue() {
-  if (!confirm('Requeue all dead-lettered memories for indexing?')) return
+  if (!(await confirmDialog('Requeue all dead-lettered items for indexing?', { actionLabel: 'Requeue', destructive: false }))) return
   busy.value = true
   try {
     await memoryClient.dead({ action: DeadAction.REQUEUE })
+    toast.success('Requeued all dead-lettered items.')
     await reload()
   } catch (e) {
     handleError(e)
@@ -179,10 +182,11 @@ async function requeue() {
 }
 
 async function purge() {
-  if (!confirm('Permanently purge all dead-lettered memories? This cannot be undone.')) return
+  if (!(await confirmDialog('Permanently purge all dead-lettered items? This cannot be undone.', { actionLabel: 'Purge' }))) return
   busy.value = true
   try {
     await memoryClient.dead({ action: DeadAction.PURGE })
+    toast.success('Purged all dead-lettered items.')
     await reload()
   } catch (e) {
     handleError(e)

@@ -3,7 +3,6 @@
     <h4 class="flex items-center gap-2 text-lg font-semibold"><KeyRound class="size-5" />API Keys</h4>
 
     <Alert v-if="error" variant="destructive"><AlertDescription>{{ error }}</AlertDescription></Alert>
-    <p v-if="notice" class="text-sm text-emerald-600 dark:text-emerald-400">{{ notice }}</p>
 
     <!-- New key reveal (shown immediately after creation) -->
     <Alert v-if="createdKey" class="border-amber-500/50 text-amber-600 dark:text-amber-400">
@@ -88,9 +87,11 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
+import { toast } from 'vue-sonner'
 import { Code, ConnectError } from '@connectrpc/connect'
 import { memoryClient } from '@/utils/connect'
 import { useAuthStore } from '@/stores/auth'
+import { confirmDialog } from '@/lib/confirm'
 import { formatTimestamp } from '@/utils/text'
 import { Copy, KeyRound, Loader2, Plus, RotateCw, Trash2 } from 'lucide-vue-next'
 import { Alert, AlertDescription } from '@/components/ui/alert'
@@ -106,7 +107,6 @@ const keys = ref([])
 const loading = ref(false)
 const busy = ref(false)
 const error = ref('')
-const notice = ref('')
 const newLabel = ref('')
 const createdKey = ref('')
 
@@ -136,12 +136,11 @@ async function reload() {
 async function createKey() {
   busy.value = true
   error.value = ''
-  notice.value = ''
   createdKey.value = ''
   try {
     const res = await memoryClient.createApiKey({ label: newLabel.value.trim() })
     createdKey.value = res.rawKey
-    notice.value = 'API key created. Copy it now — it will not be shown again.'
+    toast.success('API key created. Copy it now — it will not be shown again.')
     newLabel.value = ''
     await reload()
   } catch (e) {
@@ -153,13 +152,12 @@ async function createKey() {
 
 async function revokeKey(k) {
   const label = k.label ? `"${k.label}" (${k.prefix}…)` : `${k.prefix}…`
-  if (!window.confirm(`Revoke API key ${label}? Any client using it will lose access immediately.`)) return
+  if (!(await confirmDialog(`Revoke API key ${label}? Any client using it will lose access immediately.`, { actionLabel: 'Revoke' }))) return
   busy.value = true
   error.value = ''
-  notice.value = ''
   try {
     await memoryClient.deleteApiKey({ id: k.id })
-    notice.value = `Key ${k.prefix}… revoked.`
+    toast.success(`Key ${k.prefix}… revoked.`)
     await reload()
   } catch (e) {
     handleError(e)
@@ -171,7 +169,7 @@ async function revokeKey(k) {
 async function copyKey(raw) {
   try {
     await navigator.clipboard.writeText(raw)
-    notice.value = 'Key copied to clipboard.'
+    toast.success('Key copied to clipboard.')
   } catch {
     error.value = 'Could not copy — please select and copy the key manually.'
   }

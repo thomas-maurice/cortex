@@ -5,7 +5,6 @@
     <Alert v-if="error" variant="destructive">
       <AlertDescription>{{ error }}</AlertDescription>
     </Alert>
-    <p v-if="notice" class="text-sm text-emerald-600 dark:text-emerald-400">{{ notice }}</p>
 
     <div class="flex items-center gap-2">
       <Button size="sm" :disabled="loading" @click="reload">
@@ -77,7 +76,9 @@
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { Code, ConnectError } from '@connectrpc/connect'
+import { toast } from 'vue-sonner'
 import { memoryClient } from '@/utils/connect'
+import { confirmDialog } from '@/lib/confirm'
 import { useAuthStore } from '@/stores/auth'
 import { formatTimestamp } from '@/utils/text'
 import { Layers, Loader2, Pencil, RotateCw, Trash2 } from 'lucide-vue-next'
@@ -93,7 +94,6 @@ const namespaces = ref([])
 const loading = ref(false)
 const busy = ref(false)
 const error = ref('')
-const notice = ref('')
 
 const renameOf = ref(null)
 const renameTo = ref('')
@@ -110,7 +110,6 @@ function handleError(e) {
 
 function startRename(ns) {
   error.value = ''
-  notice.value = ''
   renameOf.value = ns.name
   renameTo.value = ns.name
 }
@@ -125,10 +124,9 @@ async function confirmRename(ns) {
   if (!to || to === ns.name) return
   busy.value = true
   error.value = ''
-  notice.value = ''
   try {
     const res = await memoryClient.renameNamespace({ from: ns.name, to })
-    notice.value = `Renamed "${ns.name}" → "${to}" (${Number(res.memoriesUpdated)} memories, ${Number(res.summariesUpdated)} summaries).`
+    toast.success(`Renamed "${ns.name}" → "${to}" (${Number(res.memoriesUpdated)} memories, ${Number(res.summariesUpdated)} summaries).`)
     cancelRename()
     await reload()
   } catch (e) {
@@ -139,23 +137,18 @@ async function confirmRename(ns) {
 }
 
 async function remove(ns) {
-  // Bulk irreversible delete — require typing the namespace name to confirm.
-  const typed = window.prompt(
+  // Bulk irreversible delete.
+  const ok = await confirmDialog(
     `Delete the entire "${ns.name}" namespace? This permanently removes ` +
-      `${Number(ns.memoryCount)} memories and ${Number(ns.summaryCount)} summaries and cannot be undone.\n\n` +
-      `Type the namespace name to confirm:`,
+      `${Number(ns.memoryCount)} memories and ${Number(ns.summaryCount)} summaries and cannot be undone.`,
+    { title: 'Delete namespace', actionLabel: 'Delete', destructive: true, typeToConfirm: ns.name },
   )
-  if (typed === null) return
-  if (typed !== ns.name) {
-    error.value = 'Confirmation text did not match — namespace not deleted.'
-    return
-  }
+  if (!ok) return
   busy.value = true
   error.value = ''
-  notice.value = ''
   try {
     const res = await memoryClient.deleteNamespace({ namespace: ns.name })
-    notice.value = `Deleted "${ns.name}" (${Number(res.memoriesDeleted)} memories, ${Number(res.summariesDeleted)} summaries).`
+    toast.success(`Deleted "${ns.name}" (${Number(res.memoriesDeleted)} memories, ${Number(res.summariesDeleted)} summaries).`)
     await reload()
   } catch (e) {
     handleError(e)
