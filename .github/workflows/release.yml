@@ -28,7 +28,7 @@ jobs:
 
       # Builds the binaries (the before-hook builds the embedded UI), packages
       # tar.gz archives + checksums, and publishes a GitHub Release.
-      - uses: goreleaser/goreleaser-action@v6
+      - uses: goreleaser/goreleaser-action@v7
         with:
           version: "~> v2"
           args: release --clean
