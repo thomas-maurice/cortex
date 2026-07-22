@@ -1,73 +1,75 @@
 <template>
-  <div>
-    <h4 class="mb-3"><font-awesome-icon :icon="['fas', 'layer-group']" class="me-2" />Namespaces</h4>
+  <div class="space-y-4">
+    <h1 class="flex items-center gap-2 text-xl font-semibold"><Layers class="size-5" />Namespaces</h1>
 
-    <div v-if="error" class="alert alert-danger py-2">{{ error }}</div>
-    <div v-if="notice" class="alert alert-success py-2">{{ notice }}</div>
+    <Alert v-if="error" variant="destructive">
+      <AlertDescription>{{ error }}</AlertDescription>
+    </Alert>
+    <p v-if="notice" class="text-sm text-emerald-600 dark:text-emerald-400">{{ notice }}</p>
 
-    <div class="d-flex align-items-center gap-2 mb-3">
-      <button class="btn btn-primary btn-sm" :disabled="loading" @click="reload">
-        <font-awesome-icon :icon="['fas', 'rotate']" class="me-1" />Refresh
-      </button>
+    <div class="flex items-center gap-2">
+      <Button size="sm" :disabled="loading" @click="reload">
+        <RotateCw class="size-4" />Refresh
+      </Button>
     </div>
 
-    <div v-if="loading" class="text-center text-muted py-5">
-      <font-awesome-icon :icon="['fas', 'spinner']" spin size="2x" />
+    <div v-if="loading" class="py-16 text-center text-muted-foreground" role="status" aria-live="polite" aria-label="Loading namespaces">
+      <Loader2 class="mx-auto size-8 animate-spin" />
     </div>
 
-    <div v-else-if="namespaces.length === 0" class="text-center text-muted py-5">
-      <font-awesome-icon :icon="['fas', 'layer-group']" size="2x" class="mb-2 d-block" />
+    <div v-else-if="namespaces.length === 0" class="py-16 text-center text-muted-foreground">
+      <Layers class="mx-auto mb-2 size-8" />
       No namespaces yet.
     </div>
 
-    <table v-else class="table table-sm align-middle">
-      <thead>
-        <tr>
-          <th>Namespace</th>
-          <th class="text-end">Memories</th>
-          <th class="text-end">Summaries</th>
-          <th>Last activity</th>
-          <th class="text-end" style="width: 1%">Actions</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr v-for="ns in namespaces" :key="ns.name">
-          <td>
-            <template v-if="renameOf === ns.name">
-              <input
+    <div v-else class="rounded-md border">
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead>Namespace</TableHead>
+            <TableHead class="text-right">Memories</TableHead>
+            <TableHead class="text-right">Summaries</TableHead>
+            <TableHead>Last activity</TableHead>
+            <TableHead class="text-right" style="width: 1%">Actions</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          <TableRow v-for="ns in namespaces" :key="ns.name">
+            <TableCell>
+              <Input
+                v-if="renameOf === ns.name"
                 v-model="renameTo"
-                class="form-control form-control-sm"
-                style="max-width: 360px"
+                class="h-8 max-w-[360px]"
                 :disabled="busy"
                 placeholder="new namespace…"
                 @keyup.enter="confirmRename(ns)"
                 @keyup.esc="cancelRename"
               />
-            </template>
-            <span v-else class="font-monospace">{{ ns.name || '(empty)' }}</span>
-          </td>
-          <td class="text-end">{{ Number(ns.memoryCount) }}</td>
-          <td class="text-end">{{ Number(ns.summaryCount) }}</td>
-          <td class="small text-muted">{{ ns.lastUpdated ? formatTimestamp(ns.lastUpdated) : '—' }}</td>
-          <td class="text-end text-nowrap">
-            <template v-if="renameOf === ns.name">
-              <button class="btn btn-primary btn-sm me-1" :disabled="busy || !renameTo.trim() || renameTo.trim() === ns.name" @click="confirmRename(ns)">
-                Save
-              </button>
-              <button class="btn btn-outline-secondary btn-sm" :disabled="busy" @click="cancelRename">Cancel</button>
-            </template>
-            <template v-else>
-              <button class="btn btn-outline-secondary btn-sm me-1" title="Rename" aria-label="Rename" :disabled="busy" @click="startRename(ns)">
-                <font-awesome-icon :icon="['fas', 'pen']" />
-              </button>
-              <button class="btn btn-outline-danger btn-sm" title="Delete namespace" aria-label="Delete namespace" :disabled="busy" @click="remove(ns)">
-                <font-awesome-icon :icon="['fas', 'trash']" />
-              </button>
-            </template>
-          </td>
-        </tr>
-      </tbody>
-    </table>
+              <span v-else class="font-mono">{{ ns.name || '(empty)' }}</span>
+            </TableCell>
+            <TableCell class="text-right">{{ Number(ns.memoryCount) }}</TableCell>
+            <TableCell class="text-right">{{ Number(ns.summaryCount) }}</TableCell>
+            <TableCell class="text-sm text-muted-foreground">{{ ns.lastUpdated ? formatTimestamp(ns.lastUpdated) : '—' }}</TableCell>
+            <TableCell class="text-right whitespace-nowrap">
+              <template v-if="renameOf === ns.name">
+                <Button size="sm" class="mr-1" :disabled="busy || !renameTo.trim() || renameTo.trim() === ns.name" @click="confirmRename(ns)">
+                  Save
+                </Button>
+                <Button size="sm" variant="outline" :disabled="busy" @click="cancelRename">Cancel</Button>
+              </template>
+              <template v-else>
+                <Button variant="outline" size="icon" class="mr-1 size-8" title="Rename" aria-label="Rename" :disabled="busy" @click="startRename(ns)">
+                  <Pencil class="size-3.5" />
+                </Button>
+                <Button variant="outline" size="icon" class="size-8 text-destructive hover:text-destructive" title="Delete namespace" aria-label="Delete namespace" :disabled="busy" @click="remove(ns)">
+                  <Trash2 class="size-3.5" />
+                </Button>
+              </template>
+            </TableCell>
+          </TableRow>
+        </TableBody>
+      </Table>
+    </div>
   </div>
 </template>
 
@@ -78,6 +80,11 @@ import { Code, ConnectError } from '@connectrpc/connect'
 import { memoryClient } from '@/utils/connect'
 import { useAuthStore } from '@/stores/auth'
 import { formatTimestamp } from '@/utils/text'
+import { Layers, Loader2, Pencil, RotateCw, Trash2 } from 'lucide-vue-next'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 
 const router = useRouter()
 const auth = useAuthStore()

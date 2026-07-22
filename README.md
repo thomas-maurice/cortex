@@ -161,7 +161,7 @@ and `cortex_recall_session`.
 
 ## Web UI
 
-The `cortex-server` binary also serves a web UI (Vue 3 + Bootstrap, embedded in
+The `cortex-server` binary also serves a web UI (Vue 3 + Tailwind/shadcn-vue, embedded in
 the binary via `go:embed` — nothing extra to deploy). It is served on the same
 port as the Connect API; open the server's address in a browser. Views:
 

@@ -1,31 +1,32 @@
 <template>
-  <div class="d-flex justify-content-center align-items-center" style="min-height: 80vh">
-    <div class="card shadow-lg" style="width: 100%; max-width: 400px">
-      <div class="card-body p-5">
-        <div class="text-center mb-4">
-          <font-awesome-icon :icon="['fas', 'brain']" size="3x" class="text-primary mb-3" />
-          <h3 class="card-title">Cortex</h3>
-          <p class="text-muted">Sign in to your second brain</p>
-        </div>
+  <div class="flex items-center justify-center" style="min-height: 80vh">
+    <Card class="w-full max-w-sm shadow-lg">
+      <CardHeader class="text-center">
+        <Brain class="mx-auto mb-2 size-10 text-primary" />
+        <CardTitle class="text-xl">Cortex</CardTitle>
+        <CardDescription>Sign in to your second brain</CardDescription>
+      </CardHeader>
+      <CardContent>
+        <Alert v-if="error" variant="destructive" class="mb-4">
+          <AlertDescription>{{ error }}</AlertDescription>
+        </Alert>
 
-        <div v-if="error" class="alert alert-danger" role="alert">{{ error }}</div>
-
-        <form @submit.prevent="handleLogin">
-          <div class="mb-3">
-            <label for="username" class="form-label">Username</label>
-            <input id="username" v-model="username" type="text" class="form-control" required :disabled="loading" />
+        <form class="grid gap-4" @submit.prevent="handleLogin">
+          <div class="grid gap-2">
+            <Label for="username">Username</Label>
+            <Input id="username" v-model="username" type="text" required :disabled="loading" />
           </div>
-          <div class="mb-4">
-            <label for="password" class="form-label">Password</label>
-            <input id="password" v-model="password" type="password" class="form-control" required :disabled="loading" />
+          <div class="grid gap-2">
+            <Label for="password">Password</Label>
+            <Input id="password" v-model="password" type="password" required :disabled="loading" />
           </div>
-          <button type="submit" class="btn btn-primary w-100" :disabled="loading">
-            <span v-if="loading" class="spinner-border spinner-border-sm me-2" role="status" aria-label="Signing in"></span>
+          <Button type="submit" class="w-full" :disabled="loading">
+            <Loader2 v-if="loading" class="size-4 animate-spin" />
             {{ loading ? 'Signing in...' : 'Sign In' }}
-          </button>
+          </Button>
         </form>
-      </div>
-    </div>
+      </CardContent>
+    </Card>
   </div>
 </template>
 
@@ -36,6 +37,12 @@ import { Code, ConnectError } from '@connectrpc/connect'
 import { useAuthStore } from '@/stores/auth'
 import { memoryClient } from '@/utils/connect'
 import { login } from '@/utils/api'
+import { Brain, Loader2 } from 'lucide-vue-next'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Alert, AlertDescription } from '@/components/ui/alert'
 
 const router = useRouter()
 const route = useRoute()

@@ -1,77 +1,76 @@
 <template>
-  <div>
-    <div class="alert alert-secondary py-2 small d-flex align-items-start gap-2">
-      <font-awesome-icon :icon="['fas', 'sliders']" class="mt-1" />
-      <div>
-        <strong>Standing preferences</strong> — cross-project rules stored as memories in the
+  <div class="space-y-4">
+    <Alert>
+      <SlidersHorizontal class="size-4" />
+      <AlertDescription>
+        <strong class="text-foreground">Standing preferences</strong> — cross-project rules stored as memories in the
         <code>global</code> namespace, tagged <code>preference</code>. The SessionStart hook injects
         these into <em>every</em> Claude session, so they apply before the agent acts. Editing here is
         all you need; the namespace and <code>preference</code> tag are managed for you.
-      </div>
-    </div>
+      </AlertDescription>
+    </Alert>
 
-    <div class="mb-3">
-      <button class="btn btn-success btn-sm" @click="showNew = !showNew">
-        <font-awesome-icon :icon="['fas', 'plus']" class="me-1" />New preference
-      </button>
-      <div v-if="showNew" class="card mt-2">
-        <div class="card-body py-2">
-          <textarea v-model="draft.text" class="form-control form-control-sm mb-2" rows="3"
-            placeholder="e.g. Never commit or push unless explicitly instructed to."></textarea>
-          <div class="row g-2">
-            <div class="col"><input v-model="draft.tags" class="form-control form-control-sm" placeholder="extra tags, comma separated (optional)" /></div>
-            <div class="col-auto">
-              <button class="btn btn-primary btn-sm" :disabled="!draft.text.trim() || saving" @click="save">Save</button>
-            </div>
+    <div>
+      <Button size="sm" @click="showNew = !showNew">
+        <Plus class="size-4" />New preference
+      </Button>
+      <Card v-if="showNew" class="mt-2">
+        <CardContent class="space-y-2 py-4">
+          <Textarea v-model="draft.text" rows="3" placeholder="e.g. Never commit or push unless explicitly instructed to." />
+          <div class="flex flex-wrap gap-2">
+            <Input v-model="draft.tags" class="flex-1" placeholder="extra tags, comma separated (optional)" />
+            <Button size="sm" :disabled="!draft.text.trim() || saving" @click="save">Save</Button>
           </div>
-          <div v-if="saved" class="small text-success mt-2">Queued for indexing — it will appear shortly.</div>
-        </div>
-      </div>
+          <p v-if="saved" class="text-sm text-emerald-600 dark:text-emerald-400">Queued for indexing — it will appear shortly.</p>
+        </CardContent>
+      </Card>
     </div>
 
-    <div v-if="error" class="alert alert-danger py-2">{{ error }}</div>
+    <Alert v-if="error" variant="destructive">
+      <AlertDescription>{{ error }}</AlertDescription>
+    </Alert>
 
-    <div v-if="loading" class="text-center text-muted py-5">
-      <font-awesome-icon :icon="['fas', 'spinner']" spin size="2x" />
+    <div v-if="loading" class="py-16 text-center text-muted-foreground" role="status" aria-live="polite" aria-label="Loading preferences">
+      <Loader2 class="mx-auto size-8 animate-spin" />
     </div>
 
-    <div v-else-if="prefs.length === 0" class="text-center text-muted py-5">
-      <font-awesome-icon :icon="['fas', 'sliders']" size="2x" class="mb-2 d-block" />
+    <div v-else-if="prefs.length === 0" class="py-16 text-center text-muted-foreground">
+      <SlidersHorizontal class="mx-auto mb-2 size-8" />
       No preferences yet. Add one above — it will apply from your next session.
     </div>
 
-    <div v-for="m in prefs" :key="m.id" class="card mb-2">
-      <div class="card-body py-2">
-        <div v-if="editId === m.id">
-          <textarea v-model="editDraft.text" class="form-control form-control-sm mb-2" rows="5" placeholder="Preference text (Markdown)…"></textarea>
-          <input v-model="editDraft.tags" class="form-control form-control-sm mb-2" placeholder="extra tags, comma separated (optional)" />
-          <div class="d-flex gap-2 align-items-center">
-            <button class="btn btn-primary btn-sm" :disabled="!editDraft.text.trim() || editing" @click="saveEdit(m)">Save</button>
-            <button class="btn btn-outline-secondary btn-sm" :disabled="editing" @click="cancelEdit">Cancel</button>
-            <span v-if="editing" class="small text-muted">Queued for re-indexing…</span>
+    <Card v-for="m in prefs" :key="m.id">
+      <CardContent class="py-4">
+        <div v-if="editId === m.id" class="space-y-2">
+          <Textarea v-model="editDraft.text" rows="5" placeholder="Preference text (Markdown)…" />
+          <Input v-model="editDraft.tags" placeholder="extra tags, comma separated (optional)" />
+          <div class="flex items-center gap-2">
+            <Button size="sm" :disabled="!editDraft.text.trim() || editing" @click="saveEdit(m)">Save</Button>
+            <Button size="sm" variant="outline" :disabled="editing" @click="cancelEdit">Cancel</Button>
+            <span v-if="editing" class="text-sm text-muted-foreground">Queued for re-indexing…</span>
           </div>
         </div>
         <template v-else>
-          <div class="d-flex justify-content-between align-items-start">
-            <div class="mb-1 me-3 markdown-body" v-html="renderMarkdown(m.text)"></div>
-            <div class="d-flex gap-1 flex-shrink-0">
-              <button class="btn btn-outline-secondary btn-sm" title="Edit" aria-label="Edit" @click="startEdit(m)">
-                <font-awesome-icon :icon="['fas', 'pen']" />
-              </button>
-              <button class="btn btn-outline-danger btn-sm" title="Delete" aria-label="Delete" @click="remove(m.id)">
-                <font-awesome-icon :icon="['fas', 'trash']" />
-              </button>
+          <div class="flex items-start justify-between gap-3">
+            <div class="markdown-body min-w-0 text-sm" v-html="renderMarkdown(m.text)"></div>
+            <div class="flex shrink-0 gap-1">
+              <Button variant="outline" size="icon" class="size-8" title="Edit" aria-label="Edit" @click="startEdit(m)">
+                <Pencil class="size-3.5" />
+              </Button>
+              <Button variant="outline" size="icon" class="size-8 text-destructive hover:text-destructive" title="Delete" aria-label="Delete" @click="remove(m.id)">
+                <Trash2 class="size-3.5" />
+              </Button>
             </div>
           </div>
-          <div class="small text-muted d-flex flex-wrap gap-2 align-items-center mt-1">
-            <span v-for="t in extraTags(m.tags)" :key="t" class="badge bg-info text-dark">
-              <font-awesome-icon :icon="['fas', 'tag']" class="me-1" />{{ t }}
-            </span>
+          <div class="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+            <Badge v-for="t in extraTags(m.tags)" :key="t" variant="outline">
+              <Tag class="size-3" />{{ t }}
+            </Badge>
             <span v-if="m.createdAt">{{ formatDate(m.createdAt) }}</span>
           </div>
         </template>
-      </div>
-    </div>
+      </CardContent>
+    </Card>
   </div>
 </template>
 
@@ -82,6 +81,13 @@ import { Code, ConnectError } from '@connectrpc/connect'
 import { memoryClient } from '@/utils/connect'
 import { renderMarkdown } from '@/utils/markdown'
 import { useAuthStore } from '@/stores/auth'
+import { Loader2, Pencil, Plus, SlidersHorizontal, Tag, Trash2 } from 'lucide-vue-next'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
+import { Textarea } from '@/components/ui/textarea'
 
 const router = useRouter()
 const auth = useAuthStore()

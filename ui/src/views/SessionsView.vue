@@ -1,55 +1,61 @@
 <template>
-  <div>
-    <div class="row g-2 align-items-end mb-3">
-      <div class="col-auto" style="width: 180px">
-        <label class="form-label small mb-1">Namespace</label>
-        <input v-model="namespace" class="form-control form-control-sm" placeholder="* = all" @keyup.enter="reload" />
+  <div class="space-y-4">
+    <div class="flex flex-wrap items-end gap-2">
+      <div class="grid gap-1.5" style="width: 180px">
+        <Label class="text-xs">Namespace</Label>
+        <Input v-model="namespace" placeholder="* = all" @keyup.enter="reload" />
       </div>
-      <div class="col-auto">
-        <button class="btn btn-primary btn-sm" :disabled="loading" @click="reload">
-          <font-awesome-icon :icon="['fas', 'rotate']" class="me-1" />Refresh
-        </button>
-      </div>
+      <Button :disabled="loading" @click="reload">
+        <RotateCw class="size-4" />Refresh
+      </Button>
     </div>
 
-    <div v-if="error" class="alert alert-danger py-2">{{ error }}</div>
+    <Alert v-if="error" variant="destructive">
+      <AlertDescription>{{ error }}</AlertDescription>
+    </Alert>
 
-    <div v-if="loading" class="text-center text-muted py-5">
-      <font-awesome-icon :icon="['fas', 'spinner']" spin size="2x" />
+    <div v-if="loading" class="py-16 text-center text-muted-foreground" role="status" aria-live="polite" aria-label="Loading summaries">
+      <Loader2 class="mx-auto size-8 animate-spin" />
     </div>
 
-    <div v-else-if="summaries.length === 0" class="text-center text-muted py-5">
-      <font-awesome-icon :icon="['fas', 'comments']" size="2x" class="mb-2 d-block" />
+    <div v-else-if="summaries.length === 0" class="py-16 text-center text-muted-foreground">
+      <MessagesSquare class="mx-auto mb-2 size-8" />
       No conversation summaries yet.
     </div>
 
-    <div v-for="s in summaries" :key="s.conversationId" class="card mb-2">
-      <div class="card-body py-2">
-        <div v-if="editId === s.conversationId">
-          <textarea v-model="editText" class="form-control form-control-sm mb-2" rows="6" placeholder="Summary text (Markdown)…"></textarea>
-          <div class="d-flex gap-2 align-items-center">
-            <button class="btn btn-primary btn-sm" :disabled="!editText.trim() || editing" @click="saveEdit(s)">Save</button>
-            <button class="btn btn-outline-secondary btn-sm" :disabled="editing" @click="editId = null">Cancel</button>
-            <span v-if="editing" class="small text-muted">Queued for re-indexing…</span>
+    <Card v-for="s in summaries" :key="s.conversationId">
+      <CardContent class="py-4">
+        <div v-if="editId === s.conversationId" class="space-y-2">
+          <Textarea v-model="editText" rows="6" placeholder="Summary text (Markdown)…" />
+          <div class="flex items-center gap-2">
+            <Button size="sm" :disabled="!editText.trim() || editing" @click="saveEdit(s)">Save</Button>
+            <Button size="sm" variant="outline" :disabled="editing" @click="editId = null">Cancel</Button>
+            <span v-if="editing" class="text-sm text-muted-foreground">Queued for re-indexing…</span>
           </div>
         </div>
         <template v-else>
-          <div class="d-flex justify-content-between align-items-start">
-            <div class="mb-1 me-3 markdown-body" v-html="renderMarkdown(s.text)"></div>
-            <button class="btn btn-outline-secondary btn-sm flex-shrink-0" title="Edit" aria-label="Edit session" @click="startEdit(s)">
-              <font-awesome-icon :icon="['fas', 'pen']" />
-            </button>
+          <div class="flex items-start justify-between gap-3">
+            <div class="markdown-body min-w-0 text-sm" v-html="renderMarkdown(s.text)"></div>
+            <Button variant="outline" size="icon" class="size-8 shrink-0" title="Edit" aria-label="Edit session" @click="startEdit(s)">
+              <Pencil class="size-3.5" />
+            </Button>
           </div>
         </template>
-        <div class="small text-muted d-flex flex-wrap gap-2 mt-1 align-items-center">
-          <span class="badge bg-secondary"><font-awesome-icon :icon="['fas', 'layer-group']" class="me-1" />{{ s.namespace }}</span>
-          <span class="font-monospace"><font-awesome-icon :icon="['fas', 'comments']" class="me-1" />{{ s.conversationId }}</span>
+        <div class="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+          <Badge variant="secondary">
+            <Layers class="size-3" />{{ s.namespace }}
+          </Badge>
+          <span class="inline-flex items-center gap-1 font-mono">
+            <MessagesSquare class="size-3" />{{ s.conversationId }}
+          </span>
           <span v-if="s.source">src: {{ s.source }}</span>
           <span v-if="s.createdAt">created {{ formatTimestamp(s.createdAt) }}</span>
-          <span v-if="s.updatedAt"><font-awesome-icon :icon="['fas', 'clock-rotate-left']" class="me-1" />updated {{ formatTimestamp(s.updatedAt) }}</span>
+          <span v-if="s.updatedAt" class="inline-flex items-center gap-1">
+            <History class="size-3" />updated {{ formatTimestamp(s.updatedAt) }}
+          </span>
         </div>
-      </div>
-    </div>
+      </CardContent>
+    </Card>
   </div>
 </template>
 
@@ -61,6 +67,14 @@ import { memoryClient } from '@/utils/connect'
 import { renderMarkdown } from '@/utils/markdown'
 import { useAuthStore } from '@/stores/auth'
 import { formatTimestamp } from '@/utils/text'
+import { History, Layers, Loader2, MessagesSquare, Pencil, RotateCw } from 'lucide-vue-next'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Textarea } from '@/components/ui/textarea'
 
 const router = useRouter()
 const auth = useAuthStore()

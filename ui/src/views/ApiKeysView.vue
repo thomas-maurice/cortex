@@ -1,81 +1,87 @@
 <template>
-  <div>
-    <h4 class="mb-3"><font-awesome-icon :icon="['fas', 'key']" class="me-2" />API Keys</h4>
+  <div class="space-y-4">
+    <h4 class="flex items-center gap-2 text-lg font-semibold"><KeyRound class="size-5" />API Keys</h4>
 
-    <div v-if="error" class="alert alert-danger py-2">{{ error }}</div>
-    <div v-if="notice" class="alert alert-success py-2">{{ notice }}</div>
+    <Alert v-if="error" variant="destructive"><AlertDescription>{{ error }}</AlertDescription></Alert>
+    <p v-if="notice" class="text-sm text-emerald-600 dark:text-emerald-400">{{ notice }}</p>
 
     <!-- New key reveal (shown immediately after creation) -->
-    <div v-if="createdKey" class="alert alert-warning">
-      <strong>Copy your new API key now — it won't be shown again.</strong>
-      <div class="d-flex align-items-center gap-2 mt-2">
-        <code class="flex-grow-1 user-select-all">{{ createdKey }}</code>
-        <button class="btn btn-sm btn-outline-dark" @click="copyKey(createdKey)">
-          <font-awesome-icon :icon="['fas', 'copy']" /> Copy
-        </button>
-      </div>
-      <button class="btn btn-sm btn-secondary mt-2" @click="createdKey = ''">Dismiss</button>
-    </div>
+    <Alert v-if="createdKey" class="border-amber-500/50 text-amber-600 dark:text-amber-400">
+      <AlertDescription class="text-amber-600 dark:text-amber-400">
+        <strong>Copy your new API key now — it won't be shown again.</strong>
+        <div class="mt-2 flex items-center gap-2">
+          <code class="flex-1 select-all font-mono text-sm">{{ createdKey }}</code>
+          <Button variant="outline" size="sm" @click="copyKey(createdKey)">
+            <Copy class="size-4" />Copy
+          </Button>
+        </div>
+        <Button variant="outline" size="sm" class="mt-2" @click="createdKey = ''">Dismiss</Button>
+      </AlertDescription>
+    </Alert>
 
     <!-- Create key form -->
-    <div class="d-flex align-items-end gap-2 mb-3">
-      <div>
-        <label class="form-label small mb-1">Label (optional)</label>
-        <input
+    <div class="flex flex-wrap items-end gap-2">
+      <div class="grid gap-1.5">
+        <Label class="text-xs">Label (optional)</Label>
+        <Input
           v-model="newLabel"
-          class="form-control form-control-sm"
+          class="h-8"
           placeholder="e.g. laptop, ci"
           :disabled="busy"
           @keyup.enter="createKey"
         />
       </div>
-      <button class="btn btn-primary btn-sm" :disabled="busy" @click="createKey">
-        <font-awesome-icon :icon="['fas', 'plus']" class="me-1" />New key
-      </button>
-      <button class="btn btn-outline-secondary btn-sm" :disabled="loading" @click="reload">
-        <font-awesome-icon :icon="['fas', 'rotate']" class="me-1" />Refresh
-      </button>
+      <Button size="sm" :disabled="busy" @click="createKey">
+        <Plus class="size-4" />New key
+      </Button>
+      <Button variant="outline" size="sm" :disabled="loading" @click="reload">
+        <RotateCw class="size-4" />Refresh
+      </Button>
     </div>
 
-    <div v-if="loading" class="text-center text-muted py-5" role="status" aria-label="Loading API keys">
-      <font-awesome-icon :icon="['fas', 'spinner']" spin size="2x" />
+    <div v-if="loading" class="py-16 text-center text-muted-foreground" role="status" aria-label="Loading API keys">
+      <Loader2 class="mx-auto size-8 animate-spin" />
     </div>
 
-    <div v-else-if="keys.length === 0" class="text-center text-muted py-5">
-      <font-awesome-icon :icon="['fas', 'key']" size="2x" class="mb-2 d-block" />
+    <div v-else-if="keys.length === 0" class="py-16 text-center text-muted-foreground">
+      <KeyRound class="mx-auto mb-2 size-8" />
       No API keys yet. Create one above to use with the MCP server or CLI.
     </div>
 
-    <table v-else class="table table-sm align-middle">
-      <thead>
-        <tr>
-          <th>Prefix</th>
-          <th>Label</th>
-          <th>Created</th>
-          <th>Last used</th>
-          <th class="text-end" style="width: 1%">Actions</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr v-for="k in keys" :key="k.id">
-          <td class="font-monospace">{{ k.prefix }}…</td>
-          <td class="text-muted small">{{ k.label || '—' }}</td>
-          <td class="small text-muted">{{ k.createdAt ? formatTimestamp(k.createdAt) : '—' }}</td>
-          <td class="small text-muted">{{ k.lastUsedAt ? formatTimestamp(k.lastUsedAt) : 'never' }}</td>
-          <td class="text-end">
-            <button
-              class="btn btn-outline-danger btn-sm"
-              title="Revoke key"
-              aria-label="Revoke key"
-              :disabled="busy"
-              @click="revokeKey(k)"
-            >
-              <font-awesome-icon :icon="['fas', 'trash']" />
-            </button>
-          </td>
-        </tr>
-      </tbody>
-    </table>
+    <div v-else class="rounded-md border">
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead>Prefix</TableHead>
+            <TableHead>Label</TableHead>
+            <TableHead>Created</TableHead>
+            <TableHead>Last used</TableHead>
+            <TableHead class="text-right">Actions</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          <TableRow v-for="k in keys" :key="k.id">
+            <TableCell class="font-mono">{{ k.prefix }}…</TableCell>
+            <TableCell class="text-sm text-muted-foreground">{{ k.label || '—' }}</TableCell>
+            <TableCell class="text-sm text-muted-foreground">{{ k.createdAt ? formatTimestamp(k.createdAt) : '—' }}</TableCell>
+            <TableCell class="text-sm text-muted-foreground">{{ k.lastUsedAt ? formatTimestamp(k.lastUsedAt) : 'never' }}</TableCell>
+            <TableCell class="text-right">
+              <Button
+                variant="outline"
+                size="icon"
+                class="size-8 text-destructive hover:text-destructive"
+                title="Revoke key"
+                aria-label="Revoke key"
+                :disabled="busy"
+                @click="revokeKey(k)"
+              >
+                <Trash2 class="size-3.5" />
+              </Button>
+            </TableCell>
+          </TableRow>
+        </TableBody>
+      </Table>
+    </div>
   </div>
 </template>
 
@@ -86,6 +92,12 @@ import { Code, ConnectError } from '@connectrpc/connect'
 import { memoryClient } from '@/utils/connect'
 import { useAuthStore } from '@/stores/auth'
 import { formatTimestamp } from '@/utils/text'
+import { Copy, KeyRound, Loader2, Plus, RotateCw, Trash2 } from 'lucide-vue-next'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 
 const router = useRouter()
 const auth = useAuthStore()

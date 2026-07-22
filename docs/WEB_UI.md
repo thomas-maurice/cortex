@@ -24,9 +24,10 @@ browser ──HTTP/JSON──▶ cortex-server (:8080)
 
 ### Stack
 
-Vue 3 + vue-router + pinia (+ persistedstate) + Bootstrap 5 + FontAwesome +
-`@connectrpc/connect-web` + vis-network (graph/explore). Mirrors the
-`thomas-maurice/nis` stack.
+Vue 3 + vue-router + pinia (+ persistedstate) + Tailwind CSS v4 + shadcn-vue
+(reka-ui primitives, generated into `ui/src/components/ui/`) + lucide icons +
+`@connectrpc/connect-web` + vis-network (graph/explore). Light/dark theme
+toggle in the navbar (persisted, defaults to the OS preference).
 
 ## Build pipeline
 
@@ -170,7 +171,10 @@ ui/
   vite.config.js           build + dev proxy
   buf.gen.ui.yaml          (repo root) TS Connect client generation
   src/
-    main.js                pinia, router, Bootstrap, FontAwesome
+    main.js                pinia, router, Tailwind/theme css
+    lib/theme.js           light/dark toggle (persisted)
+    lib/utils.js           cn() class merger (shadcn)
+    components/ui/         generated shadcn-vue components
     App.vue                navbar + router-view
     router/index.js        routes + auth guard
     stores/auth.js         JWT store (persisted, expiry-checked)

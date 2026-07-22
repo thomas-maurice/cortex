@@ -1,64 +1,80 @@
 <template>
-  <div>
-    <div class="alert alert-secondary py-2 small d-flex align-items-start gap-2">
-      <font-awesome-icon :icon="['fas', 'box-archive']" class="mt-1" />
-      <div>
+  <div class="space-y-4">
+    <Alert>
+      <Archive class="size-4" />
+      <AlertDescription>
         Export dumps memories (text + metadata, <strong>no vectors</strong>) to a JSON file. Import
         re-ingests such a dump through the normal indexing queue — the worker re-embeds each one, so a
         restore is safe across embedding-model changes. The format is identical to the
         <code>cortex export</code> / <code>cortex import</code> CLI, so dumps are interchangeable.
         An existing id is overwritten (upsert).
-      </div>
-    </div>
+      </AlertDescription>
+    </Alert>
 
-    <div v-if="error" class="alert alert-danger py-2" style="white-space: pre-wrap">{{ error }}</div>
+    <Alert v-if="error" variant="destructive">
+      <AlertDescription class="whitespace-pre-wrap">{{ error }}</AlertDescription>
+    </Alert>
 
     <!-- Export -->
-    <div class="card mb-3">
-      <div class="card-body py-3">
-        <h6 class="mb-2"><font-awesome-icon :icon="['fas', 'download']" class="me-2" />Export</h6>
-        <div class="row g-2 align-items-end">
-          <div class="col-auto" style="width: 220px">
-            <label class="form-label small mb-1">Namespace</label>
-            <input v-model="exportNs" class="form-control form-control-sm" placeholder="* = all namespaces" />
+    <Card class="gap-3 py-4">
+      <CardHeader>
+        <CardTitle class="flex items-center gap-2 text-base">
+          <Download class="size-4" />Export
+        </CardTitle>
+      </CardHeader>
+      <CardContent class="space-y-2">
+        <div class="flex flex-wrap items-end gap-2">
+          <div class="grid gap-1.5" style="width: 220px">
+            <Label class="text-xs">Namespace</Label>
+            <Input v-model="exportNs" placeholder="* = all namespaces" />
           </div>
-          <div class="col-auto">
-            <button class="btn btn-primary btn-sm" :disabled="exporting" @click="doExport">
-              <font-awesome-icon :icon="['fas', exporting ? 'spinner' : 'download']" :spin="exporting" class="me-1" />
-              {{ exporting ? 'Exporting…' : 'Export to JSON' }}
-            </button>
-          </div>
+          <Button size="sm" :disabled="exporting" @click="doExport">
+            <component :is="exporting ? Loader2 : Download" :class="['size-4', exporting && 'animate-spin']" />
+            {{ exporting ? 'Exporting…' : 'Export to JSON' }}
+          </Button>
         </div>
-        <div v-if="exportMsg" class="small text-success mt-2">{{ exportMsg }}</div>
-      </div>
-    </div>
+        <p v-if="exportMsg" class="text-sm text-emerald-600 dark:text-emerald-400">{{ exportMsg }}</p>
+      </CardContent>
+    </Card>
 
     <!-- Import -->
-    <div class="card mb-3">
-      <div class="card-body py-3">
-        <h6 class="mb-2"><font-awesome-icon :icon="['fas', 'upload']" class="me-2" />Import</h6>
-        <div class="row g-2 align-items-end">
-          <div class="col">
-            <label class="form-label small mb-1">Dump file (.json)</label>
-            <input ref="fileInput" type="file" accept="application/json,.json" class="form-control form-control-sm" @change="onFile" />
+    <Card class="gap-3 py-4">
+      <CardHeader>
+        <CardTitle class="flex items-center gap-2 text-base">
+          <Upload class="size-4" />Import
+        </CardTitle>
+      </CardHeader>
+      <CardContent class="space-y-2">
+        <div class="flex flex-wrap items-end gap-2">
+          <div class="grid flex-1 gap-1.5">
+            <Label class="text-xs">Dump file (.json)</Label>
+            <input
+              ref="fileInput"
+              type="file"
+              accept="application/json,.json"
+              class="file:text-foreground border-input h-9 w-full min-w-0 rounded-md border bg-transparent px-3 py-1 text-sm shadow-xs file:inline-flex file:h-7 file:border-0 file:bg-transparent file:text-sm file:font-medium"
+              @change="onFile"
+            />
           </div>
-          <div class="col-auto">
-            <button class="btn btn-primary btn-sm" :disabled="importing || !file" @click="doImport">
-              <font-awesome-icon :icon="['fas', importing ? 'spinner' : 'upload']" :spin="importing" class="me-1" />
-              {{ importing ? 'Importing…' : 'Import' }}
-            </button>
-          </div>
+          <Button size="sm" :disabled="importing || !file" @click="doImport">
+            <component :is="importing ? Loader2 : Upload" :class="['size-4', importing && 'animate-spin']" />
+            {{ importing ? 'Importing…' : 'Import' }}
+          </Button>
         </div>
-        <div v-if="importInfo" class="small text-muted mt-2">{{ importInfo }}</div>
-        <div v-if="importMsg" class="small text-success mt-2">{{ importMsg }}</div>
-      </div>
-    </div>
+        <p v-if="importInfo" class="text-sm text-muted-foreground">{{ importInfo }}</p>
+        <p v-if="importMsg" class="text-sm text-emerald-600 dark:text-emerald-400">{{ importMsg }}</p>
+      </CardContent>
+    </Card>
 
     <!-- My data backup (all logged-in users) -->
-    <div class="card mb-3">
-      <div class="card-body py-3">
-        <h6 class="mb-2"><font-awesome-icon :icon="['fas', 'user-shield']" class="me-2" />My data backup</h6>
-        <p class="small text-muted mb-3">
+    <Card class="gap-3 py-4">
+      <CardHeader>
+        <CardTitle class="flex items-center gap-2 text-base">
+          <ShieldCheck class="size-4" />My data backup
+        </CardTitle>
+      </CardHeader>
+      <CardContent class="space-y-3">
+        <p class="text-sm text-muted-foreground">
           Server-generated backup of your own memories and conversation summaries — unlike the
           client-side export above, this is a single versioned file that includes summaries and is
           produced entirely on the server. Restore always writes into your own data; re-running is
@@ -66,214 +82,263 @@
         </p>
 
         <!-- Download my backup -->
-        <div class="d-flex align-items-center gap-2 flex-wrap mb-3">
-          <button class="btn btn-primary btn-sm" :disabled="selfBacking" @click="doBackupSelf">
-            <font-awesome-icon :icon="['fas', selfBacking ? 'spinner' : 'download']" :spin="selfBacking" class="me-1" />
+        <div class="flex flex-wrap items-center gap-2">
+          <Button size="sm" :disabled="selfBacking" @click="doBackupSelf">
+            <component :is="selfBacking ? Loader2 : Download" :class="['size-4', selfBacking && 'animate-spin']" />
             {{ selfBacking ? 'Preparing…' : 'Download my backup' }}
-          </button>
-          <span v-if="selfBackupMsg" class="small text-success">{{ selfBackupMsg }}</span>
+          </Button>
+          <span v-if="selfBackupMsg" class="text-sm text-emerald-600 dark:text-emerald-400">{{ selfBackupMsg }}</span>
         </div>
 
         <!-- Restore my backup -->
-        <div>
-          <label class="form-label small mb-1">Restore from file</label>
-          <div class="row g-2 align-items-end">
-            <div class="col">
-              <input
-                ref="selfFileInput"
-                type="file"
-                class="form-control form-control-sm"
-                @change="onSelfFile"
-              />
-            </div>
-            <div class="col-auto">
-              <button class="btn btn-outline-primary btn-sm" :disabled="selfRestoring || !selfFile" @click="doRestoreSelf">
-                <font-awesome-icon :icon="['fas', selfRestoring ? 'spinner' : 'rotate-left']" :spin="selfRestoring" class="me-1" />
-                {{ selfRestoring ? 'Restoring…' : 'Restore' }}
-              </button>
-            </div>
+        <div class="grid gap-1.5">
+          <Label class="text-xs">Restore from file</Label>
+          <div class="flex flex-wrap items-end gap-2">
+            <input
+              ref="selfFileInput"
+              type="file"
+              class="file:text-foreground border-input h-9 w-full min-w-0 flex-1 rounded-md border bg-transparent px-3 py-1 text-sm shadow-xs file:inline-flex file:h-7 file:border-0 file:bg-transparent file:text-sm file:font-medium"
+              @change="onSelfFile"
+            />
+            <Button variant="outline" size="sm" :disabled="selfRestoring || !selfFile" @click="doRestoreSelf">
+              <component :is="selfRestoring ? Loader2 : RotateCcw" :class="['size-4', selfRestoring && 'animate-spin']" />
+              {{ selfRestoring ? 'Restoring…' : 'Restore' }}
+            </Button>
           </div>
-          <div v-if="selfRestoreMsg" class="alert alert-success alert-dismissible py-2 mt-2 mb-0 small">
-            <button type="button" class="btn-close py-2" aria-label="Dismiss message" @click="selfRestoreMsg = ''"></button>
-            {{ selfRestoreMsg }}
-            Memories and summaries are re-embedded asynchronously — check the
-            <router-link :to="{ name: 'queue' }">Indexing</router-link> view for progress.
-          </div>
+          <Alert v-if="selfRestoreMsg" class="relative border-emerald-500/50 text-emerald-600 dark:text-emerald-400">
+            <Button
+              variant="ghost"
+              size="icon"
+              class="absolute top-1 right-1 size-6 text-emerald-600 hover:text-emerald-600 dark:text-emerald-400"
+              aria-label="Dismiss message"
+              @click="selfRestoreMsg = ''"
+            >
+              <X class="size-3.5" />
+            </Button>
+            <AlertDescription class="pr-8">
+              {{ selfRestoreMsg }}
+              Memories and summaries are re-embedded asynchronously — check the
+              <router-link :to="{ name: 'queue' }">Indexing</router-link> view for progress.
+            </AlertDescription>
+          </Alert>
         </div>
-      </div>
-    </div>
+      </CardContent>
+    </Card>
 
     <!-- Server backups (admin only) -->
     <template v-if="auth.isAdmin">
-      <hr class="my-4" />
+      <Separator class="my-4" />
 
-      <div class="alert alert-secondary py-2 small d-flex align-items-start gap-2">
-        <font-awesome-icon :icon="['fas', 'server']" class="mt-1" />
-        <div>
+      <Alert>
+        <Server class="size-4" />
+        <AlertDescription>
           <strong>Server-side full backup</strong> — captures ALL tenants' memories, conversation summaries,
           and the user registry (users + API keys) into a single file written to the server's configured
           backup directory. Only admins can trigger or restore backups. A restore hands memories and
           summaries to the indexing worker for re-embedding; users and API keys that already exist are
           left untouched.
-        </div>
-      </div>
+        </AlertDescription>
+      </Alert>
 
       <!-- Run backup -->
-      <div class="card mb-3">
-        <div class="card-body py-3">
-          <h6 class="mb-2"><font-awesome-icon :icon="['fas', 'box-archive']" class="me-2" />Server backups</h6>
-          <button class="btn btn-primary btn-sm" :disabled="backingUp" @click="doBackupAll">
-            <font-awesome-icon :icon="['fas', backingUp ? 'spinner' : 'floppy-disk']" :spin="backingUp" class="me-1" />
+      <Card class="gap-3 py-4">
+        <CardHeader>
+          <CardTitle class="flex items-center gap-2 text-base">
+            <Archive class="size-4" />Server backups
+          </CardTitle>
+        </CardHeader>
+        <CardContent class="space-y-3">
+          <Button size="sm" :disabled="backingUp" @click="doBackupAll">
+            <component :is="backingUp ? Loader2 : Save" :class="['size-4', backingUp && 'animate-spin']" />
             {{ backingUp ? 'Backing up…' : 'Run full backup now' }}
-          </button>
+          </Button>
 
-          <div v-if="backupSuccess" class="alert alert-success alert-dismissible py-2 mt-3 mb-0 small">
-            <button type="button" class="btn-close py-2" aria-label="Dismiss message" @click="backupSuccess = null"></button>
-            <strong>Backup written:</strong> <code>{{ backupSuccess.path }}</code><br />
-            {{ backupSuccess.tenants }} tenant(s), {{ backupSuccess.memories }} memories,
-            {{ backupSuccess.summaries }} summaries, {{ backupSuccess.users }} users,
-            {{ backupSuccess.apiKeys }} API key(s).
-            <span v-if="backupSuccess.s3Result">
-              <br /><strong>Offsite:</strong> {{ backupSuccess.s3Result }}
-            </span>
-          </div>
-        </div>
-      </div>
+          <Alert v-if="backupSuccess" class="relative border-emerald-500/50 text-emerald-600 dark:text-emerald-400">
+            <Button
+              variant="ghost"
+              size="icon"
+              class="absolute top-1 right-1 size-6 text-emerald-600 hover:text-emerald-600 dark:text-emerald-400"
+              aria-label="Dismiss message"
+              @click="backupSuccess = null"
+            >
+              <X class="size-3.5" />
+            </Button>
+            <AlertDescription class="pr-8">
+              <strong>Backup written:</strong> <code>{{ backupSuccess.path }}</code><br />
+              {{ backupSuccess.tenants }} tenant(s), {{ backupSuccess.memories }} memories,
+              {{ backupSuccess.summaries }} summaries, {{ backupSuccess.users }} users,
+              {{ backupSuccess.apiKeys }} API key(s).
+              <span v-if="backupSuccess.s3Result">
+                <br /><strong>Offsite:</strong> {{ backupSuccess.s3Result }}
+              </span>
+            </AlertDescription>
+          </Alert>
+        </CardContent>
+      </Card>
 
       <!-- Backup list -->
-      <div class="card mb-3">
-        <div class="card-body py-3">
-          <div class="d-flex align-items-center gap-2 mb-3">
-            <h6 class="mb-0"><font-awesome-icon :icon="['fas', 'list']" class="me-2" />Existing backups</h6>
-            <button class="btn btn-outline-secondary btn-sm ms-auto" :disabled="backupsLoading" @click="loadBackups">
-              <font-awesome-icon :icon="['fas', 'rotate']" class="me-1" />Refresh
-            </button>
+      <Card class="gap-3 py-4">
+        <CardHeader>
+          <CardTitle class="flex items-center gap-2 text-base">
+            <List class="size-4" />Existing backups
+          </CardTitle>
+          <CardAction>
+            <Button variant="outline" size="sm" :disabled="backupsLoading" @click="loadBackups">
+              <RotateCw class="size-4" />Refresh
+            </Button>
+          </CardAction>
+        </CardHeader>
+        <CardContent class="space-y-3">
+          <div v-if="backupsLoading" class="py-6 text-center text-muted-foreground">
+            <Loader2 class="mx-auto size-8 animate-spin" />
           </div>
 
-          <div v-if="backupsLoading" class="text-center text-muted py-4">
-            <font-awesome-icon :icon="['fas', 'spinner']" spin size="2x" />
-          </div>
-
-          <div v-else-if="backups.length === 0" class="text-center text-muted py-4">
-            <font-awesome-icon :icon="['fas', 'box-open']" size="2x" class="mb-2 d-block" />
+          <div v-else-if="backups.length === 0" class="py-6 text-center text-muted-foreground">
+            <PackageOpen class="mx-auto mb-2 size-8" />
             No server backups yet.
           </div>
 
-          <table v-else class="table table-sm align-middle mb-0">
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th class="text-end">Size</th>
-                <th>Created</th>
-                <th class="text-end" style="width: 1%">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="b in backups" :key="b.name">
-                <td class="font-monospace small">{{ b.name }}</td>
-                <td class="text-end small text-muted">{{ formatSize(b.sizeBytes) }}</td>
-                <td class="small text-muted">{{ b.createdAt ? formatTimestamp(b.createdAt) : '—' }}</td>
-                <td class="text-end text-nowrap">
-                  <button
-                    class="btn btn-outline-secondary btn-sm me-1"
-                    title="Download this backup"
-                    aria-label="Download this backup"
-                    :disabled="downloading"
-                    @click="doDownloadBackup(b)"
-                  >
-                    <font-awesome-icon :icon="['fas', downloading ? 'spinner' : 'download']" :spin="downloading" />
-                  </button>
-                  <button
-                    class="btn btn-outline-warning btn-sm me-1"
-                    title="Restore this backup"
-                    aria-label="Restore this backup"
-                    :disabled="restoring"
-                    @click="doRestoreAll(b)"
-                  >
-                    <font-awesome-icon :icon="['fas', restoring ? 'spinner' : 'rotate-left']" :spin="restoring" />
-                  </button>
-                  <button
-                    class="btn btn-outline-danger btn-sm"
-                    title="Delete this backup"
-                    aria-label="Delete this backup"
-                    :disabled="deleting"
-                    @click="doDeleteBackup(b)"
-                  >
-                    <font-awesome-icon :icon="['fas', deleting ? 'spinner' : 'trash']" :spin="deleting" />
-                  </button>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-
-          <div v-if="restoreMsg" class="alert alert-success alert-dismissible py-2 mt-3 mb-0 small">
-            <button type="button" class="btn-close py-2" aria-label="Dismiss message" @click="restoreMsg = ''"></button>
-            {{ restoreMsg }}
-            Memories and summaries are re-embedded asynchronously — check the
-            <router-link :to="{ name: 'queue' }">Indexing</router-link> view for progress.
+          <div v-else class="rounded-md border">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Name</TableHead>
+                  <TableHead class="text-right">Size</TableHead>
+                  <TableHead>Created</TableHead>
+                  <TableHead class="w-px text-right">Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                <TableRow v-for="b in backups" :key="b.name">
+                  <TableCell class="font-mono text-sm">{{ b.name }}</TableCell>
+                  <TableCell class="text-right text-sm text-muted-foreground">{{ formatSize(b.sizeBytes) }}</TableCell>
+                  <TableCell class="text-sm text-muted-foreground">{{ b.createdAt ? formatTimestamp(b.createdAt) : '—' }}</TableCell>
+                  <TableCell class="text-right">
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      class="size-8"
+                      title="Download this backup"
+                      aria-label="Download this backup"
+                      :disabled="downloading"
+                      @click="doDownloadBackup(b)"
+                    >
+                      <component :is="downloading ? Loader2 : Download" :class="['size-3.5', downloading && 'animate-spin']" />
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      class="ml-1 size-8"
+                      title="Restore this backup"
+                      aria-label="Restore this backup"
+                      :disabled="restoring"
+                      @click="doRestoreAll(b)"
+                    >
+                      <component :is="restoring ? Loader2 : RotateCcw" :class="['size-3.5', restoring && 'animate-spin']" />
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      class="ml-1 size-8 text-destructive hover:text-destructive"
+                      title="Delete this backup"
+                      aria-label="Delete this backup"
+                      :disabled="deleting"
+                      @click="doDeleteBackup(b)"
+                    >
+                      <component :is="deleting ? Loader2 : Trash2" :class="['size-3.5', deleting && 'animate-spin']" />
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              </TableBody>
+            </Table>
           </div>
-        </div>
-      </div>
+
+          <Alert v-if="restoreMsg" class="relative border-emerald-500/50 text-emerald-600 dark:text-emerald-400">
+            <Button
+              variant="ghost"
+              size="icon"
+              class="absolute top-1 right-1 size-6 text-emerald-600 hover:text-emerald-600 dark:text-emerald-400"
+              aria-label="Dismiss message"
+              @click="restoreMsg = ''"
+            >
+              <X class="size-3.5" />
+            </Button>
+            <AlertDescription class="pr-8">
+              {{ restoreMsg }}
+              Memories and summaries are re-embedded asynchronously — check the
+              <router-link :to="{ name: 'queue' }">Indexing</router-link> view for progress.
+            </AlertDescription>
+          </Alert>
+        </CardContent>
+      </Card>
 
       <!-- Offsite (S3) backups -->
-      <div class="card">
-        <div class="card-body py-3">
-          <div class="d-flex align-items-center gap-2 mb-2">
-            <h6 class="mb-0"><font-awesome-icon :icon="['fas', 'cloud-arrow-up']" class="me-2" />Offsite (S3) backups</h6>
-            <button class="btn btn-outline-secondary btn-sm ms-auto" :disabled="s3Loading" @click="loadS3Backups">
-              <font-awesome-icon :icon="['fas', 'rotate']" class="me-1" />Refresh
-            </button>
-          </div>
-          <p class="small text-muted mb-3">
+      <Card class="gap-3 py-4">
+        <CardHeader>
+          <CardTitle class="flex items-center gap-2 text-base">
+            <CloudUpload class="size-4" />Offsite (S3) backups
+          </CardTitle>
+          <CardAction>
+            <Button variant="outline" size="sm" :disabled="s3Loading" @click="loadS3Backups">
+              <RotateCw class="size-4" />Refresh
+            </Button>
+          </CardAction>
+        </CardHeader>
+        <CardContent class="space-y-3">
+          <p class="text-sm text-muted-foreground">
             Backups uploaded to the server's configured S3 bucket. S3 is configured on the server
             via env vars (<code>CORTEX_S3_*</code> / <code>AWS_*</code>); restore downloads the
             object back through the server.
           </p>
 
-          <div v-if="s3Loading" class="text-center text-muted py-4">
-            <font-awesome-icon :icon="['fas', 'spinner']" spin size="2x" />
+          <div v-if="s3Loading" class="py-6 text-center text-muted-foreground">
+            <Loader2 class="mx-auto size-8 animate-spin" />
           </div>
 
-          <div v-else-if="s3Unavailable" class="text-center text-muted py-4">
-            <font-awesome-icon :icon="['fas', 'cloud-arrow-up']" size="2x" class="mb-2 d-block" />
+          <div v-else-if="s3Unavailable" class="py-6 text-center text-muted-foreground">
+            <CloudUpload class="mx-auto mb-2 size-8" />
             Offsite S3 backup is not configured on the server.
           </div>
 
-          <div v-else-if="s3Backups.length === 0" class="text-center text-muted py-4">
-            <font-awesome-icon :icon="['fas', 'box-open']" size="2x" class="mb-2 d-block" />
+          <div v-else-if="s3Backups.length === 0" class="py-6 text-center text-muted-foreground">
+            <PackageOpen class="mx-auto mb-2 size-8" />
             No backups in the S3 bucket yet.
           </div>
 
-          <table v-else class="table table-sm align-middle mb-0">
-            <thead>
-              <tr>
-                <th>Object key</th>
-                <th class="text-end">Size</th>
-                <th>Modified</th>
-                <th class="text-end" style="width: 1%">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="b in s3Backups" :key="b.name">
-                <td class="font-monospace small">{{ b.name }}</td>
-                <td class="text-end small text-muted">{{ formatSize(b.sizeBytes) }}</td>
-                <td class="small text-muted">{{ b.createdAt ? formatTimestamp(b.createdAt) : '—' }}</td>
-                <td class="text-end text-nowrap">
-                  <button
-                    class="btn btn-outline-warning btn-sm"
-                    title="Restore this backup from S3"
-                    aria-label="Restore this backup from S3"
-                    :disabled="restoring"
-                    @click="doRestoreS3(b)"
-                  >
-                    <font-awesome-icon :icon="['fas', restoring ? 'spinner' : 'rotate-left']" :spin="restoring" />
-                  </button>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
+          <div v-else class="rounded-md border">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Object key</TableHead>
+                  <TableHead class="text-right">Size</TableHead>
+                  <TableHead>Modified</TableHead>
+                  <TableHead class="w-px text-right">Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                <TableRow v-for="b in s3Backups" :key="b.name">
+                  <TableCell class="font-mono text-sm">{{ b.name }}</TableCell>
+                  <TableCell class="text-right text-sm text-muted-foreground">{{ formatSize(b.sizeBytes) }}</TableCell>
+                  <TableCell class="text-sm text-muted-foreground">{{ b.createdAt ? formatTimestamp(b.createdAt) : '—' }}</TableCell>
+                  <TableCell class="text-right">
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      class="size-8"
+                      title="Restore this backup from S3"
+                      aria-label="Restore this backup from S3"
+                      :disabled="restoring"
+                      @click="doRestoreS3(b)"
+                    >
+                      <component :is="restoring ? Loader2 : RotateCcw" :class="['size-3.5', restoring && 'animate-spin']" />
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              </TableBody>
+            </Table>
+          </div>
+        </CardContent>
+      </Card>
 
     </template>
   </div>
@@ -287,6 +352,29 @@ import { Code, ConnectError } from '@connectrpc/connect'
 import { memoryClient } from '@/utils/connect'
 import { useAuthStore } from '@/stores/auth'
 import { formatTimestamp } from '@/utils/text'
+import {
+  Archive,
+  CloudUpload,
+  Download,
+  List,
+  Loader2,
+  PackageOpen,
+  RotateCcw,
+  RotateCw,
+  Save,
+  Server,
+  ShieldCheck,
+  Trash2,
+  Upload,
+  X,
+} from 'lucide-vue-next'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Button } from '@/components/ui/button'
+import { Card, CardAction, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Separator } from '@/components/ui/separator'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 
 const router = useRouter()
 const auth = useAuthStore()

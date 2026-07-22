@@ -1,25 +1,29 @@
 <template>
-  <div class="mb-3">
+  <div class="mb-3 overflow-hidden rounded-md border bg-muted font-mono text-sm">
     <!-- Toolbar header holds the optional filename label and the copy button.
          It sizes to the button's height, so nothing overlaps the code below. -->
-    <div
-      class="d-flex align-items-center justify-content-between bg-light border border-bottom-0 rounded-top px-2 py-1"
-    >
-      <span class="small text-muted font-monospace text-truncate">{{ lang }}</span>
-      <button
-        class="btn btn-sm btn-outline-secondary py-0 ms-2 flex-shrink-0"
+    <div class="flex items-center justify-between gap-2 border-b px-2 py-1">
+      <span class="truncate text-xs text-muted-foreground">{{ lang }}</span>
+      <Button
+        variant="ghost"
+        size="icon"
+        class="size-8 shrink-0"
+        :title="copied ? 'Copied!' : 'Copy'"
+        :aria-label="copied ? 'Copied' : 'Copy'"
         @click="copy"
       >
-        <font-awesome-icon :icon="['fas', 'copy']" class="me-1" />
-        <span class="small">{{ copied ? 'Copied!' : 'Copy' }}</span>
-      </button>
+        <Check v-if="copied" class="size-4" />
+        <Copy v-else class="size-4" />
+      </Button>
     </div>
-    <pre class="bg-light border border-top-0 rounded-bottom p-3 mb-0"><code>{{ text }}</code></pre>
+    <pre class="mb-0 overflow-x-auto p-3"><code>{{ text }}</code></pre>
   </div>
 </template>
 
 <script setup>
 import { ref, onBeforeUnmount } from 'vue'
+import { Check, Copy } from 'lucide-vue-next'
+import { Button } from '@/components/ui/button'
 
 // CodeBlock renders a monospace snippet with an optional filename/label header
 // and a copy-to-clipboard button. Each instance owns its own transient "Copied!"

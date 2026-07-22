@@ -1,125 +1,125 @@
 <template>
-  <div>
-    <div class="row g-2 align-items-end mb-2">
-      <div class="col-auto" style="width: 160px">
-        <label class="form-label small mb-1">Namespace</label>
-        <input v-model="namespace" class="form-control form-control-sm" placeholder="* = all" @keyup.enter="reload" />
+  <div class="space-y-4">
+    <div class="flex flex-wrap items-end gap-2">
+      <div class="grid gap-1.5" style="width: 160px">
+        <Label class="text-xs">Namespace</Label>
+        <Input v-model="namespace" placeholder="* = all" @keyup.enter="reload" />
       </div>
-      <div class="col-auto" style="width: 110px">
-        <label class="form-label small mb-1">Max nodes</label>
-        <input v-model.number="limit" type="number" min="1" max="500" class="form-control form-control-sm" />
+      <div class="grid gap-1.5" style="width: 110px">
+        <Label class="text-xs">Max nodes</Label>
+        <Input v-model.number="limit" type="number" min="1" max="500" />
       </div>
-      <div class="col-auto" style="width: 120px">
-        <label class="form-label small mb-1" title="Find similar drops matches whose vector distance exceeds this">Similar ≤ dist</label>
-        <input v-model.number="cutoff" type="number" min="0.1" max="1" step="0.05" class="form-control form-control-sm" />
+      <div class="grid gap-1.5" style="width: 120px">
+        <Label class="text-xs" title="Find similar drops matches whose vector distance exceeds this">Similar ≤ dist</Label>
+        <Input v-model.number="cutoff" type="number" min="0.1" max="1" step="0.05" />
       </div>
-      <div class="col-auto">
-        <button class="btn btn-primary btn-sm" :disabled="loading" @click="reload">
-          <font-awesome-icon :icon="['fas', 'rotate']" class="me-1" />Reload
-        </button>
+      <Button size="sm" :disabled="loading" @click="reload">
+        <RotateCw class="size-4" />Reload
+      </Button>
+      <Button size="sm" :variant="connectMode ? 'default' : 'outline'" @click="toggleConnect">
+        <component :is="connectMode ? Unlink : Link2" class="size-4" />
+        {{ connectMode ? 'Connecting…' : 'Connect' }}
+      </Button>
+      <Button size="sm" variant="outline" :disabled="!hasNeighbours" @click="clearNeighbours">
+        Clear added
+      </Button>
+      <div class="flex items-center gap-2">
+        <Switch id="physics" v-model="physicsOn" @update:modelValue="togglePhysics" />
+        <Label for="physics" class="text-xs">Physics</Label>
       </div>
-      <div class="col-auto">
-        <button class="btn btn-sm" :class="connectMode ? 'btn-success' : 'btn-outline-success'" @click="toggleConnect">
-          <font-awesome-icon :icon="['fas', connectMode ? 'link-slash' : 'link']" class="me-1" />
-          {{ connectMode ? 'Connecting…' : 'Connect' }}
-        </button>
-      </div>
-      <div class="col-auto">
-        <button class="btn btn-outline-secondary btn-sm" :disabled="!hasNeighbours" @click="clearNeighbours">
-          Clear added
-        </button>
-      </div>
-      <div class="col-auto form-check form-switch mt-3">
-        <input id="physics" v-model="physicsOn" class="form-check-input" type="checkbox" @change="togglePhysics" />
-        <label for="physics" class="form-check-label small">Physics</label>
-      </div>
-      <div class="col text-end small text-muted">{{ memoryCount }} memories</div>
+      <div class="ml-auto text-sm text-muted-foreground">{{ memoryCount }} memories</div>
     </div>
 
-    <div v-if="connectMode" class="alert alert-success py-1 px-2 small mb-2">
+    <p v-if="connectMode" class="text-sm text-emerald-600 dark:text-emerald-400">
       Connect mode: click a memory, then another, to link them.
       <span v-if="pendingLink">First memory selected — pick the second.</span>
-    </div>
-    <div v-else class="small text-muted mb-2">
+    </p>
+    <p v-else class="text-sm text-muted-foreground">
       Click a memory to inspect it · <strong>double-click</strong> (or “Find similar”) to add its semantic
-      neighbours · click a <span class="text-success">green link</span> to remove it · click an
+      neighbours · click a <span class="text-emerald-600 dark:text-emerald-400">green link</span> to remove it · click an
       <span style="color: #fd7e14">orange dashed</span> edge to mark the pair not-a-duplicate.
-    </div>
+    </p>
 
-    <div v-if="notice" class="alert alert-info py-1 px-2 small mb-2">{{ notice }}</div>
-    <div v-if="error" class="alert alert-danger py-2">{{ error }}</div>
+    <Alert v-if="notice">
+      <AlertDescription>{{ notice }}</AlertDescription>
+    </Alert>
+    <Alert v-if="error" variant="destructive">
+      <AlertDescription>{{ error }}</AlertDescription>
+    </Alert>
 
-    <div class="position-relative border rounded" style="height: 72vh">
-      <div v-if="loading" class="position-absolute top-50 start-50 translate-middle text-muted">
-        <font-awesome-icon :icon="['fas', 'spinner']" spin size="2x" />
+    <div class="relative rounded-md border" style="height: 72vh">
+      <div v-if="loading" class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-muted-foreground">
+        <Loader2 class="size-8 animate-spin" />
       </div>
       <div ref="container" style="height: 100%"></div>
 
       <!-- Details panel for the selected memory. Read-only; no graph mutation. -->
-      <div
+      <Card
         v-if="selected"
-        class="card shadow-sm position-absolute top-0 end-0 m-2"
+        class="absolute top-0 right-0 m-2 shadow-sm"
         style="width: 320px; max-height: calc(72vh - 1rem); overflow: auto"
       >
-        <div class="card-body py-2">
-          <div class="d-flex justify-content-between align-items-start mb-1">
-            <span class="badge bg-secondary">
-              <font-awesome-icon :icon="['fas', 'layer-group']" class="me-1" />{{ selected.namespace }}
-            </span>
-            <button class="btn-close btn-sm" aria-label="Close details panel" @click="deselect"></button>
+        <CardContent class="py-2">
+          <div class="mb-1 flex items-start justify-between">
+            <Badge variant="secondary">
+              <Layers class="size-3" />{{ selected.namespace }}
+            </Badge>
+            <Button variant="ghost" size="icon" class="size-6" aria-label="Close details panel" @click="deselect">
+              <X class="size-3.5" />
+            </Button>
           </div>
           <!-- Edit mode: textarea + tags, replaces the read view in place. -->
-          <div v-if="editing">
-            <textarea v-model="editText" class="form-control form-control-sm mb-2" rows="8" placeholder="Memory text (Markdown)…"></textarea>
-            <input v-model="editTags" class="form-control form-control-sm mb-2" placeholder="tags, comma separated" />
-            <div class="d-flex gap-2">
-              <button class="btn btn-primary btn-sm flex-fill" :disabled="!editText.trim() || savingEdit" @click="saveEdit">
-                <font-awesome-icon :icon="['fas', 'pen']" class="me-1" />Save
-              </button>
-              <button class="btn btn-outline-secondary btn-sm flex-fill" :disabled="savingEdit" @click="editing = false">Cancel</button>
+          <div v-if="editing" class="space-y-2">
+            <Textarea v-model="editText" rows="8" placeholder="Memory text (Markdown)…" />
+            <Input v-model="editTags" placeholder="tags, comma separated" />
+            <div class="flex gap-2">
+              <Button size="sm" class="flex-1" :disabled="!editText.trim() || savingEdit" @click="saveEdit">
+                <Pencil class="size-4" />Save
+              </Button>
+              <Button size="sm" variant="outline" class="flex-1" :disabled="savingEdit" @click="editing = false">Cancel</Button>
             </div>
-            <div v-if="savingEdit" class="small text-muted mt-1">Queued for re-indexing…</div>
+            <p v-if="savingEdit" class="text-sm text-muted-foreground">Queued for re-indexing…</p>
           </div>
           <template v-else>
-            <div class="small mb-2 markdown-body" v-html="renderMarkdown(selected.text)"></div>
-            <div class="small text-muted mb-2">
-              <span v-for="t in selected.tags" :key="t" class="badge bg-info text-dark me-1">#{{ t }}</span>
+            <div class="mb-2 text-sm markdown-body" v-html="renderMarkdown(selected.text)"></div>
+            <div class="mb-2 text-sm text-muted-foreground">
+              <Badge v-for="t in selected.tags" :key="t" variant="outline" class="mr-1">#{{ t }}</Badge>
             </div>
-            <div v-if="selected.conversationId" class="small text-muted mb-2">
-              <font-awesome-icon :icon="['fas', 'comments']" class="me-1" />
-              <span class="font-monospace">{{ selected.conversationId }}</span>
+            <div v-if="selected.conversationId" class="mb-2 flex items-center gap-1 text-sm text-muted-foreground">
+              <MessagesSquare class="size-3.5" />
+              <span class="font-mono">{{ selected.conversationId }}</span>
             </div>
-            <div class="small text-muted mb-2">
+            <div class="mb-2 text-sm text-muted-foreground">
               {{ (selected.linkedIds || []).length }} explicit link(s)
               <span v-if="(selected.dupCandidates || []).length" style="color: #fd7e14">
                 · {{ selected.dupCandidates.length }} duplicate candidate(s)
               </span>
             </div>
-            <div v-if="selected.accessCount || selected.lastAccessedAt" class="small text-muted mb-2 d-flex flex-wrap gap-2 align-items-center">
-              <span v-if="selected.accessCount" class="badge bg-warning text-dark" title="times the agent recalled this memory (living memory)">
-                <font-awesome-icon :icon="['fas', 'fire']" class="me-1" />{{ selected.accessCount }} recall(s)
-              </span>
-              <span v-if="selected.lastAccessedAt" title="when this memory was last recalled">
-                <font-awesome-icon :icon="['fas', 'clock-rotate-left']" class="me-1" />{{ fmtDate(selected.lastAccessedAt) }}
+            <div v-if="selected.accessCount || selected.lastAccessedAt" class="mb-2 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+              <Badge v-if="selected.accessCount" variant="secondary" class="text-amber-600 dark:text-amber-400" title="times the agent recalled this memory (living memory)">
+                <Flame class="size-3" />{{ selected.accessCount }} recall(s)
+              </Badge>
+              <span v-if="selected.lastAccessedAt" class="inline-flex items-center gap-1" title="when this memory was last recalled">
+                <History class="size-3" />{{ fmtDate(selected.lastAccessedAt) }}
               </span>
             </div>
-            <button class="btn btn-outline-primary btn-sm w-100 mb-2" @click="expandSemantic('m:' + selected.id)">
-              <font-awesome-icon :icon="['fas', 'magnifying-glass']" class="me-1" />Find similar
-            </button>
-            <button class="btn btn-outline-secondary btn-sm w-100 mb-2" @click="startEdit">
-              <font-awesome-icon :icon="['fas', 'pen']" class="me-1" />Edit memory
-            </button>
-            <button class="btn btn-outline-danger btn-sm w-100" @click="deleteSelected">
-              <font-awesome-icon :icon="['fas', 'trash']" class="me-1" />Delete memory
-            </button>
+            <Button variant="outline" size="sm" class="mb-2 w-full" @click="expandSemantic('m:' + selected.id)">
+              <Search class="size-4" />Find similar
+            </Button>
+            <Button variant="outline" size="sm" class="mb-2 w-full" @click="startEdit">
+              <Pencil class="size-4" />Edit memory
+            </Button>
+            <Button variant="outline" size="sm" class="w-full text-destructive hover:text-destructive" @click="deleteSelected">
+              <Trash2 class="size-4" />Delete memory
+            </Button>
           </template>
-        </div>
-      </div>
+        </CardContent>
+      </Card>
     </div>
 
-    <div class="small text-muted mt-2">
+    <div class="text-sm text-muted-foreground">
       node colour = namespace &nbsp;·&nbsp;
-      <span class="text-success">green</span> = explicit link &nbsp;·&nbsp;
+      <span class="text-emerald-600 dark:text-emerald-400">green</span> = explicit link &nbsp;·&nbsp;
       <span style="color: #fd7e14">orange dashed</span> = likely duplicate (flagged) &nbsp;·&nbsp;
       <span class="text-primary">blue dashed</span> = semantic neighbour (added on demand)
     </div>
@@ -134,7 +134,30 @@ import { Code, ConnectError } from '@connectrpc/connect'
 import { memoryClient } from '@/utils/connect'
 import { renderMarkdown } from '@/utils/markdown'
 import { useAuthStore } from '@/stores/auth'
+import { theme } from '@/lib/theme'
 import { truncate } from '@/utils/text'
+import {
+  Flame,
+  History,
+  Layers,
+  Link2,
+  Loader2,
+  MessagesSquare,
+  Pencil,
+  RotateCw,
+  Search,
+  Trash2,
+  Unlink,
+  X,
+} from 'lucide-vue-next'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Switch } from '@/components/ui/switch'
+import { Textarea } from '@/components/ui/textarea'
 
 const router = useRouter()
 const auth = useAuthStore()
@@ -160,6 +183,8 @@ const editTags = ref('')
 const savingEdit = ref(false)
 // Changing/closing the selection always drops out of edit mode.
 watch(selected, () => { editing.value = false })
+// Recolor node labels when the theme toggles while a graph is on screen.
+watch(theme, () => { if (network) render() })
 
 let network = null
 let nodes = null
@@ -290,7 +315,9 @@ function render() {
     // Fixed seed so the layout is reproducible across reloads instead of
     // re-scrambling every time.
     layout: { randomSeed: 7, improvedLayout: true },
-    nodes: { borderWidth: 1, font: { size: 12 } },
+    // Label color follows the app theme — vis-network defaults to near-black,
+    // which is unreadable on the dark background.
+    nodes: { borderWidth: 1, font: { size: 12, color: theme.value === 'dark' ? '#e4e4e7' : '#18181b' } },
     edges: { smooth: { type: 'continuous' } },
     physics: {
       enabled: physicsOn.value,
