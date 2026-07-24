@@ -2,7 +2,7 @@
 # per service via `entrypoint`. Build it with `make image`.
 
 # Stage 1: build the embedded web UI. cortex-server go:embeds ui/dist.
-FROM node:22-alpine AS ui
+FROM node:26-alpine AS ui
 WORKDIR /ui
 COPY ui/package.json ui/package-lock.json ./
 RUN npm ci
