@@ -163,6 +163,37 @@ search your memory for my language preference</pre>
         <CodeBlock :text="claudeMd" lang="~/.claude/CLAUDE.md" />
       </CardContent>
     </Card>
+
+    <!-- ── Automatic recall hook ────────────────────────────────── -->
+    <Card>
+      <CardHeader>
+        <CardTitle>7. Automatic recall on every prompt (recommended)</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <p class="mb-2">
+          The CLAUDE.md snippet asks the model to search memory; this hook stops asking. Wired as
+          a Claude Code <code>UserPromptSubmit</code> hook, <code>cortex hook recall</code>
+          semantically searches your memories for <strong>every prompt you type</strong> and
+          injects the best matches into the model's context before it starts working. Add to your
+          <code>~/.claude/settings.json</code> (adjust the path to where step 1 installed the
+          <code>cortex</code> CLI):
+        </p>
+        <CodeBlock :text="recallHookJson" lang="~/.claude/settings.json" />
+        <p class="mb-2 text-sm text-muted-foreground">
+          It reuses the CLI config (<code>~/.config/cortex/cortex.yaml</code>, set up via
+          <code>cortex onboard</code>). It is <strong>fail-open and hard-bounded</strong>: the
+          whole run is capped by <code>--timeout</code> (default 5s) and any error — server
+          unreachable, VPN down — produces no output and exit 0, so it can never block or delay
+          a prompt.
+        </p>
+        <ul class="mb-0 text-sm text-muted-foreground">
+          <li>Skips slash commands and prompts shorter than <code>--min-chars</code> (12).</li>
+          <li>Injects at most <code>-l</code> 3 memories, each capped at <code>--max-chars</code> 1500, behind a strict <code>-d</code> 0.5 distance cutoff — silence is the common case.</li>
+          <li>Long prompts (pasted logs/diffs) are split into ~512-token chunks searched concurrently (<code>--max-query-chunks</code>, default 4) and merged by best distance.</li>
+          <li>Per-session dedup: the same memory is never injected twice in one session.</li>
+        </ul>
+      </CardContent>
+    </Card>
   </div>
 </template>
 
@@ -201,6 +232,25 @@ const claudeMcpAdd = computed(() =>
 
 const claudeCodeJson = computed(() => mcpJson('claude-code'))
 const claudeDesktopJson = computed(() => mcpJson('claude-desktop'))
+
+// The per-prompt auto-recall hook (step 7). The outer "timeout" is Claude
+// Code's own cap on the hook process; the CLI's --timeout (default 5s) fires
+// first so the hook exits silently instead of being killed.
+const recallHookJson = JSON.stringify(
+  {
+    hooks: {
+      UserPromptSubmit: [
+        {
+          hooks: [
+            { type: 'command', command: '/absolute/path/to/cortex hook recall', timeout: 10 },
+          ],
+        },
+      ],
+    },
+  },
+  null,
+  2
+)
 
 // mcpJson renders the mcpServers config block shared by Claude Code
 // (~/.claude.json) and Claude Desktop (claude_desktop_config.json); only the

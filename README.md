@@ -360,6 +360,54 @@ unreachable (VPN down), or no preferences are stored, it prints nothing and exit
 so it can never delay or break session start (it caps the lookup at 8s). To change a
 preference, edit the memory in the web UI or re-save it; the next session picks it up.
 
+### Automatic recall (UserPromptSubmit hook)
+
+Saving is easy to make a habit; recalling is not. Searching memory is cued by an
+*absence* — the model only reaches for `cortex_memory_search` when it already
+suspects there is something to find, which is exactly when it is least needed.
+`cortex hook recall` turns recall into a push instead of a pull: wired as a
+Claude Code **UserPromptSubmit** hook, it semantically searches your memories for
+**every prompt you type** and injects the best matches into the model's context
+before it starts working. Recall stops depending on the model's judgment.
+
+```bash
+# Register in ~/.claude/settings.json (user scope) under hooks.UserPromptSubmit:
+#   {
+#     "hooks": {
+#       "UserPromptSubmit": [
+#         {
+#           "hooks": [
+#             { "type": "command", "command": "$HOME/.local/bin/cortex hook recall", "timeout": 10 }
+#           ]
+#         }
+#       ]
+#     }
+#   }
+```
+
+It needs the `cortex` CLI installed (`scripts/install.sh`) and configured
+(`~/.config/cortex/cortex.yaml`, e.g. via `cortex onboard`) — the hook reuses
+that server/token config. It is **fail-open and hard-bounded**: the whole run is
+capped by `--timeout` (default **5s**), and any error — server unreachable, VPN
+down, malformed input, deadline hit — prints nothing and exits 0, so it can
+never delay or block a prompt. Behavior details (all tunable via flags on the
+`command` line):
+
+- Skips slash/bang commands and prompts shorter than `--min-chars` (12).
+- Searches **all** namespaces by default (`-n '*'`) — past context is often in
+  another project's scope. Injects at most `-l` 3 memories per prompt, each
+  truncated to `--max-chars` 1500, gated by a deliberately strict `-d` 0.5
+  distance cutoff so *silence is the common case* (injected noise teaches the
+  model to ignore the block).
+- **Long prompts are chunked**: pasted logs/diffs embed poorly as one blob, so
+  prompts are split into ~512-token chunks, up to `--max-query-chunks` (4) of
+  them searched concurrently (first + last + sampled middles — the actual ask
+  lives at the ends), and results merged keeping each memory's best distance.
+- **Per-session dedup**: a memory injected once is not re-injected on later
+  prompts of the same session (state under `--state-dir`, pruned after 48h).
+- Injections do **not** reinforce the living-memory signal unless `--reinforce`
+  is set — an automatic push is not the agent choosing to recall.
+
 ### `consolidate-memories` skill (bundled)
 
 This repo ships a Claude Code skill at
@@ -584,6 +632,7 @@ authenticate with `--token` / `CORTEX_AUTH_TOKEN`.
 | `cortex summarize "<text>" --conversation <id>` | Save/update a conversation summary (unique per `--conversation`). |
 | `cortex summaries [-n '*'] [-l N]` | List conversation summaries, most-recently-updated first. |
 | `cortex recall "<query>"` | Recall the best-matching past session: summary + its facts. |
+| `cortex hook recall [--timeout 5s]` | Claude Code **UserPromptSubmit** hook endpoint: reads the hook event on stdin, searches memories for the prompt (chunking long ones) and prints matches for injection into context. Fail-open, hard-bounded by `--timeout`. See [Automatic recall](#automatic-recall-userpromptsubmit-hook). |
 | `cortex config init` | Scaffold `~/.config/cortex/cortex.yaml` (won't overwrite without `--force`). |
 | `cortex config show` | Print the effective config (flags + env + file merged) and which file was used. |
 

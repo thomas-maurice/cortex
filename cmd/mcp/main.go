@@ -217,17 +217,28 @@ func main() {
 		autoSaveTags:       autoSaveTags,
 	}
 
+	// The recall contract ships in the MCP instructions so it is loaded
+	// deterministically every session, versioned with the server — unlike a
+	// CLAUDE.md rule the user must maintain by hand. Recall is the weak side of
+	// agent memory use (saving is event-cued, searching is absence-cued), hence
+	// the imperative tone.
+	instructions := "Cortex is the user's persistent cross-session memory. RECALL FIRST: at the start of any " +
+		"non-trivial task — and whenever a project, system, person, tool choice, past decision, error, or " +
+		"phrasing like 'how did we', 'last time', 'as usual' comes up — call cortex_memory_search BEFORE " +
+		"answering or acting; a cheap empty result beats contradicting a stored decision. Save new facts, " +
+		"preferences, decisions and outcomes proactively with cortex_memory_save, and maintain one running " +
+		"cortex_session_summarize per conversation, updated at every milestone."
+
 	// Startup version probe (best-effort, short deadline so a down server never
 	// delays MCP startup): when the server runs a different, compatible version,
 	// the MCP instructions tell the model it may call cortex_upgrade. GetVersion
 	// is unauthenticated, so this works even with stale credentials.
-	instructions := ""
 	{
 		probeCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		if resp, err := d.client.GetVersion(probeCtx, connect.NewRequest(&cortexv1.GetVersionRequest{})); err == nil {
 			if dec := upgrade.Decide(version, resp.Msg.GetVersion()); dec.Action == upgrade.Upgrade {
-				instructions = fmt.Sprintf(
-					"The local cortex binaries (v%s) do not match the Cortex server (v%s). "+
+				instructions += fmt.Sprintf(
+					"\n\nThe local cortex binaries (v%s) do not match the Cortex server (v%s). "+
 						"You may call the cortex_upgrade tool to download the matching release and update them; "+
 						"mention it to the user before doing so unless they asked for the upgrade.",
 					version, resp.Msg.GetVersion())
