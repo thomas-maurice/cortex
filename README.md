@@ -403,8 +403,20 @@ never delay or block a prompt. Behavior details (all tunable via flags on the
   prompts are split into ~512-token chunks, up to `--max-query-chunks` (4) of
   them searched concurrently (first + last + sampled middles — the actual ask
   lives at the ends), and results merged keeping each memory's best distance.
-- **Per-session dedup**: a memory injected once is not re-injected on later
-  prompts of the same session (state under `--state-dir`, pruned after 48h).
+- **Per-session dedup, shared with the MCP server**: a memory injected once is
+  not re-injected on later prompts of the same session. State lives in a single
+  bbolt database (`internal/recallstate`, default `~/.cache/cortex/cortex.db`,
+  created on demand, override with `--state-db`) with one bucket per
+  conversation — conversations idle for 48h are pruned. The database is never
+  held open: every operation is open→txn→close with a short lock timeout plus
+  retries, so concurrent sessions (multiple MCP servers + hook runs) interleave
+  safely. The MCP server plays the same game: `cortex_memory_search` returns a
+  memory's full text only the first time it reaches a session's context —
+  afterwards it comes back as a ~120-char **stub** (`fresh=true` re-fetches in
+  full, e.g. after compaction dropped the earlier copy). Hook and MCP share the
+  per-conversation bucket when the MCP knows the real session id
+  (`CLAUDE_CODE_SESSION_ID` / `CORTEX_CONVERSATION_ID` in its env); without it
+  the MCP still dedups its own results in-process for the session's lifetime.
 - Injections do **not** reinforce the living-memory signal unless `--reinforce`
   is set — an automatic push is not the agent choosing to recall.
 

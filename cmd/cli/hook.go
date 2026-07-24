@@ -16,7 +16,6 @@ import (
 	"io"
 	"math"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -27,6 +26,7 @@ import (
 
 	cortexv1 "github.com/thomas-maurice/cortex/gen/cortex/v1"
 	"github.com/thomas-maurice/cortex/internal/chunk"
+	"github.com/thomas-maurice/cortex/internal/recallstate"
 )
 
 // hookEvent is the subset of the Claude Code hook input we use. UserPromptSubmit
@@ -154,94 +154,6 @@ func formatRecall(hits []*cortexv1.Hit, maxChars int) string {
 	return b.String()
 }
 
-// sanitizeSessionID keeps session-derived state filenames path-safe.
-func sanitizeSessionID(id string) string {
-	return strings.Map(func(r rune) rune {
-		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
-			return r
-		}
-		return -1
-	}, id)
-}
-
-// seenState deduplicates injections across the turns of one session: a memory
-// already placed in context once is not injected again.
-type seenState struct {
-	path string
-	ids  map[string]bool
-}
-
-// loadSeen reads the per-session state file (missing/corrupt file = empty state)
-// and opportunistically prunes state files of long-finished sessions.
-func loadSeen(dir, sessionID string) seenState {
-	pruneSeen(dir)
-	s := seenState{ids: map[string]bool{}}
-	id := sanitizeSessionID(sessionID)
-	if dir == "" || id == "" {
-		return s
-	}
-	s.path = filepath.Join(dir, id+".json")
-	raw, err := os.ReadFile(s.path)
-	if err != nil {
-		return s
-	}
-	var ids []string
-	if json.Unmarshal(raw, &ids) == nil {
-		for _, v := range ids {
-			s.ids[v] = true
-		}
-	}
-	return s
-}
-
-// save persists the state, adding newIDs. Best-effort: state is an optimization,
-// so failures are ignored (the worst case is a repeated injection).
-func (s seenState) save(newIDs []string) {
-	if s.path == "" {
-		return
-	}
-	for _, id := range newIDs {
-		s.ids[id] = true
-	}
-	all := make([]string, 0, len(s.ids))
-	for id := range s.ids {
-		all = append(all, id)
-	}
-	if raw, err := json.Marshal(all); err == nil {
-		_ = os.MkdirAll(filepath.Dir(s.path), 0o755)
-		_ = os.WriteFile(s.path, raw, 0o644)
-	}
-}
-
-// pruneSeen removes session state files older than 48h; sessions do not live
-// that long, and the dedup value of stale state is nil.
-func pruneSeen(dir string) {
-	if dir == "" {
-		return
-	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return
-	}
-	cutoff := time.Now().Add(-48 * time.Hour)
-	for _, e := range entries {
-		if info, err := e.Info(); err == nil && info.ModTime().Before(cutoff) {
-			_ = os.Remove(filepath.Join(dir, e.Name()))
-		}
-	}
-}
-
-// defaultHookStateDir is <user cache dir>/cortex/recall-state, or "" (dedup
-// disabled) when no cache dir is resolvable.
-func defaultHookStateDir() string {
-	base, err := os.UserCacheDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(base, "cortex", "recall-state")
-}
-
 func hookCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "hook",
@@ -254,14 +166,14 @@ func hookCmd() *cobra.Command {
 
 func hookRecallCmd() *cobra.Command {
 	var (
-		timeout     time.Duration
-		namespace   string
-		limit       int
-		maxDistance float32
-		minChars    int
-		maxChars    int
+		timeout        time.Duration
+		namespace      string
+		limit          int
+		maxDistance    float32
+		minChars       int
+		maxChars       int
 		reinforce      bool
-		stateDir       string
+		stateDB        string
 		maxQueryChunks int
 	)
 	cmd := &cobra.Command{
@@ -321,11 +233,11 @@ func hookRecallCmd() *cobra.Command {
 			}
 			wg.Wait()
 
-			seen := loadSeen(stateDir, ev.SessionID)
+			seen := recallstate.Load(stateDB, ev.SessionID)
 			var fresh []*cortexv1.Hit
 			var freshIDs []string
 			for _, h := range mergeHits(lists, limit) {
-				if id := h.GetMemory().GetId(); !seen.ids[id] {
+				if id := h.GetMemory().GetId(); !seen.Seen(id) {
 					fresh = append(fresh, h)
 					freshIDs = append(freshIDs, id)
 				}
@@ -334,7 +246,7 @@ func hookRecallCmd() *cobra.Command {
 				return nil
 			}
 			fmt.Fprint(cmd.OutOrStdout(), formatRecall(fresh, maxChars))
-			seen.save(freshIDs)
+			seen.Add(freshIDs...)
 			return nil
 		},
 	}
@@ -345,7 +257,7 @@ func hookRecallCmd() *cobra.Command {
 	cmd.Flags().IntVar(&minChars, "min-chars", 12, "skip prompts shorter than this (short continuations need no recall)")
 	cmd.Flags().IntVar(&maxChars, "max-chars", 1500, "truncate each injected memory to this many characters (0 = no cap)")
 	cmd.Flags().BoolVar(&reinforce, "reinforce", false, "count injections as recalls for the living-memory signal")
-	cmd.Flags().StringVar(&stateDir, "state-dir", defaultHookStateDir(), "directory for per-session dedup state (empty disables dedup)")
+	cmd.Flags().StringVar(&stateDB, "state-db", recallstate.DefaultPath(), "bbolt database for per-session dedup state, shared with the MCP server (empty disables dedup)")
 	cmd.Flags().IntVar(&maxQueryChunks, "max-query-chunks", 4, "long prompts are split into ~512-token chunks searched concurrently; beyond this many, chunks are sampled (first + last + evenly spaced middles). 0 = search every chunk")
 	return cmd
 }

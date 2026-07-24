@@ -1,11 +1,8 @@
 package main
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -110,43 +107,5 @@ func TestFormatRecall(t *testing.T) {
 	assert.Contains(t, out, "</cortex-recall>")
 }
 
-// Dedup exists so the same memory is not re-injected on every prompt of a
-// session — repeated blocks waste context and get tuned out.
-func TestSeenStateRoundTrip(t *testing.T) {
-	dir := t.TempDir()
-
-	s := loadSeen(dir, "sess-1")
-	assert.Empty(t, s.ids)
-	s.save([]string{"m1", "m2"})
-
-	s2 := loadSeen(dir, "sess-1")
-	assert.True(t, s2.ids["m1"])
-	assert.True(t, s2.ids["m2"])
-	assert.False(t, s2.ids["m3"])
-
-	// Another session shares nothing.
-	assert.Empty(t, loadSeen(dir, "sess-2").ids)
-
-	// No session id / no dir → dedup disabled, saving is a no-op.
-	assert.Empty(t, loadSeen(dir, "").ids)
-	assert.Empty(t, loadSeen("", "sess-1").ids)
-}
-
-func TestSeenStatePrune(t *testing.T) {
-	dir := t.TempDir()
-	stale := filepath.Join(dir, "old.json")
-	require.NoError(t, os.WriteFile(stale, []byte(`["m1"]`), 0o644))
-	old := time.Now().Add(-72 * time.Hour)
-	require.NoError(t, os.Chtimes(stale, old, old))
-
-	loadSeen(dir, "sess-1")
-	_, err := os.Stat(stale)
-	assert.True(t, os.IsNotExist(err), "state older than 48h is pruned")
-}
-
-// Session ids come from external JSON and become filenames; anything path-like
-// must be stripped so the state file cannot escape the state dir.
-func TestSanitizeSessionID(t *testing.T) {
-	assert.Equal(t, "abc-123_X", sanitizeSessionID("abc-123_X"))
-	assert.Equal(t, "etcpasswd", sanitizeSessionID("../../etc/passwd"))
-}
+// Session-level dedup itself lives in internal/recallstate (tested there); the
+// hook's use of it is exercised end-to-end against a dev stack.

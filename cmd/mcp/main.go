@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"connectrpc.com/connect"
@@ -20,6 +21,7 @@ import (
 	cortexv1 "github.com/thomas-maurice/cortex/gen/cortex/v1"
 	"github.com/thomas-maurice/cortex/gen/cortex/v1/cortexv1connect"
 	"github.com/thomas-maurice/cortex/internal/config"
+	"github.com/thomas-maurice/cortex/internal/recallstate"
 	"github.com/thomas-maurice/cortex/internal/rpc"
 	"github.com/thomas-maurice/cortex/internal/upgrade"
 )
@@ -83,16 +85,20 @@ func (d *deps) nsOrDefault(ns string) string {
 // A value that arrives unexpanded as a literal "${...}" (failed .mcp.json
 // expansion) is treated as absent. Either way the summary and the facts saved
 // during the session share one ID, so recall links them.
-func resolveConversationID(log *slog.Logger) string {
+//
+// The second return reports whether the id came from the environment — i.e. is
+// (or deliberately overrides as) the real session id. Only then can the recall
+// dedup state be shared with the prompt hook, which keys by the real session id.
+func resolveConversationID(log *slog.Logger) (string, bool) {
 	if cid := firstUsableEnv("CORTEX_CONVERSATION_ID", "CLAUDE_CODE_SESSION_ID"); cid != "" {
 		log.Info("conversation id resolved from env", "conversationId", cid)
-		return cid
+		return cid, true
 	}
 	cid := uuid.NewString()
 	log.Warn("no conversation id in env (set CORTEX_CONVERSATION_ID, or forward "+
 		"CLAUDE_CODE_SESSION_ID); using a per-process id that won't survive an MCP restart",
 		"conversationId", cid)
-	return cid
+	return cid, false
 }
 
 // firstUsableEnv returns the first env var that is set and not an unexpanded
@@ -131,6 +137,19 @@ type deps struct {
 	// save.tags list plus, opt-in, a host:<hostname> tag). Save-only, never used
 	// to filter searches.
 	autoSaveTags []string
+
+	// Session-scoped recall dedup: a memory whose full text was already delivered
+	// to this session's context (by an earlier search, or by the `cortex hook
+	// recall` prompt hook) is returned as a short stub instead of repeated in
+	// full — repeating it only inflates token use. seen is the in-process set
+	// (this MCP process lives exactly as long as the session); the shared
+	// recallstate file adds cross-process dedup with the hook, but only when
+	// conversationID is the real Claude session id (realSession) — the fallback
+	// UUID would never match the hook's key.
+	seenMu      sync.Mutex
+	seen        map[string]bool
+	statePath   string
+	realSession bool
 }
 
 // withTimeout wraps a tool handler so EVERY cortex MCP call fails fast: it bounds
@@ -192,7 +211,7 @@ func main() {
 		maxDistance = float32(cfg.GetFloat64("mcp.max-distance"))
 	)
 
-	conversationID := resolveConversationID(log)
+	conversationID, realSession := resolveConversationID(log)
 
 	autoSaveTags := config.AutoTags(cfg.GetStringSlice("save.tags"), cfg.GetBool("save.hostname-tag"))
 
@@ -215,6 +234,9 @@ func main() {
 		defaultSearchLimit: cfg.GetInt("mcp.search-limit"),
 		defaultFactLimit:   cfg.GetInt("mcp.fact-limit"),
 		autoSaveTags:       autoSaveTags,
+		seen:               map[string]bool{},
+		statePath:          recallstate.DefaultPath(),
+		realSession:        realSession,
 	}
 
 	// The recall contract ships in the MCP instructions so it is loaded
@@ -284,7 +306,9 @@ func main() {
 			"context or contradicting a stored decision/preference. Only skip it for a pure greeting or a fully " +
 			"self-contained mechanical step. Returns the most relevant memories for a natural-language query, " +
 			"optionally filtered by namespace, required/excluded tags, and a relevance cutoff (maxDistance) that " +
-			"drops weak matches.",
+			"drops weak matches. Memories whose full text was already delivered to this session's context " +
+			"(by an earlier search or the recall prompt hook) come back as short stubs to avoid inflating " +
+			"token use — pass fresh=true only if the earlier copy is no longer in context (e.g. compacted away).",
 	}, withTimeout(callTimeout, d.search))
 
 	mcp.AddTool(server, &mcp.Tool{
@@ -459,6 +483,7 @@ type SearchIn struct {
 	AnyTags     []string `json:"anyTags,omitempty" jsonschema:"only return memories carrying AT LEAST ONE of these tags"`
 	ExcludeTags []string `json:"excludeTags,omitempty" jsonschema:"drop memories carrying ANY of these tags"`
 	MaxDistance float32  `json:"maxDistance,omitempty" jsonschema:"relevance cutoff (cosine distance, ~0=identical, larger=less related); results farther than this are dropped; omit to use the server default"`
+	Fresh       bool     `json:"fresh,omitempty" jsonschema:"return full text even for memories already delivered to this session's context earlier (normally those come back as short stubs to save tokens); set true when the earlier copy was lost, e.g. after context compaction"`
 }
 
 type SearchHit struct {
@@ -470,6 +495,10 @@ type SearchHit struct {
 	Model         string   `json:"model,omitempty"`
 	LinkedIDs     []string `json:"linkedIds,omitempty"`
 	DupCandidates []string `json:"dupCandidates,omitempty"`
+	// Stub is true when Text is a truncated prefix because the full text was
+	// already delivered to this session's context earlier (pass fresh=true to
+	// re-fetch it in full).
+	Stub bool `json:"stub,omitempty"`
 }
 
 type SearchOut struct {
@@ -506,26 +535,57 @@ func (d *deps) search(ctx context.Context, _ *mcp.CallToolRequest, in SearchIn) 
 	}
 
 	hits := resp.Msg.GetHits()
+
+	// Session dedup: a memory whose full text already reached this session's
+	// context (earlier search, or the prompt hook via the shared state file)
+	// comes back as a stub — the full text is a token-inflating repeat. The
+	// state file is re-read on every call to pick up hook writes between turns.
+	d.seenMu.Lock()
+	defer d.seenMu.Unlock()
+	var hookState *recallstate.State
+	if d.realSession {
+		hookState = recallstate.Load(d.statePath, d.conversationID)
+	}
+	alreadySeen := func(id string) bool {
+		return d.seen[id] || (hookState != nil && hookState.Seen(id))
+	}
+
 	out := SearchOut{Hits: make([]SearchHit, 0, len(hits))}
 	var b strings.Builder
 	if len(hits) == 0 {
 		b.WriteString("No memories found.")
 	}
-	flagged := 0
+	flagged, stubbed := 0, 0
+	var delivered []string
 	for i, h := range hits {
 		m := h.GetMemory()
 		dups := m.GetDupCandidates()
+		text := m.GetText()
+		stub := !in.Fresh && alreadySeen(m.GetId())
+		if stub {
+			stubbed++
+			text = truncateRunes(text, stubTextChars)
+		} else {
+			d.seen[m.GetId()] = true
+			delivered = append(delivered, m.GetId())
+		}
 		out.Hits = append(out.Hits, SearchHit{
 			ID:            m.GetId(),
-			Text:          m.GetText(),
+			Text:          text,
 			Namespace:     m.GetNamespace(),
 			Tags:          m.GetTags(),
 			Distance:      h.GetDistance(),
 			Model:         m.GetModel(),
 			LinkedIDs:     m.GetLinkedIds(),
 			DupCandidates: dups,
+			Stub:          stub,
 		})
-		fmt.Fprintf(&b, "%d. id=%s [%s] (dist %.3f) %s\n", i+1, m.GetId(), m.GetNamespace(), h.GetDistance(), m.GetText())
+		if stub {
+			fmt.Fprintf(&b, "%d. id=%s [%s] (dist %.3f) [stub — full text already in this session's context] %s\n",
+				i+1, m.GetId(), m.GetNamespace(), h.GetDistance(), text)
+		} else {
+			fmt.Fprintf(&b, "%d. id=%s [%s] (dist %.3f) %s\n", i+1, m.GetId(), m.GetNamespace(), h.GetDistance(), text)
+		}
 		if len(dups) > 0 {
 			flagged++
 			fmt.Fprintf(&b, "   ⚠ %d likely duplicate(s) flagged — run cortex_consolidate to merge\n", len(dups))
@@ -534,7 +594,26 @@ func (d *deps) search(ctx context.Context, _ *mcp.CallToolRequest, in SearchIn) 
 	if flagged > 0 {
 		fmt.Fprintf(&b, "\n%d of %d result(s) have duplicate candidates; cortex_consolidate can gather and merge the cluster.\n", flagged, len(hits))
 	}
+	if stubbed > 0 {
+		fmt.Fprintf(&b, "\n%d result(s) stubbed (already delivered this session). If the earlier copy is gone (e.g. compacted away), re-run with fresh=true.\n", stubbed)
+	}
+	if hookState != nil {
+		hookState.Add(delivered...)
+	}
 	return text2result(strings.TrimSpace(b.String())), out, nil
+}
+
+// stubTextChars is how much of an already-delivered memory's text a stub keeps —
+// enough to recognise it, not enough to re-inflate the context.
+const stubTextChars = 120
+
+// truncateRunes shortens s to at most n runes, marking the cut.
+func truncateRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
 }
 
 // ---- memory_delete ----
