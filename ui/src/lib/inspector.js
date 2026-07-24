@@ -11,15 +11,21 @@ export const inspectorResolver = ref(null)
 // Bumped after an edit/delete performed inside the inspector; host views watch
 // this to reload their lists.
 export const inspectorChanged = ref(0)
+// Optional host-provided action: (id) => void. When set, the inspector header
+// shows a "Find similar" button (the graph view uses it to expand semantic
+// neighbours of the inspected memory).
+export const inspectorFindSimilar = ref(null)
 
-export function openInspector(memory, resolver = null) {
+export function openInspector(memory, resolver = null, findSimilar = null) {
   inspectorMemory.value = memory
   inspectorResolver.value = resolver
+  inspectorFindSimilar.value = findSimilar
 }
 
 export function closeInspector() {
   inspectorMemory.value = null
   inspectorResolver.value = null
+  inspectorFindSimilar.value = null
 }
 
 export function bumpInspectorChanged() {

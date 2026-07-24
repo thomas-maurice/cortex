@@ -120,9 +120,10 @@ coloured by namespace. Three kinds of relationship:
   mode, click memory A then B to create one (`Link`); click a green edge to
   remove it (`Unlink`).
 - **Semantic neighbours** (dashed blue, on demand) — double-click a memory or use
-  "Find similar" to run a vector `Search` for its nearest neighbours, gated by the
-  **Similar ≤ dist** cutoff (weak matches are dropped, not drawn). "Clear added"
-  removes them.
+  "Find similar" (in the memory inspector's header, or in the slim on-canvas panel
+  once the inspector is closed) to run a vector `Search` for its nearest
+  neighbours, gated by the **Similar ≤ dist** cutoff (weak matches are dropped,
+  not drawn). "Clear added" removes them.
 - (Tags are shown in the click-to-inspect details panel, not as nodes.)
 
 Reliability details: the layout uses a fixed random seed (reproducible across

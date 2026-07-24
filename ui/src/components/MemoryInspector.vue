@@ -5,6 +5,9 @@
         <SheetTitle class="flex flex-wrap items-center gap-2 pr-6 text-base">
           <Badge variant="secondary"><Layers class="size-3" />{{ m?.namespace }}</Badge>
           <Badge v-for="t in m?.tags || []" :key="t" variant="outline"><Tag class="size-3" />{{ t }}</Badge>
+          <Button v-if="inspectorFindSimilar" variant="outline" size="sm" class="ml-auto" @click="findSimilar">
+            <Search class="size-4" />Find similar
+          </Button>
         </SheetTitle>
         <SheetDescription class="sr-only">Memory details</SheetDescription>
       </SheetHeader>
@@ -81,11 +84,12 @@ import { confirmDialog } from '@/lib/confirm'
 import {
   inspectorMemory,
   inspectorResolver,
+  inspectorFindSimilar,
   openInspector,
   closeInspector,
   bumpInspectorChanged,
 } from '@/lib/inspector'
-import { Flame, History, Layers, Link2, MessagesSquare, Pencil, Tag, Trash2 } from 'lucide-vue-next'
+import { Flame, History, Layers, Link2, MessagesSquare, Pencil, Search, Tag, Trash2 } from 'lucide-vue-next'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -128,10 +132,19 @@ function resolve(id) {
   return inspectorResolver.value ? inspectorResolver.value(id) : undefined
 }
 
+// Close the sheet before expanding: the result (new neighbours) appears in the
+// host view behind it.
+function findSimilar() {
+  const fn = inspectorFindSimilar.value
+  const id = m.value.id
+  closeInspector()
+  fn(id)
+}
+
 async function followLink(id) {
   const target = resolve(id)
   if (target) {
-    openInspector(target, inspectorResolver.value)
+    openInspector(target, inspectorResolver.value, inspectorFindSimilar.value)
     return
   }
   try {

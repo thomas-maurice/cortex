@@ -321,7 +321,7 @@ function onClick(params) {
   }
   const node = nodes.get(id)
   selected.value = node?.mem || null
-  if (selected.value) openInspector(selected.value, resolveMemory)
+  if (selected.value) openInspector(selected.value, resolveMemory, (mid) => expandSemantic('m:' + mid))
 }
 
 // Double click is the explicit "expand semantic neighbours" gesture.
