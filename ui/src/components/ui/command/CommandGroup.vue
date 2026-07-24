@@ -14,18 +14,25 @@ const props = defineProps({
     skipCheck: true,
   },
   heading: { type: String, required: false },
+  // Render the group and its items regardless of the filter state. Needed for
+  // items that arrive asynchronously (e.g. server-side search hits): the filter
+  // only recomputes on search-text changes, so late-mounting items would
+  // otherwise stay hidden until the next keystroke.
+  forceMount: { type: Boolean, required: false },
 });
 
-const delegatedProps = reactiveOmit(props, "class");
+const delegatedProps = reactiveOmit(props, "class", "forceMount");
 
 const { allGroups, filterState } = useCommand();
 const id = useId();
 
 const isRender = computed(() =>
-  !filterState.search ? true : filterState.filtered.groups.has(id),
+  props.forceMount || !filterState.search
+    ? true
+    : filterState.filtered.groups.has(id),
 );
 
-provideCommandGroupContext({ id });
+provideCommandGroupContext({ id, forceMount: props.forceMount });
 onMounted(() => {
   if (!allGroups.value.has(id)) allGroups.value.set(id, new Set());
 });

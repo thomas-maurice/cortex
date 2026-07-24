@@ -27,6 +27,9 @@ const { filterState, allItems, allGroups } = useCommand();
 const groupContext = useCommandGroup();
 
 const isRender = computed(() => {
+  if (groupContext?.forceMount) {
+    return true;
+  }
   if (!filterState.search) {
     return true;
   } else {
@@ -46,6 +49,9 @@ const itemRef = ref();
 const currentElement = useCurrentElement(itemRef);
 onMounted(() => {
   if (!(currentElement.value instanceof HTMLElement)) return;
+
+  // Force-mounted items never participate in filtering.
+  if (groupContext?.forceMount) return;
 
   // textValue to perform filter
   allItems.value.set(

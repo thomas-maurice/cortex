@@ -2,7 +2,9 @@
   <CommandDialog v-model:open="open">
     <CommandInput v-model="query" placeholder="Search memories or jump to a view…" />
     <CommandList>
-      <CommandEmpty>{{ searching ? 'Searching…' : 'No results.' }}</CommandEmpty>
+      <!-- CommandEmpty tracks only the client-side filter (Views); hide it
+           whenever server-side hits are shown so they don't coexist. -->
+      <CommandEmpty v-if="!hits.length">{{ searching ? 'Searching…' : 'No results.' }}</CommandEmpty>
 
       <CommandGroup heading="Views">
         <CommandItem
@@ -15,17 +17,17 @@
         </CommandItem>
       </CommandGroup>
 
-      <CommandGroup v-if="hits.length" heading="Memories">
+      <!-- force-mount: hits are already server-filtered and arrive async,
+           after the last keystroke's client-side filter pass — they must
+           bypass the Command filter entirely or they'd stay hidden until
+           the next keystroke re-runs it. -->
+      <CommandGroup v-if="hits.length" heading="Memories" force-mount>
         <CommandItem
           v-for="h in hits"
           :key="h.memory.id"
           :value="h.memory.id"
           @select="openHit(h)"
         >
-          <!-- Semantic hits rarely contain the query text, and the Command
-               filter matches on rendered textContent — embed the query
-               invisibly so hits are never filtered out. -->
-          <span class="hidden">{{ query }}</span>
           <Database class="size-4 shrink-0" />
           <span class="min-w-0 flex-1 truncate">{{ h.memory.text }}</span>
           <Badge variant="secondary" class="ml-2 shrink-0">{{ h.memory.namespace }}</Badge>
