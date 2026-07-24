@@ -38,27 +38,80 @@ func TestRoundTrip(t *testing.T) {
 	assert.False(t, Load(db, "sess-1").Seen("m9"))
 }
 
-// Conversation buckets idle past pruneAge are deleted on the next write; the
-// database lives in a cache dir and must not grow with every session forever.
-func TestPrune(t *testing.T) {
-	db := filepath.Join(t.TempDir(), "cortex.db")
-
-	Load(db, "old-sess").Add("m1")
-
-	// Backdate old-sess's lastSeen beyond pruneAge.
+// backdate rewrites a conversation's lastSeen stamp.
+func backdate(t *testing.T, db, convo string, age time.Duration) {
+	t.Helper()
 	bdb, err := bolt.Open(db, 0o600, nil)
 	require.NoError(t, err)
 	stale := make([]byte, 8)
-	binary.BigEndian.PutUint64(stale, uint64(time.Now().Add(-72*time.Hour).Unix()))
+	binary.BigEndian.PutUint64(stale, uint64(time.Now().Add(-age).Unix()))
 	require.NoError(t, bdb.Update(func(tx *bolt.Tx) error {
-		return tx.Bucket([]byte("old-sess")).Put([]byte(lastSeenKey), stale)
+		return tx.Bucket([]byte(convo)).Put([]byte(lastSeenKey), stale)
 	}))
 	require.NoError(t, bdb.Close())
+}
+
+// Conversation buckets idle past PruneAge are deleted on the next write; the
+// database lives in a cache dir and must not grow with every session forever.
+func TestAutoPrune(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "cortex.db")
+
+	Load(db, "old-sess").Add("m1")
+	backdate(t, db, "old-sess", PruneAge+time.Hour)
 
 	// A write from any other session prunes it; the live session survives.
 	Load(db, "new-sess").Add("m2")
 	assert.False(t, Load(db, "old-sess").Seen("m1"), "stale conversation bucket pruned")
 	assert.True(t, Load(db, "new-sess").Seen("m2"))
+}
+
+// The `cortex state` surface: ls/show/clear/purge over the shared database, so
+// the user can see and reset what dedup has recorded without touching bbolt.
+func TestInspectionAndMaintenance(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "cortex.db")
+
+	// Missing db: empty list / empty purge, no error (nothing was ever recorded).
+	convos, err := Conversations(db)
+	require.NoError(t, err)
+	assert.Empty(t, convos)
+	purged, err := Purge(db, time.Hour)
+	require.NoError(t, err)
+	assert.Empty(t, purged)
+
+	Load(db, "sess-a").Add("m1", "m2")
+	Load(db, "sess-b").Add("m3")
+
+	convos, err = Conversations(db)
+	require.NoError(t, err)
+	require.Len(t, convos, 2)
+	byID := map[string]Conversation{}
+	for _, c := range convos {
+		byID[c.ID] = c
+		assert.False(t, c.LastSeen.IsZero())
+	}
+	assert.Equal(t, 2, byID["sess-a"].Recalled)
+	assert.Equal(t, 1, byID["sess-b"].Recalled)
+
+	rec, err := Recalled(db, "sess-a")
+	require.NoError(t, err)
+	require.Len(t, rec, 2)
+	assert.False(t, rec[0].DeliveredAt.IsZero())
+
+	_, err = Recalled(db, "nope")
+	assert.Error(t, err, "unknown conversation is an error, not silence")
+
+	// clear: memories become injectable again.
+	require.NoError(t, Clear(db, "sess-a"))
+	assert.False(t, Load(db, "sess-a").Seen("m1"))
+	assert.Error(t, Clear(db, "sess-a"), "clearing twice reports the absence")
+
+	// purge with a custom threshold takes only the idle conversation.
+	Load(db, "sess-idle").Add("m4")
+	backdate(t, db, "sess-idle", 2*time.Hour)
+	purged, err = Purge(db, time.Hour)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"sess-idle"}, purged)
+	assert.True(t, Load(db, "sess-b").Seen("m3"), "active conversation survives purge")
 }
 
 // Session ids come from external JSON; as bucket names they are plain bytes, so

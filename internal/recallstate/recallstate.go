@@ -25,17 +25,21 @@ package recallstate
 
 import (
 	"encoding/binary"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 
 	bolt "go.etcd.io/bbolt"
 )
 
 const (
-	// pruneAge is how long a conversation bucket may go untouched before it is
-	// deleted. Sessions rarely resume after this; stale dedup state has no value.
-	pruneAge = 48 * time.Hour
+	// PruneAge is how long a conversation bucket may go untouched before the
+	// automatic prune (piggybacked on writes) deletes it. A week: long enough
+	// for resumed sessions and future per-conversation state, short enough that
+	// the cache does not grow forever. `cortex state purge` overrides per call.
+	PruneAge = 7 * 24 * time.Hour
 
 	// openTimeout bounds the wait for the file lock. Holders are open→txn→close,
 	// so waits are milliseconds; hitting this means degrading to empty state
@@ -153,17 +157,18 @@ func (s *State) Add(ids ...string) {
 		if err := convo.Put([]byte(lastSeenKey), now); err != nil {
 			return err
 		}
-		return pruneTx(tx, s.session)
+		_, err = pruneTx(tx, s.session, PruneAge)
+		return err
 	})
 }
 
-// pruneTx deletes conversation buckets whose lastSeen is older than pruneAge
-// (or missing), except the one currently in use. Runs inside the Add write
-// transaction — the database is small and this keeps pruning free of extra
-// locking rounds.
-func pruneTx(tx *bolt.Tx, keep string) error {
-	cutoff := uint64(time.Now().Add(-pruneAge).Unix())
-	var stale [][]byte
+// pruneTx deletes conversation buckets whose lastSeen is older than olderThan
+// (or missing), except keep, returning the deleted conversation ids. Runs
+// inside a write transaction — the database is small and this keeps pruning
+// free of extra locking rounds.
+func pruneTx(tx *bolt.Tx, keep string, olderThan time.Duration) ([]string, error) {
+	cutoff := uint64(time.Now().Add(-olderThan).Unix())
+	var stale []string
 	c := tx.Cursor()
 	for k, v := c.First(); k != nil; k, v = c.Next() {
 		if v != nil || string(k) == keep {
@@ -171,13 +176,136 @@ func pruneTx(tx *bolt.Tx, keep string) error {
 		}
 		last := tx.Bucket(k).Get([]byte(lastSeenKey))
 		if len(last) != 8 || binary.BigEndian.Uint64(last) < cutoff {
-			stale = append(stale, append([]byte(nil), k...))
+			stale = append(stale, string(k))
 		}
 	}
 	for _, k := range stale {
-		if err := tx.DeleteBucket(k); err != nil {
-			return err
+		if err := tx.DeleteBucket([]byte(k)); err != nil {
+			return nil, err
 		}
 	}
-	return nil
+	return stale, nil
+}
+
+// ---- inspection / maintenance (the `cortex state` commands) ----
+//
+// Unlike Load/Add, these are user-facing operations: errors are returned, not
+// swallowed.
+
+// Conversation summarizes one conversation bucket.
+type Conversation struct {
+	ID       string
+	LastSeen time.Time
+	Recalled int
+}
+
+// Conversations lists all conversation buckets, most recently seen first. A
+// missing database is an empty list, not an error.
+func Conversations(path string) ([]Conversation, error) {
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return nil, nil
+	}
+	db, err := open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+	var out []Conversation
+	err = db.View(func(tx *bolt.Tx) error {
+		c := tx.Cursor()
+		for k, v := c.First(); k != nil; k, v = c.Next() {
+			if v != nil {
+				continue
+			}
+			convo := tx.Bucket(k)
+			info := Conversation{ID: string(k)}
+			if last := convo.Get([]byte(lastSeenKey)); len(last) == 8 {
+				info.LastSeen = time.Unix(int64(binary.BigEndian.Uint64(last)), 0)
+			}
+			if rec := convo.Bucket([]byte(recalledBucket)); rec != nil {
+				info.Recalled = rec.Stats().KeyN
+			}
+			out = append(out, info)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].LastSeen.After(out[j].LastSeen) })
+	return out, nil
+}
+
+// Recalled returns a conversation's delivered memory ids with delivery times,
+// newest first.
+func Recalled(path, sessionID string) ([]RecalledMemory, error) {
+	db, err := open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+	var out []RecalledMemory
+	err = db.View(func(tx *bolt.Tx) error {
+		convo := tx.Bucket([]byte(sessionID))
+		if convo == nil {
+			return fmt.Errorf("no state for conversation %q", sessionID)
+		}
+		rec := convo.Bucket([]byte(recalledBucket))
+		if rec == nil {
+			return nil
+		}
+		return rec.ForEach(func(k, v []byte) error {
+			m := RecalledMemory{ID: string(k)}
+			if len(v) == 8 {
+				m.DeliveredAt = time.Unix(int64(binary.BigEndian.Uint64(v)), 0)
+			}
+			out = append(out, m)
+			return nil
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].DeliveredAt.After(out[j].DeliveredAt) })
+	return out, nil
+}
+
+// RecalledMemory is one delivered-memory record inside a conversation.
+type RecalledMemory struct {
+	ID          string
+	DeliveredAt time.Time
+}
+
+// Clear deletes one conversation's bucket.
+func Clear(path, sessionID string) error {
+	db, err := open(path)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	return db.Update(func(tx *bolt.Tx) error {
+		if tx.Bucket([]byte(sessionID)) == nil {
+			return fmt.Errorf("no state for conversation %q", sessionID)
+		}
+		return tx.DeleteBucket([]byte(sessionID))
+	})
+}
+
+// Purge deletes every conversation idle for longer than olderThan and returns
+// the purged conversation ids. A missing database purges nothing.
+func Purge(path string, olderThan time.Duration) ([]string, error) {
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return nil, nil
+	}
+	db, err := open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+	var purged []string
+	err = db.Update(func(tx *bolt.Tx) error {
+		purged, err = pruneTx(tx, "", olderThan)
+		return err
+	})
+	return purged, err
 }

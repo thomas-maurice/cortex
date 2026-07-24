@@ -407,7 +407,9 @@ never delay or block a prompt. Behavior details (all tunable via flags on the
   not re-injected on later prompts of the same session. State lives in a single
   bbolt database (`internal/recallstate`, default `~/.cache/cortex/cortex.db`,
   created on demand, override with `--state-db`) with one bucket per
-  conversation — conversations idle for 48h are pruned. The database is never
+  conversation — conversations idle for a week are auto-pruned, and
+  `cortex state ls|show|clear|purge` inspects/maintains the db by hand
+  (`purge --older-than` for a custom threshold). The database is never
   held open: every operation is open→txn→close with a short lock timeout plus
   retries, so concurrent sessions (multiple MCP servers + hook runs) interleave
   safely. The MCP server plays the same game: `cortex_memory_search` returns a
@@ -645,6 +647,7 @@ authenticate with `--token` / `CORTEX_AUTH_TOKEN`.
 | `cortex summaries [-n '*'] [-l N]` | List conversation summaries, most-recently-updated first. |
 | `cortex recall "<query>"` | Recall the best-matching past session: summary + its facts. |
 | `cortex hook recall [--timeout 5s]` | Claude Code **UserPromptSubmit** hook endpoint: reads the hook event on stdin, searches memories for the prompt (chunking long ones) and prints matches for injection into context. Fail-open, hard-bounded by `--timeout`. See [Automatic recall](#automatic-recall-userpromptsubmit-hook). |
+| `cortex state ls \| show <convo> \| clear <convo> \| purge [--older-than 168h]` | Inspect/maintain the LOCAL per-conversation state db (`~/.cache/cortex/cortex.db`) shared by the recall hook and MCP dedup: list conversations, show what was delivered to one, drop one (its memories become injectable again), or purge all idle past the threshold. No server needed. |
 | `cortex config init` | Scaffold `~/.config/cortex/cortex.yaml` (won't overwrite without `--force`). |
 | `cortex config show` | Print the effective config (flags + env + file merged) and which file was used. |
 
