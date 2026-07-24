@@ -104,6 +104,8 @@ UI only: `cd ui && npm run build` (prod build) or `npm run dev` (hot reload on
 
 ```bash
 go test ./...      # unit tests; fast, no external services
+golangci-lint run  # CI runs this (v2 config in .golangci.yml, errcheck included);
+                   # go vet alone is NOT enough — run it before declaring Go work done
 ```
 
 Some store tests are **integration tests against a real Weaviate**, gated on env

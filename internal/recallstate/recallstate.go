@@ -104,7 +104,7 @@ func Load(path, sessionID string) *State {
 	if err != nil {
 		return s
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	_ = db.View(func(tx *bolt.Tx) error {
 		convo := tx.Bucket([]byte(sessionID))
 		if convo == nil {
@@ -137,7 +137,7 @@ func (s *State) Add(ids ...string) {
 	if err != nil {
 		return
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	now := make([]byte, 8)
 	binary.BigEndian.PutUint64(now, uint64(time.Now().Unix()))
 	_ = db.Update(func(tx *bolt.Tx) error {
@@ -209,7 +209,7 @@ func Conversations(path string) ([]Conversation, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	var out []Conversation
 	err = db.View(func(tx *bolt.Tx) error {
 		c := tx.Cursor()
@@ -243,7 +243,7 @@ func Recalled(path, sessionID string) ([]RecalledMemory, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	var out []RecalledMemory
 	err = db.View(func(tx *bolt.Tx) error {
 		convo := tx.Bucket([]byte(sessionID))
@@ -282,7 +282,7 @@ func Clear(path, sessionID string) error {
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	return db.Update(func(tx *bolt.Tx) error {
 		if tx.Bucket([]byte(sessionID)) == nil {
 			return fmt.Errorf("no state for conversation %q", sessionID)
@@ -301,7 +301,7 @@ func Purge(path string, olderThan time.Duration) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	var purged []string
 	err = db.Update(func(tx *bolt.Tx) error {
 		purged, err = pruneTx(tx, "", olderThan)

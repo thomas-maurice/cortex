@@ -245,7 +245,7 @@ func hookRecallCmd() *cobra.Command {
 			if len(fresh) == 0 {
 				return nil
 			}
-			fmt.Fprint(cmd.OutOrStdout(), formatRecall(fresh, maxChars))
+			_, _ = fmt.Fprint(cmd.OutOrStdout(), formatRecall(fresh, maxChars))
 			seen.Add(freshIDs...)
 			return nil
 		},
