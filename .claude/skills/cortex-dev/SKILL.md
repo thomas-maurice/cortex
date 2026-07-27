@@ -19,9 +19,10 @@ are thin clients of it; a **worker** is the only process that writes vectors.
 
 ## 0. Golden rules (do not violate)
 
-1. **Never `git commit` or `git push` unless Thomas explicitly says so.** Do the
-   work in the working tree, report what changed, then ask "want me to commit?".
-   If on `master`, branch first when he does ask. This is a hard rule.
+1. **Never `git commit` or `git push` unless Thomas explicitly says so — and
+   never ask/offer to commit either (he said the answer is always no).** Do the
+   work in the working tree, report what changed, stop. He triggers commits
+   himself. If on `master`, branch first when he does ask. This is a hard rule.
 2. **When a feature/change is done, rebuild + restart the local dev stack** so
    Thomas can see it: `make up` (rebuilds the image, then `docker compose up -d`).
    The UI is server-embedded, so UI changes only appear after the image rebuild.
@@ -242,6 +243,7 @@ and scripting without going through Claude. Global flags: `--server`
 | `restore <name> \| --file <local> \| --s3 <object-key> [--yes]` | Admin-only full restore, exactly one source: server-side name XOR uploaded local file XOR S3 object key (server downloads via env creds; `backup s3-list` to enumerate). Recreates missing users/keys (existing skipped), re-queues all records to their original tenants (worker re-embeds). Idempotent. RPCs: `ListS3Backups` + `RestoreAll{name|data|s3_key}`; helpers `listS3Backups`/`downloadFromS3` in rpc/s3.go. |
 | `restore self <local-file> [--yes]` | ANY user: restore a self-backup into their OWN tenant only (file's tenant attribution ignored — load-bearing security invariant). |
 | `upgrade [--yes]` | Self-update `cortex` + `cortex-mcp` to the **server's** version (checksum-verified GitHub release, atomic replace; `internal/upgrade`). Blocked on dev builds & major mismatch. Uses the public `GetVersion` RPC (the ONE auth-exempt procedure — see `ServerAuthInterceptor`). Same logic backs the `cortex_upgrade` MCP tool; the MCP server probes the version at startup and advertises upgrades via MCP instructions. |
+| `version [--json]` | Print CLI + server versions (public `GetVersion` RPC, no token). `--json` → `{"client":...,"server":...}`; server unreachable → CLI version still printed, non-zero exit. |
 | `users list\|get\|add\|delete\|set-role\|reset-password` | Manage users from the CLI (MT mode; needs an admin `--token`). Break-glass for fixing accounts without the UI. |
 | `users apikey create\|list\|delete <username>` | Admin-provision API keys for another user (MT mode; admin `--token`). `create` prints the raw secret once — use to bootstrap headless/service accounts that can't reach the web UI to self-mint. |
 | `dead [--requeue \| --purge]` | List dead-lettered (failed-to-index) memories; requeue or purge them. |

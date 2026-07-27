@@ -361,7 +361,7 @@ func main() {
 		pf.StringVar(s.target, s.key, s.def, s.usage)
 	}
 
-	root.AddCommand(saveCmd(), editCmd(), listCmd(), searchCmd(), deleteCmd(), exportCmd(), importCmd(), reindexCmd(), deadCmd(), statusCmd(), doctorCmd(), summarizeCmd(), summariesCmd(), recallCmd(), candidatesCmd(), consolidateCmd(), hashPasswordCmd(), configCmd(), onboardCmd(), migrateMTCmd(), usersCmd(), upgradeCmd(), backupCmd(), restoreCmd(), hookCmd(), stateCmd())
+	root.AddCommand(saveCmd(), editCmd(), listCmd(), searchCmd(), deleteCmd(), exportCmd(), importCmd(), reindexCmd(), deadCmd(), statusCmd(), doctorCmd(), summarizeCmd(), summariesCmd(), recallCmd(), candidatesCmd(), consolidateCmd(), hashPasswordCmd(), configCmd(), onboardCmd(), migrateMTCmd(), usersCmd(), upgradeCmd(), versionCmd(), backupCmd(), restoreCmd(), hookCmd(), stateCmd())
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -1103,6 +1103,49 @@ func upgradeCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&yes, "yes", false, "skip the confirmation prompt")
+	return cmd
+}
+
+func versionCmd() *cobra.Command {
+	var jsonOut bool
+	cmd := &cobra.Command{
+		Use:   "version",
+		Short: "Print the CLI and server versions",
+		Long: "Print the version of this CLI binary and of the server it is pointed at\n" +
+			"(via the public GetVersion RPC, so no token is needed). If the server is\n" +
+			"unreachable the CLI version is still printed and the command exits non-zero.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			serverVersion := ""
+			resp, srvErr := client().GetVersion(cmd.Context(), connect.NewRequest(&cortexv1.GetVersionRequest{}))
+			if srvErr == nil {
+				serverVersion = resp.Msg.GetVersion()
+			}
+			if jsonOut {
+				out := map[string]string{"client": version}
+				if srvErr == nil {
+					out["server"] = serverVersion
+				} else {
+					out["error"] = srvErr.Error()
+				}
+				b, err := json.Marshal(out)
+				if err != nil {
+					return err
+				}
+				fmt.Println(string(b))
+			} else {
+				fmt.Printf("client %s\n", version)
+				if srvErr == nil {
+					fmt.Printf("server %s\n", serverVersion)
+				}
+			}
+			if srvErr != nil {
+				return fmt.Errorf("query server version: %w", srvErr)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "output as JSON")
 	return cmd
 }
 
