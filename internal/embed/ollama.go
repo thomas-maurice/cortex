@@ -142,34 +142,87 @@ type embedResp struct {
 	Embedding []float32 `json:"embedding"`
 }
 
-// Embed returns the vector for a single piece of text.
+// embedMaxAttempts bounds how many times Embed re-issues the request on a
+// transient failure. Embedding is on the SYNCHRONOUS search path — every
+// cortex_memory_search and every auto-recall embeds its query first — so a single
+// Ollama hiccup should not fail a whole recall when a quick retry would succeed.
+const embedMaxAttempts = 3
+
+// embedRetryBackoff is the base delay between embed retries; it grows linearly
+// with the retry number. Kept short — the caller's context still bounds total time.
+const embedRetryBackoff = 200 * time.Millisecond
+
+// Embed returns the vector for a single piece of text. Transient failures
+// (network/transport errors and HTTP 5xx) are retried up to embedMaxAttempts,
+// with a short backoff, within the caller's context deadline. A 4xx, a decode
+// failure, or an empty vector are NOT retried: re-issuing an identical request
+// would not change the outcome.
 func (c *Client) Embed(ctx context.Context, text string) ([]float32, error) {
 	body, err := json.Marshal(embedReq{Model: c.model, Prompt: text})
 	if err != nil {
 		return nil, err
 	}
+
+	var lastErr error
+	for attempt := 1; attempt <= embedMaxAttempts; attempt++ {
+		if attempt > 1 {
+			if err := sleepCtx(ctx, embedRetryBackoff*time.Duration(attempt-1)); err != nil {
+				return nil, err
+			}
+		}
+		vec, retryable, err := c.embedOnce(ctx, body)
+		if err == nil {
+			return vec, nil
+		}
+		lastErr = err
+		// Stop early on a non-transient failure or a cancelled/expired context
+		// (a network error caused by the context is not worth retrying).
+		if !retryable || ctx.Err() != nil {
+			return nil, err
+		}
+	}
+	return nil, fmt.Errorf("ollama embed: giving up after %d attempts: %w", embedMaxAttempts, lastErr)
+}
+
+// embedOnce issues a single embed request. The bool reports whether a failure is
+// worth retrying: network/transport errors and HTTP 5xx are transient; a 4xx, a
+// decode error, and an empty vector are not.
+func (c *Client) embedOnce(ctx context.Context, body []byte) ([]float32, bool, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/embeddings", bytes.NewReader(body))
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("ollama embed request: %w", err)
+		return nil, true, fmt.Errorf("ollama embed request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("ollama embed: status %d", resp.StatusCode)
+		return nil, resp.StatusCode >= 500, fmt.Errorf("ollama embed: status %d", resp.StatusCode)
 	}
 
 	var out embedResp
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return nil, fmt.Errorf("ollama embed decode: %w", err)
+		return nil, false, fmt.Errorf("ollama embed decode: %w", err)
 	}
 	if len(out.Embedding) == 0 {
-		return nil, fmt.Errorf("ollama embed: empty vector (is model %q pulled?)", c.model)
+		return nil, false, fmt.Errorf("ollama embed: empty vector (is model %q pulled?)", c.model)
 	}
-	return out.Embedding, nil
+	return out.Embedding, false, nil
+}
+
+// sleepCtx waits for d, or returns early with ctx.Err() if the context is done
+// first — so a retry backoff never outlives the caller's deadline.
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
 }
