@@ -3,11 +3,9 @@ package store
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/weaviate/weaviate-go-client/v5/weaviate/filters"
-	"github.com/weaviate/weaviate-go-client/v5/weaviate/graphql"
 	"github.com/weaviate/weaviate/entities/models"
 
 	"github.com/thomas-maurice/cortex/internal/memory"
@@ -151,24 +149,9 @@ func (ts *TenantStore) Search(ctx context.Context, vector []float32, opts Search
 		query = query.WithTenant(ts.t)
 	}
 
-	hybrid := strings.TrimSpace(opts.Query) != ""
-	if hybrid {
-		h := (&graphql.HybridArgumentBuilder{}).
-			WithQuery(opts.Query).
-			WithVector(vector).
-			WithProperties([]string{"text"}).
-			WithFusionType(graphql.RelativeScore)
-		if opts.Alpha > 0 {
-			h = h.WithAlpha(opts.Alpha)
-		}
-		query = query.WithHybrid(h).WithMetadata(&graphql.Metadata{ID: true, Score: true})
-	} else {
-		nearVector := (&graphql.NearVectorArgumentBuilder{}).WithVector(vector)
-		if opts.MaxDistance > 0 {
-			nearVector = nearVector.WithDistance(opts.MaxDistance)
-		}
-		query = query.WithNearVector(nearVector).WithMetadata(&graphql.Metadata{ID: true, Distance: true})
-	}
+	// Query construction (hybrid BM25+vector when a keyword query is present, else
+	// pure nearVector) is shared with SearchMemoryVectors via applyVectorQuery.
+	query, hybrid := applyVectorQuery(query, vector, opts)
 	if opts.Autocut > 0 {
 		query = query.WithAutocut(opts.Autocut)
 	}
@@ -189,12 +172,9 @@ func (ts *TenantStore) Search(ctx context.Context, vector []float32, opts Search
 	bestDist := make(map[string]float32, len(res))
 	order := make([]string, 0, len(res))
 	for _, r := range res {
-		dist := r.Metadata.Distance
-		if hybrid {
-			dist = hybridDistance(r.Metadata.Score)
-			if opts.MaxDistance > 0 && dist > opts.MaxDistance {
-				continue
-			}
+		dist, ok := effectiveDistance(r.Metadata.Distance, r.Metadata.Score, hybrid, opts.MaxDistance)
+		if !ok {
+			continue
 		}
 		mid := propString(r.Properties, "memoryId")
 		if mid == "" {

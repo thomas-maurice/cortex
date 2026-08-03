@@ -835,29 +835,11 @@ func (ts *TenantStore) SearchMemoryVectors(ctx context.Context, vector []float32
 		query = query.WithTenant(ts.t)
 	}
 
-	hybrid := strings.TrimSpace(opts.Query) != ""
-	if hybrid {
-		// Hybrid = BM25 keyword over `text` + vector, fused. relativeScoreFusion
-		// normalises both signals to 0..1 so the fused score maps cleanly onto our
-		// distance metric (see hybridDistance). The keyword side is what surfaces
-		// exact tokens — codenames, hostnames, IDs — that the vector side misses
-		// because they don't embed near their meaning.
-		h := (&graphql.HybridArgumentBuilder{}).
-			WithQuery(opts.Query).
-			WithVector(vector).
-			WithProperties([]string{"text"}).
-			WithFusionType(graphql.RelativeScore)
-		if opts.Alpha > 0 {
-			h = h.WithAlpha(opts.Alpha)
-		}
-		query = query.WithHybrid(h).WithMetadata(&graphql.Metadata{ID: true, Score: true})
-	} else {
-		nearVector := (&graphql.NearVectorArgumentBuilder{}).WithVector(vector)
-		if opts.MaxDistance > 0 {
-			nearVector = nearVector.WithDistance(opts.MaxDistance)
-		}
-		query = query.WithNearVector(nearVector).WithMetadata(&graphql.Metadata{ID: true, Distance: true})
-	}
+	// Hybrid (query present) = BM25 keyword over `text` + vector, fused; the keyword
+	// side surfaces exact tokens — codenames, hostnames, IDs — that the vector side
+	// misses because they don't embed near their meaning. Otherwise a pure nearVector
+	// search. Construction is shared with the chunk-level Search via applyVectorQuery.
+	query, hybrid := applyVectorQuery(query, vector, opts)
 
 	if opts.Autocut > 0 {
 		query = query.WithAutocut(opts.Autocut)
@@ -876,14 +858,9 @@ func (ts *TenantStore) SearchMemoryVectors(ctx context.Context, vector []float32
 
 	hits := make([]memory.Hit, 0, len(res))
 	for _, r := range res {
-		dist := r.Metadata.Distance
-		if hybrid {
-			// Hybrid has no cosine distance; map the fused score and apply the
-			// cutoff in Go (the score can't be bounded server-side like distance).
-			dist = hybridDistance(r.Metadata.Score)
-			if opts.MaxDistance > 0 && dist > opts.MaxDistance {
-				continue
-			}
+		dist, ok := effectiveDistance(r.Metadata.Distance, r.Metadata.Score, hybrid, opts.MaxDistance)
+		if !ok {
+			continue
 		}
 		hits = append(hits, memory.Hit{Record: resultToRecord(r), Distance: dist})
 	}
@@ -994,6 +971,51 @@ func hybridDistance(score float32) float32 {
 		return 0
 	}
 	return d
+}
+
+// applyVectorQuery configures q for either a hybrid (BM25 keyword + vector) search
+// or a pure nearVector search, depending on whether opts carries a keyword query,
+// and attaches the matching result metadata. The returned bool reports whether the
+// query is hybrid — the caller needs it because hybrid results have no server-side
+// distance bound and must be filtered by maxDistance in Go (see effectiveDistance).
+//
+// This is the single source of truth for query construction shared by the
+// chunk-level Search and the whole-memory SearchMemoryVectors; keeping it in one
+// place stops the two paths from drifting (e.g. a maxDistance handled on one but
+// not the other) and silently returning inconsistent recall.
+func applyVectorQuery(q *graphql.Search, vector []float32, opts SearchOpts) (*graphql.Search, bool) {
+	if strings.TrimSpace(opts.Query) != "" {
+		h := (&graphql.HybridArgumentBuilder{}).
+			WithQuery(opts.Query).
+			WithVector(vector).
+			WithProperties([]string{"text"}).
+			WithFusionType(graphql.RelativeScore)
+		if opts.Alpha > 0 {
+			h = h.WithAlpha(opts.Alpha)
+		}
+		return q.WithHybrid(h).WithMetadata(&graphql.Metadata{ID: true, Score: true}), true
+	}
+	nearVector := (&graphql.NearVectorArgumentBuilder{}).WithVector(vector)
+	if opts.MaxDistance > 0 {
+		nearVector = nearVector.WithDistance(opts.MaxDistance)
+	}
+	return q.WithNearVector(nearVector).WithMetadata(&graphql.Metadata{ID: true, Distance: true}), false
+}
+
+// effectiveDistance resolves a single search result to its Cortex distance and
+// whether it clears the maxDistance cutoff. For a nearVector result the server
+// already enforced the bound (distance is authoritative and it always passes);
+// for a hybrid result there is no server-side distance, so the fused score is
+// mapped via hybridDistance and the cutoff applied here in Go.
+func effectiveDistance(dist, score float32, hybrid bool, maxDistance float32) (float32, bool) {
+	if !hybrid {
+		return dist, true
+	}
+	d := hybridDistance(score)
+	if maxDistance > 0 && d > maxDistance {
+		return d, false
+	}
+	return d, true
 }
 
 // SearchByID runs a nearObject query: it finds the stored memories most similar
