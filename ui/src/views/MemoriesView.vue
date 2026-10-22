@@ -59,6 +59,8 @@
       No memories found.
     </div>
 
+    <p v-if="filteredNote" class="text-xs text-muted-foreground">{{ filteredNote }}</p>
+
     <Card v-for="m in memories" :key="m.id">
       <CardContent class="py-4">
         <div class="flex items-start justify-between gap-3">
@@ -114,7 +116,7 @@
 <script setup>
 import { timestampDate } from '@bufbuild/protobuf/wkt'
 import { ref, onMounted, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { Code, ConnectError } from '@connectrpc/connect'
 import { toast } from 'vue-sonner'
 import { memoryClient } from '@/utils/connect'
@@ -147,11 +149,14 @@ import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 
 const router = useRouter()
+const route = useRoute()
 const auth = useAuthStore()
 
-const namespace = ref('*')
+// ?tag=… (repeatable) and ?namespace=… preselect filters, e.g. from the Tags view.
+const qTags = [route.query.tag].flat().filter((t) => typeof t === 'string' && t)
+const namespace = ref(typeof route.query.namespace === 'string' && route.query.namespace ? route.query.namespace : '*')
 const query = ref('')
-const activeTags = ref([])
+const activeTags = ref(qTags)
 const memories = ref([])
 const loading = ref(false)
 const error = ref('')
@@ -177,6 +182,44 @@ function handleError(e) {
   error.value = e.message || 'Request failed'
 }
 
+// Weaviate's `tags` is word-tokenized, so its tag filter is fuzzy (case/token
+// matches); the Tags view counts exact tags. We re-filter to exact,
+// case-sensitive equality so the list matches the Tags view count. Because the
+// fuzzy server page can contain non-matches, a fixed 50-row page could come back
+// short (or empty) even though exact matches exist further down: when filtering
+// shrank a FULL server page, re-ask with a doubled limit (the API has no offset),
+// bounded to MAX_ROUNDS, until the exact list fills a page or the server runs out.
+const PAGE = 50
+const MAX_ROUNDS = 10
+const SERVER_MAX = 10000
+const filteredNote = ref('')
+
+function exactTagMatch(list) {
+  return activeTags.value.length
+    ? list.filter((m) => activeTags.value.every((t) => (m.tags || []).includes(t)))
+    : list
+}
+
+// fetchPage(limit) -> array of memories. Returns the exact-filtered page.
+async function fetchExact(fetchPage) {
+  filteredNote.value = ''
+  let limit = PAGE
+  for (let round = 0; round < MAX_ROUNDS; round++) {
+    const raw = await fetchPage(limit)
+    const exact = exactTagMatch(raw)
+    const serverExhausted = raw.length < limit
+    if (exact.length >= PAGE || serverExhausted || limit >= SERVER_MAX || !activeTags.value.length) {
+      if (raw.length > exact.length) {
+        filteredNote.value = `${raw.length - exact.length} fuzzy tag match(es) hidden: only exact, case-sensitive tags are shown.`
+      }
+      return exact.slice(0, PAGE)
+    }
+    limit = Math.min(limit * 2, SERVER_MAX)
+  }
+  filteredNote.value = 'Search depth limit reached: some matches may not be shown.'
+  return exactTagMatch(await fetchPage(limit)).slice(0, PAGE)
+}
+
 async function reload() {
   loading.value = true
   error.value = ''
@@ -184,11 +227,15 @@ async function reload() {
     if (query.value.trim()) {
       // noReinforce: browsing in the UI must not count as a recall — only the
       // agent's (MCP) searches feed the living-memory usage signal.
-      const res = await memoryClient.search({ query: query.value, namespace: namespace.value, limit: 50, tags: activeTags.value, noReinforce: true })
-      memories.value = res.hits.map((h) => ({ ...h.memory, _distance: h.distance }))
+      memories.value = await fetchExact(async (limit) => {
+        const res = await memoryClient.search({ query: query.value, namespace: namespace.value, limit, tags: activeTags.value, noReinforce: true })
+        return res.hits.map((h) => ({ ...h.memory, _distance: h.distance }))
+      })
     } else {
-      const res = await memoryClient.list({ namespace: namespace.value, limit: 50, tags: activeTags.value })
-      memories.value = res.memories
+      memories.value = await fetchExact(async (limit) => {
+        const res = await memoryClient.list({ namespace: namespace.value, limit, tags: activeTags.value })
+        return res.memories
+      })
     }
   } catch (e) {
     handleError(e)

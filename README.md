@@ -193,6 +193,16 @@ port as the Connect API; open the server's address in a browser. Views:
   is re-embedded; both memories and summaries move) or **delete** an entire
   namespace (typed confirmation; its memories go to the trash, its summaries are
   permanently removed).
+- **Tags** — every tag with its memory count and last activity, a filter box,
+  and **rename / merge** (renaming into an existing tag dedups) or **delete**
+  (removes the tag, never the memories). Click a tag to open Memories filtered by
+  it. Metadata-only: memories and their search chunks are re-tagged in place, no
+  re-embed. The reserved `preference` tag needs an explicit confirmation.
+  Tags are matched exactly (case- and whitespace-sensitive) and canonicalised on
+  write (trimmed, deduplicated). Tags applied automatically on save
+  (`host:<hostname>`, the static `save.tags` from the config) are not special: after
+  a rename or delete they come back on every NEW save, so rename them in the config
+  too. A rename/delete is refused while a reindex or restore is running.
 - **Trash** — every deleted memory (explicit delete, `supersedes`, namespace delete)
   lands here first. List with deletion time and reason, **restore** (re-queued for
   indexing under the same id), **purge** one or all (confirm dialogs). Entries
@@ -467,6 +477,7 @@ The MCP server exposes these tools to Claude:
 |------|--------------|
 | `cortex_memory_save` | Queue a memory for indexing. Args: `text`, `namespace?`, `tags?`, `linkTo?` (ids to bidirectionally link this memory to — queued and applied once both ends are indexed, so targets need not exist yet), `supersedes?` (ids this memory replaces — the worker deletes them once this one is indexed). Returns its `id`. |
 | `cortex_memory_search` | **Hybrid** search (BM25 keyword + vector, blended by `SEARCH_ALPHA`, default 0.5) so exact tokens/codenames resolve, not just semantic matches. Args: `query`, `namespace?` (`*` = all namespaces), `limit?`, `tags?` (must have all), `excludeTags?`, `maxDistance?` (relevance cutoff). Each hit includes its `id`, any `linkedIds`, and any `dupCandidates` (flagged likely-duplicates — the output hints when consolidation would help). When **living memory** is enabled (`RERANK_WEIGHT`>0, off by default), search also re-orders results by recency-decayed usage and reinforces its top hit(s) — frequently-recalled memories float up over time. See [`docs/DESIGN.md`](docs/DESIGN.md#living-memory--decay--reinforcement-opt-in). |
+| `cortex_tags_list` | **Read-only** tag listing (`namespace?`): each tag in use with its memory count, most used first. Call it before saving to REUSE an existing tag instead of inventing `k8s`/`kubernetes` variants. Rename/delete are intentionally not exposed over MCP (use the CLI/UI). |
 | `cortex_memory_get` | Fetch ONE memory by `id`, full text (follow `linkedIds` from search hits, or ids from `cortex_consolidate` / `cortex_review_candidates`). Same shape as a search hit; counts as delivered for session dedup so later searches stub it; does not reinforce. |
 | `cortex_memory_delete` | Delete a memory by `id` (get the `id` from a `cortex_memory_search` result first). The memory goes to the **trash** (restorable for `TRASH_RETENTION`, default 7 days), not into the void. |
 | `cortex_trash_list` | Read-only: list restorable deleted memories (id, namespace, deleted-at, reason, excerpt), newest first. Args: `namespace?`, `limit?` (default 20). |
@@ -653,6 +664,7 @@ authenticate with `--token` / `CORTEX_AUTH_TOKEN`.
 | `cortex search "<q>" [-d 0.6] [-t tag] [-x tag]` | Semantic search with a relevance cutoff and tag filters. |
 | `cortex consolidate "<topic>" [-n '*'] [-l N] [-t tag] [-x tag]` | Print the cluster of memories about a topic + their manifest (read-only gather; the LLM does the merge). No tag flag = no tag filter (whole cluster). |
 | `cortex delete <id>` | Delete a memory by ID (moved to the trash). |
+| `cortex tags [-n ns]` | List tags with memory counts and last activity. `tags rename <from> <to> [-n ns]` fixes drift (`k8s` / `kubernetes`; merges into an existing tag), `tags delete <tag> [-n ns] [--yes]` removes a tag from every memory. Touching the reserved `preference` tag needs `--yes`. |
 | `cortex trash ls [-n ns] [--reason r]` / `trash restore <id>... \| --all [-n ns] [--reason r]` / `trash purge <id>... \| --all [-n ns] [--reason r] [--yes]` | Soft-delete trash: list trashed memories, restore them (re-queued for indexing, same id, with their recall history; ids are rejected if a live memory has that id; `--all` restores every match independently and reports failures) or purge them permanently. `cortex status` shows the trash count. |
 | `cortex export -o backup.json` | Dump all memories (text + metadata, no vectors) to JSON. |
 | `cortex import backup.json` | Restore a dump into the target via its NATS ingest queue (worker re-embeds). Preserves ids/links; point `--server` at the target. See [scripts/prod-to-dev.sh](scripts/prod-to-dev.sh). |
@@ -1006,7 +1018,7 @@ internal/
   embed/           Ollama embeddings client
   store/           Weaviate: schema, upsert, chunk-based gRPC search, links, delete
   rpc/             Connect service impl, auth (token+JWT), login, JWT, client helper
-ui/                embedded Vue 3 SPA (Memories, Graph, Explore, Sessions, Namespaces, Trash, Preferences, Backup, Indexing, Status)
+ui/                embedded Vue 3 SPA (Memories, Graph, Explore, Sessions, Namespaces, Tags, Trash, Preferences, Backup, Indexing, Status)
 testdata/          fake seed memories for a dev stack (cortex import format)
 docker-compose.yml   nats + weaviate + ollama + worker + server
 deploy/truenas/      TrueNAS Scale compose (non-root, host bind mounts, Traefik h2c)

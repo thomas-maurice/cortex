@@ -12,15 +12,18 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"connectrpc.com/connect"
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	cortexv1 "github.com/thomas-maurice/cortex/gen/cortex/v1"
 	"github.com/thomas-maurice/cortex/gen/cortex/v1/cortexv1connect"
 	"github.com/thomas-maurice/cortex/internal/bus"
+	"github.com/thomas-maurice/cortex/internal/dlock"
 	"github.com/thomas-maurice/cortex/internal/embed"
 	"github.com/thomas-maurice/cortex/internal/identity"
 	"github.com/thomas-maurice/cortex/internal/memory"
@@ -129,6 +132,12 @@ type Service struct {
 	// restore per tenant, and one admin bulk operation server-wide, so no tenant
 	// can multiply the memory/Ollama cost of "fetch everything" RPCs.
 	backupGate, reindexGate, restoreGate, adminGate tenantGate
+	// tagGate: one in-flight tag rename/delete per tenant (each scans the tenant).
+	tagGate tenantGate
+	// locker is the per-memory KV lock shared with the worker (see memoryLocker);
+	// created lazily so NewService stays infallible. Tests may preset it.
+	lockerMu sync.Mutex
+	locker   *dlock.Locker
 	// scanGate: one in-flight DeleteNamespace / ListTrash / PurgeTrash(all) per
 	// tenant — each scans or buffers a whole namespace or trash (DeleteNamespace and
 	// the bulk PurgeTrash/RestoreFromTrash forms; read-only ListTrash is not gated).
@@ -254,7 +263,7 @@ func (s *Service) Save(ctx context.Context, req *connect.Request[cortexv1.SaveRe
 		ID:             uuid.NewString(),
 		Text:           text,
 		Namespace:      ns,
-		Tags:           req.Msg.GetTags(),
+		Tags:           memory.NormalizeTags(req.Msg.GetTags()),
 		Source:         src,
 		CreatedAt:      time.Now().UTC(),
 		ConversationID: req.Msg.GetConversationId(),
@@ -315,7 +324,11 @@ func (s *Service) UpdateMemory(ctx context.Context, req *connect.Request[cortexv
 
 	rec.Text = text
 	if req.Msg.GetReplaceTags() {
-		rec.Tags = req.Msg.GetTags()
+		rec.Tags = memory.NormalizeTags(req.Msg.GetTags())
+	} else {
+		// Text/namespace-only edit: the worker keeps whatever tags are stored when
+		// it commits, so a tag rename that lands while this is queued is not undone.
+		rec.KeepTags = true
 	}
 	if ns := strings.TrimSpace(req.Msg.GetNamespace()); ns != "" {
 		rec.Namespace = ns
@@ -706,6 +719,7 @@ func (s *Service) Reindex(ctx context.Context, req *connect.Request[cortexv1.Rei
 	// re-stamps provenance. PublishIndex stamps the tenant from context so the
 	// worker's store ops land in the same tenant.
 	for _, r := range recs {
+		r.KeepTags = true // a rename/delete landing mid-reindex must not be undone by this snapshot
 		if err := bus.PublishIndex(ctx, s.js, r); err != nil {
 			return nil, fmt.Errorf("republish %s: %w", r.ID, err)
 		}
@@ -1335,6 +1349,180 @@ func (s *Service) DeleteNamespace(ctx context.Context, req *connect.Request[cort
 		MemoriesDeleted:  int32(mem),
 		SummariesDeleted: int32(sum),
 	}), nil
+}
+
+// maxTagLen caps the length (in runes) of a tag a rename may CREATE.
+const maxTagLen = 128
+
+// preferenceTag is the tag that drives the cortex-prefs SessionStart hook.
+const preferenceTag = "preference"
+
+// memoryLocker returns the per-memory lock func for the caller's tenant. It takes
+// the SAME dlock key the worker's index/link commits take (kind "mem", tenant =
+// the authenticated user id, "" without identity: exactly what bus.PublishIndex
+// stamps), so a tag rewrite cannot interleave with an index commit of that memory.
+func (s *Service) memoryLocker(ctx context.Context) (store.MemoryLocker, error) {
+	s.lockerMu.Lock()
+	if s.locker == nil {
+		if s.js == nil {
+			s.lockerMu.Unlock()
+			return nil, connect.NewError(connect.CodeUnavailable, errors.New("lock service unavailable"))
+		}
+		l, err := dlock.New(ctx, s.js, dlock.DefaultBucket, dlock.DefaultTTL, "server")
+		if err != nil {
+			s.lockerMu.Unlock()
+			return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("lock service: %w", err))
+		}
+		s.locker = l
+	}
+	l := s.locker
+	s.lockerMu.Unlock()
+	tenant := gateKey(ctx)
+	return func(ctx context.Context, id string) (context.Context, func(), error) {
+		return l.AcquireAll(ctx, []string{dlock.Key("mem", tenant, id)}, l.Wait())
+	}, nil
+}
+
+// ListTags aggregates the caller's tags with memory counts and last activity.
+// Deliberately not gated: read-only, streamed scan with O(distinct tags) memory,
+// like ListTrash/ListNamespaces (see docs/DESIGN.md, tag management).
+func (s *Service) ListTags(ctx context.Context, req *connect.Request[cortexv1.ListTagsRequest]) (*connect.Response[cortexv1.ListTagsResponse], error) {
+	ts, err := s.tenantStore(ctx)
+	if err != nil {
+		return nil, err
+	}
+	stats, err := ts.ListTags(ctx, strings.TrimSpace(req.Msg.GetNamespace()))
+	if err != nil {
+		return nil, err
+	}
+	out := &cortexv1.ListTagsResponse{Tags: make([]*cortexv1.TagInfo, 0, len(stats))}
+	for _, st := range stats {
+		ti := &cortexv1.TagInfo{Name: st.Name, MemoryCount: int64(st.MemoryCount)}
+		if !st.LastActivity.IsZero() {
+			ti.LastActivity = timestamppb.New(st.LastActivity)
+		}
+		out.Tags = append(out.Tags, ti)
+	}
+	return connect.NewResponse(out), nil
+}
+
+// guardPreferenceTag rejects touching the reserved `preference` tag unless the
+// caller explicitly confirmed. Rejecting (rather than a UI-only prompt) means a
+// script or an LLM calling the RPC cannot silently empty the standing
+// preferences the SessionStart hook injects into every session.
+func guardPreferenceTag(confirm bool, tags ...string) error {
+	if confirm {
+		return nil
+	}
+	for _, t := range tags {
+		if strings.EqualFold(strings.TrimSpace(t), preferenceTag) {
+			return connect.NewError(connect.CodeFailedPrecondition, errors.New(`the "preference" tag drives the cortex-prefs session hook; set confirm_preference (CLI: --yes / UI: confirm) to change it`))
+		}
+	}
+	return nil
+}
+
+// rejectDuringBulkRewrite refuses a tag rename/delete while a reindex or restore
+// is republishing this tenant's memories (or an admin restore/migrate is running
+// server-wide): those queue point-in-time snapshots of every memory, the widest
+// window in which a queued message could carry pre-rename tags.
+func (s *Service) rejectDuringBulkRewrite(ctx context.Context) error {
+	key := gateKey(ctx)
+	if s.reindexGate.Held(key) || s.restoreGate.Held(key) || s.adminGate.Held(adminGateKey) {
+		return connect.NewError(connect.CodeFailedPrecondition, errors.New("a reindex or restore is in progress; its queued snapshots would undo the tag change. Wait for it to finish (watch the Indexing queue) and retry"))
+	}
+	return nil
+}
+
+// partialErr keeps the error's Connect code (Internal when it has none) and puts
+// the number of memories ALREADY changed in the message: a failed bulk op is
+// partially applied, and the caller must know to re-run it (it is idempotent).
+func partialErr(op string, changed int, err error) error {
+	code := connect.CodeInternal
+	var ce *connect.Error
+	if errors.As(err, &ce) {
+		code = ce.Code()
+	}
+	return connect.NewError(code, fmt.Errorf("%s failed after updating %d memories (safe to re-run): %w", op, changed, err))
+}
+
+// RenameTag replaces a tag with another across the caller's memories and their
+// chunks. Metadata-only (tags are never embedded); renaming into an existing tag
+// merges. Each memory is rewritten under its per-memory lock so a concurrent
+// index commit cannot lose either change.
+func (s *Service) RenameTag(ctx context.Context, req *connect.Request[cortexv1.RenameTagRequest]) (*connect.Response[cortexv1.RenameTagResponse], error) {
+	// from is matched EXACTLY (tags are stored as written, so "k8s " is not
+	// "k8s"); only the new name is trimmed, like every tag write.
+	from := req.Msg.GetFrom()
+	to := strings.TrimSpace(req.Msg.GetTo())
+	ns := strings.TrimSpace(req.Msg.GetNamespace())
+	if from == "" || to == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("from and to must not be empty"))
+	}
+	if utf8.RuneCountInString(to) > maxTagLen {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("tag must be at most %d characters", maxTagLen))
+	}
+	if from == to {
+		return connect.NewResponse(&cortexv1.RenameTagResponse{}), nil
+	}
+	if err := guardPreferenceTag(req.Msg.GetConfirmPreference(), from, to); err != nil {
+		return nil, err
+	}
+	if err := s.rejectDuringBulkRewrite(ctx); err != nil {
+		return nil, err
+	}
+	release, err := s.gated(ctx, &s.tagGate, false, "a tag rename/delete is already running for this account; try again when it finishes")
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	ts, err := s.tenantStore(ctx)
+	if err != nil {
+		return nil, err
+	}
+	lock, err := s.memoryLocker(ctx)
+	if err != nil {
+		return nil, err
+	}
+	n, err := ts.RenameTag(ctx, from, to, ns, lock)
+	if err != nil {
+		return nil, partialErr("rename tag", n, err)
+	}
+	return connect.NewResponse(&cortexv1.RenameTagResponse{MemoriesUpdated: int32(n)}), nil
+}
+
+// DeleteTag removes a tag from the caller's memories (and chunks); the memories
+// are kept. Same locking and gating as RenameTag.
+func (s *Service) DeleteTag(ctx context.Context, req *connect.Request[cortexv1.DeleteTagRequest]) (*connect.Response[cortexv1.DeleteTagResponse], error) {
+	tag := req.Msg.GetTag() // exact match, see RenameTag
+	ns := strings.TrimSpace(req.Msg.GetNamespace())
+	if tag == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("tag must not be empty"))
+	}
+	if err := guardPreferenceTag(req.Msg.GetConfirmPreference(), tag); err != nil {
+		return nil, err
+	}
+	if err := s.rejectDuringBulkRewrite(ctx); err != nil {
+		return nil, err
+	}
+	release, err := s.gated(ctx, &s.tagGate, false, "a tag rename/delete is already running for this account; try again when it finishes")
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	ts, err := s.tenantStore(ctx)
+	if err != nil {
+		return nil, err
+	}
+	lock, err := s.memoryLocker(ctx)
+	if err != nil {
+		return nil, err
+	}
+	n, err := ts.DeleteTag(ctx, tag, ns, lock)
+	if err != nil {
+		return nil, partialErr("delete tag", n, err)
+	}
+	return connect.NewResponse(&cortexv1.DeleteTagResponse{MemoriesUpdated: int32(n)}), nil
 }
 
 // linkEndpoints validates two distinct, existing memory ids and returns both

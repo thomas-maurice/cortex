@@ -169,9 +169,14 @@ async function save() {
   }
 }
 
+// Tags are only sent when the user changed the field (see MemoryInspector): the
+// loaded list may predate a tag rename, and replaceTags with it would undo it.
+let editTagsOrig = ''
+
 function startEdit(m) {
   editId.value = m.id
   editDraft.value = { text: m.text, tags: extraTags(m.tags).join(', ') }
+  editTagsOrig = editDraft.value.tags
 }
 
 function cancelEdit() {
@@ -182,13 +187,12 @@ async function saveEdit(m) {
   editing.value = true
   error.value = ''
   try {
-    // replaceTags keeps the canonical preference tag set; namespace omitted so the
+    // When tags were edited, replaceTags keeps the canonical preference tag set; namespace omitted so the
     // memory stays in global (UpdateMemory leaves namespace untouched when empty).
     await memoryClient.updateMemory({
       id: m.id,
       text: editDraft.value.text,
-      tags: withPrefTag(editDraft.value.tags),
-      replaceTags: true,
+      ...(editDraft.value.tags !== editTagsOrig ? { tags: withPrefTag(editDraft.value.tags), replaceTags: true } : {}),
     })
     editId.value = null
     setTimeout(reload, 1200)

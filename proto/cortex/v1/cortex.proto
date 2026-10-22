@@ -97,6 +97,17 @@ service MemoryService {
   // DeleteNamespace permanently deletes every memory AND conversation summary in
   // a namespace.
   rpc DeleteNamespace(DeleteNamespaceRequest) returns (DeleteNamespaceResponse) {}
+  // ListTags aggregates the tags in use (memory count + last activity),
+  // optionally within one namespace, so drifted spellings (k8s / kubernetes /
+  // K8s) can be seen and merged.
+  rpc ListTags(ListTagsRequest) returns (ListTagsResponse) {}
+  // RenameTag replaces a tag with another on every memory and its chunks
+  // (merging when the target already exists). Metadata-only: no re-embed.
+  // Single-flight per tenant (scans the whole tenant).
+  rpc RenameTag(RenameTagRequest) returns (RenameTagResponse) {}
+  // DeleteTag removes a tag from every memory (the memories are kept).
+  // Single-flight per tenant.
+  rpc DeleteTag(DeleteTagRequest) returns (DeleteTagResponse) {}
   // ListTrash lists the caller's trashed (soft-deleted) memories, newest
   // deletion first. Deletes (Delete, supersedes, DeleteNamespace) move the record
   // into a Trash class instead of destroying it; entries expire after the
@@ -685,6 +696,45 @@ message DeleteNamespaceRequest {
 message DeleteNamespaceResponse {
   int32 memories_deleted = 1;
   int32 summaries_deleted = 2;
+}
+
+// TagInfo aggregates one tag's usage for the tag admin view.
+message TagInfo {
+  string name = 1;
+  int64 memory_count = 2; // memories carrying this tag (summaries have no tags)
+  // last_activity is the newest createdAt among memories with the tag.
+  google.protobuf.Timestamp last_activity = 3;
+}
+
+message ListTagsRequest {
+  string namespace = 1; // empty or "*" = all namespaces
+}
+
+message ListTagsResponse {
+  repeated TagInfo tags = 1; // most memories first
+}
+
+message RenameTagRequest {
+  string from = 1;
+  string to = 2; // merged into if memories already carry it
+  string namespace = 3; // empty or "*" = all namespaces
+  // confirm_preference must be true to rename from/to the reserved `preference`
+  // tag (it drives the cortex-prefs SessionStart hook).
+  bool confirm_preference = 4;
+}
+
+message RenameTagResponse {
+  int32 memories_updated = 1;
+}
+
+message DeleteTagRequest {
+  string tag = 1;
+  string namespace = 2; // empty or "*" = all namespaces
+  bool confirm_preference = 3; // required to delete the reserved `preference` tag
+}
+
+message DeleteTagResponse {
+  int32 memories_updated = 1;
 }
 
 message MigrateMTRequest {}

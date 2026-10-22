@@ -156,10 +156,16 @@ async function followLink(id) {
   }
 }
 
+// Tags as shown when the editor opened. Tags are only sent when the user changed
+// the field: the loaded list can be stale (a tag rename may have landed since), and
+// replaceTags with it would silently undo that rename.
+let editTagsOrig = ''
+
 function startEdit() {
   editText.value = m.value.text
   editNamespace.value = m.value.namespace || ''
   editTags.value = (m.value.tags || []).join(', ')
+  editTagsOrig = editTags.value
   editing.value = true
 }
 
@@ -167,17 +173,17 @@ async function saveEdit() {
   saving.value = true
   try {
     const tags = editTags.value.split(',').map((t) => t.trim()).filter(Boolean)
+    const tagsChanged = editTags.value !== editTagsOrig
     await memoryClient.updateMemory({
       id: m.value.id,
       text: editText.value,
-      tags,
-      replaceTags: true,
+      ...(tagsChanged ? { tags, replaceTags: true } : {}),
       namespace: editNamespace.value,
     })
     editing.value = false
     // Reflect the edit in the open sheet immediately — the server copy catches
     // up asynchronously via the re-index queue.
-    inspectorMemory.value = { ...m.value, text: editText.value, tags, namespace: editNamespace.value }
+    inspectorMemory.value = { ...m.value, text: editText.value, ...(tagsChanged ? { tags } : {}), namespace: editNamespace.value }
     toast.success('Queued for re-indexing — changes appear shortly')
     bumpInspectorChanged()
   } catch (e) {

@@ -41,10 +41,12 @@ type fakeStore struct {
 	mu     sync.Mutex
 	objs   map[string]*memory.Record
 	chunks map[string][]string
-	sums   map[string]*memory.Summary
-	rngMu  sync.Mutex
-	rng    *rand.Rand
-	log    []string // audit trail of write ops, "<op> <id>"
+	// chunkTags records the tags each memory's chunks were last written with.
+	chunkTags map[string][]string
+	sums      map[string]*memory.Summary
+	rngMu     sync.Mutex
+	rng       *rand.Rand
+	log       []string // audit trail of write ops, "<op> <id>"
 	// deleteReasons records the trash reason of every delete, "<id> <reason>".
 	deleteReasons []string
 	// dupHits are returned by SearchMemoryVectors (dedup neighbours).
@@ -63,10 +65,11 @@ func (f *fakeStore) resetAudit() {
 
 func newFakeStore(seed uint64) *fakeStore {
 	return &fakeStore{
-		objs:   map[string]*memory.Record{},
-		chunks: map[string][]string{},
-		sums:   map[string]*memory.Summary{},
-		rng:    rand.New(rand.NewPCG(seed, 99)),
+		objs:      map[string]*memory.Record{},
+		chunks:    map[string][]string{},
+		chunkTags: map[string][]string{},
+		sums:      map[string]*memory.Summary{},
+		rng:       rand.New(rand.NewPCG(seed, 99)),
 	}
 }
 
@@ -195,6 +198,7 @@ func (ft *fakeTenant) ReplaceChunks(_ context.Context, rec memory.Record, chunks
 		texts = append(texts, c.Text)
 	}
 	ft.f.chunks[ft.key(rec.ID)] = texts
+	ft.f.chunkTags[ft.key(rec.ID)] = rec.Tags
 	return nil
 }
 
