@@ -286,12 +286,15 @@ func main() {
 			"as Markdown: use headings, bullet lists, code fences, and links where they make the note " +
 			"clearer, since the UI renders it as formatted Markdown. Summarising a discussion or a " +
 			"conclusion into one rich memory is encouraged. Scope it with a namespace (e.g. the " +
-			"project or topic) and tags. To connect this memory to related ones in the same call, pass " +
+			"project or topic) and tags. REUSE existing tags instead of inventing variants (k8s vs kubernetes): " +
+			"check cortex_tags_list first when unsure which spelling is in use. To connect this memory to related ones in the same call, pass " +
 			"their IDs in the linkTo field — links are bidirectional and queued, applied once both this " +
 			"memory and each target are indexed, so you do not need a separate cortex_memory_link call and " +
 			"the targets need not be indexed yet. Indexing is asynchronous and durable; saving is cheap, so " +
 			"err on the side of saving more.",
 	}, withTimeout(callTimeout, d.save))
+
+	addTagsTool(server, d, callTimeout)
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "cortex_memory_search",
@@ -320,9 +323,27 @@ func main() {
 	}, withTimeout(callTimeout, d.get))
 
 	mcp.AddTool(server, &mcp.Tool{
-		Name:        "cortex_memory_delete",
-		Description: "Delete a memory by its ID (as returned by cortex_memory_search).",
+		Name: "cortex_memory_delete",
+		Description: "Delete a memory by its ID (as returned by cortex_memory_search). The memory is moved to the " +
+			"trash, not destroyed: it stays restorable with cortex_trash_restore for the server's retention " +
+			"period (7 days by default), then is purged for good.",
 	}, withTimeout(callTimeout, d.del))
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name: "cortex_trash_list",
+		Description: "List deleted memories that can still be restored with cortex_trash_restore, newest deletion first " +
+			"(id, namespace, deletion time, reason, text excerpt). Read-only. Optionally filter by namespace; limit " +
+			"defaults to 20. Entries disappear once the server's retention period passes.",
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
+	}, withTimeout(callTimeout, d.trashList))
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name: "cortex_trash_restore",
+		Description: "Undo a delete: restore a trashed memory by its ID (the ID you passed to cortex_memory_delete, or " +
+			"one of the `supersedes` sources of a consolidation). It is re-queued for indexing under the same ID, " +
+			"asynchronously, like a save. Fails if the ID is not in the trash (never deleted, already purged after " +
+			"the retention period, or restored) or if a live memory with that ID exists.",
+	}, withTimeout(callTimeout, d.trashRestore))
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "cortex_memory_edit",
@@ -661,6 +682,50 @@ func (d *deps) get(ctx context.Context, _ *mcp.CallToolRequest, in GetIn) (*mcp.
 	return text2result(text), hit, nil
 }
 
+// ---- tags_list ----
+
+// addTagsTool registers the read-only tag listing. Tag rename/delete are
+// deliberately NOT exposed over MCP (destructive, bulk): the CLI and UI own them.
+func addTagsTool(server *mcp.Server, d *deps, callTimeout time.Duration) {
+	mcp.AddTool(server, &mcp.Tool{
+		Name: "cortex_tags_list",
+		Description: "List the tags in use across the user's memories with how many memories carry each " +
+			"(most used first), optionally within one namespace. Call it before cortex_memory_save when you " +
+			"are unsure which spelling of a tag exists, and REUSE an existing tag rather than creating a " +
+			"near-duplicate (k8s / kubernetes / K8s). Read-only.",
+	}, withTimeout(callTimeout, d.tagsList))
+}
+
+type TagsListIn struct {
+	Namespace string `json:"namespace,omitempty" jsonschema:"optional namespace to count within; omit or use * for all namespaces"`
+}
+
+type TagCount struct {
+	Tag   string `json:"tag"`
+	Count int64  `json:"count" jsonschema:"number of memories carrying the tag"`
+}
+
+type TagsListOut struct {
+	Tags []TagCount `json:"tags"`
+}
+
+func (d *deps) tagsList(ctx context.Context, _ *mcp.CallToolRequest, in TagsListIn) (*mcp.CallToolResult, TagsListOut, error) {
+	resp, err := d.client.ListTags(ctx, connect.NewRequest(&cortexv1.ListTagsRequest{Namespace: strings.TrimSpace(in.Namespace)}))
+	if err != nil {
+		return nil, TagsListOut{}, err
+	}
+	out := TagsListOut{Tags: make([]TagCount, 0, len(resp.Msg.GetTags()))}
+	var b strings.Builder
+	for _, t := range resp.Msg.GetTags() {
+		out.Tags = append(out.Tags, TagCount{Tag: t.GetName(), Count: t.GetMemoryCount()})
+		fmt.Fprintf(&b, "%q: %d\n", t.GetName(), t.GetMemoryCount())
+	}
+	if len(out.Tags) == 0 {
+		return text2result("no tags yet"), out, nil
+	}
+	return text2result(strings.TrimSpace(b.String())), out, nil
+}
+
 // ---- memory_delete ----
 
 type DeleteIn struct {
@@ -681,6 +746,74 @@ func (d *deps) del(ctx context.Context, _ *mcp.CallToolRequest, in DeleteIn) (*m
 		return nil, DeleteOut{}, err
 	}
 	return text2result("deleted " + id), DeleteOut{Status: resp.Msg.GetStatus()}, nil
+}
+
+// ---- trash_list ----
+
+type TrashListIn struct {
+	Namespace string `json:"namespace,omitempty" jsonschema:"only this namespace; omit for all namespaces"`
+	Limit     int    `json:"limit,omitempty" jsonschema:"max entries (default 20)"`
+}
+
+type TrashListEntry struct {
+	ID        string `json:"id"`
+	Namespace string `json:"namespace"`
+	DeletedAt string `json:"deletedAt"`
+	Reason    string `json:"reason"`
+	Excerpt   string `json:"excerpt"`
+}
+
+type TrashListOut struct {
+	Entries []TrashListEntry `json:"entries"`
+	Total   int              `json:"total"`
+}
+
+func (d *deps) trashList(ctx context.Context, _ *mcp.CallToolRequest, in TrashListIn) (*mcp.CallToolResult, TrashListOut, error) {
+	limit := in.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	resp, err := d.client.ListTrash(ctx, connect.NewRequest(&cortexv1.ListTrashRequest{Namespace: strings.TrimSpace(in.Namespace), Limit: int32(limit)}))
+	if err != nil {
+		return nil, TrashListOut{}, err
+	}
+	out := TrashListOut{Total: int(resp.Msg.GetTotal())}
+	var sb strings.Builder
+	for _, e := range resp.Msg.GetEntries() {
+		text := strings.Join(strings.Fields(e.GetText()), " ")
+		if r := []rune(text); len(r) > 120 {
+			text = string(r[:120]) + "…"
+		}
+		when := e.GetDeletedAt().AsTime().UTC().Format(time.RFC3339)
+		out.Entries = append(out.Entries, TrashListEntry{ID: e.GetId(), Namespace: e.GetNamespace(), DeletedAt: when, Reason: e.GetReason(), Excerpt: text})
+		fmt.Fprintf(&sb, "%s [%s] deleted %s (%s): %s\n", e.GetId(), e.GetNamespace(), when, e.GetReason(), text)
+	}
+	if len(out.Entries) == 0 {
+		return text2result("trash is empty"), out, nil
+	}
+	return text2result(strings.TrimRight(sb.String(), "\n")), out, nil
+}
+
+// ---- trash_restore ----
+
+type TrashRestoreIn struct {
+	ID string `json:"id" jsonschema:"the ID of the deleted memory to restore from the trash"`
+}
+
+type TrashRestoreOut struct {
+	ID     string `json:"id"`
+	Status string `json:"status" jsonschema:"queued once accepted for async re-indexing"`
+}
+
+func (d *deps) trashRestore(ctx context.Context, _ *mcp.CallToolRequest, in TrashRestoreIn) (*mcp.CallToolResult, TrashRestoreOut, error) {
+	id := strings.TrimSpace(in.ID)
+	if id == "" {
+		return nil, TrashRestoreOut{}, fmt.Errorf("id must not be empty")
+	}
+	if _, err := d.client.RestoreFromTrash(ctx, connect.NewRequest(&cortexv1.RestoreFromTrashRequest{Ids: []string{id}})); err != nil {
+		return nil, TrashRestoreOut{}, err
+	}
+	return text2result("restored " + id + " (queued for indexing)"), TrashRestoreOut{ID: id, Status: "queued"}, nil
 }
 
 // ---- memory_edit ----

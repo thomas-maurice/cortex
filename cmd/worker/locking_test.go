@@ -254,6 +254,40 @@ func TestIndexFieldOwnership(t *testing.T) {
 		assert.Equal(t, []string{"other"}, got.DupCandidates)
 	})
 
+	// Tags are written by the index path AND by tag rename. A queued message with a
+	// pre-rename snapshot must not undo the rename when it does not intend to
+	// change tags (UpdateMemory without replace_tags, reindex): keepTags.
+	t.Run("keepTags keeps the stored tags (memory AND chunks) over a stale snapshot", func(t *testing.T) {
+		s := newStack(t, 1, time.Minute)
+		id := uuid.NewString()
+		seed(t, s, "", memory.Record{ID: id, Text: "t", Tags: []string{"kubernetes"}, IndexedSeq: 1}) // already renamed k8s -> kubernetes
+		runIndex(t, s, indexMsg(t, 5, memory.Record{ID: id, Text: "edited", Tags: []string{"k8s"}, KeepTags: true, CreatedAt: time.Now()}))
+		got, _ := s.fs.peek("", id)
+		assert.Equal(t, "edited", got.Text)
+		assert.Equal(t, []string{"kubernetes"}, got.Tags, "queued edit restored the pre-rename tag")
+		s.fs.mu.Lock()
+		defer s.fs.mu.Unlock()
+		assert.Equal(t, []string{"kubernetes"}, s.fs.chunkTags["|"+id], "chunks must follow the stored tags")
+	})
+
+	t.Run("without keepTags the message's tags win (replace_tags / import are point-in-time)", func(t *testing.T) {
+		s := newStack(t, 1, time.Minute)
+		id := uuid.NewString()
+		seed(t, s, "", memory.Record{ID: id, Text: "t", Tags: []string{"kubernetes"}, IndexedSeq: 1})
+		runIndex(t, s, indexMsg(t, 5, memory.Record{ID: id, Text: "t", Tags: []string{"explicit", " explicit ", ""}, CreatedAt: time.Now()}))
+		got, _ := s.fs.peek("", id)
+		assert.Equal(t, []string{"explicit"}, got.Tags, "tags are normalised (trim, dedup, drop empty) at the worker too")
+	})
+
+	t.Run("keepTags on a memory that does not exist yet still creates it with the message tags", func(t *testing.T) {
+		s := newStack(t, 1, time.Minute)
+		id := uuid.NewString()
+		runIndex(t, s, indexMsg(t, 5, memory.Record{ID: id, Text: "t", Tags: []string{"a"}, KeepTags: true, CreatedAt: time.Now()}))
+		got, ok := s.fs.peek("", id)
+		require.True(t, ok)
+		assert.Equal(t, []string{"a"}, got.Tags)
+	})
+
 	t.Run("tenants are isolated", func(t *testing.T) {
 		s := newStack(t, 1, time.Minute)
 		id := uuid.NewString()
@@ -648,4 +682,36 @@ func TestFetchHealthTurnsUnreadyAfterContinuousFailure(t *testing.T) {
 	assert.Error(t, h.err(50*time.Millisecond), "continuous failure must fail readiness")
 	h.ok()
 	assert.NoError(t, h.err(50*time.Millisecond), "one successful pull restores readiness")
+}
+
+// A superseded source must be deleted WITH the trash reason naming its replacement
+// (so a bad consolidation is recoverable from the trash and attributable); the
+// merged record itself is indexed normally.
+func TestSupersedesGoesToTrash(t *testing.T) {
+	s := newStack(t, 1, time.Minute)
+	id, victim := uuid.NewString(), uuid.NewString()
+	seed(t, s, "", memory.Record{ID: victim, Text: "src"})
+	rec := memory.Record{ID: id, Text: "merged", Namespace: "ns", CreatedAt: time.Now()}
+	rec.Supersedes = []string{victim}
+	runIndex(t, s, indexMsg(t, 1, rec))
+
+	_, ok := s.fs.peek("", victim)
+	assert.False(t, ok, "source is deleted from the live store")
+	assert.Equal(t, []string{victim + " supersedes:" + id}, s.fs.deleteReasons)
+}
+
+// Unlink/purge-time removals must tolerate a MISSING (valid-UUID) endpoint: the
+// edge is still cleared from the side that exists, and the message is acked (not
+// retried), so purging a trashed memory strips the dangling link on its neighbour.
+func TestLinkRemoveWithMissingEndpoint(t *testing.T) {
+	s := newStack(t, 1, time.Minute)
+	b, gone := uuid.NewString(), uuid.NewString()
+	seed(t, s, "", memory.Record{ID: b, Text: "b", LinkedIDs: []string{gone, "x"}})
+
+	rm := linkMsg(t, memory.LinkMsg{Op: memory.LinkOpRemove, A: gone, B: b})
+	handleLink(context.Background(), testLog, s.m, s.js, s.locker, s.stores, rm)
+	got, _ := s.fs.peek("", b)
+	assert.Equal(t, []string{"x"}, got.LinkedIDs)
+	assert.EqualValues(t, 1, rm.acked.Load())
+	assert.Zero(t, rm.nakked.Load())
 }

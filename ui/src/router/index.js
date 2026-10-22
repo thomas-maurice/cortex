@@ -47,6 +47,18 @@ const router = createRouter({
       meta: { requiresAuth: true },
     },
     {
+      path: '/tags',
+      name: 'tags',
+      component: () => import('@/views/TagsView.vue'),
+      meta: { requiresAuth: true },
+    },
+    {
+      path: '/trash',
+      name: 'trash',
+      component: () => import('@/views/TrashView.vue'),
+      meta: { requiresAuth: true },
+    },
+    {
       path: '/preferences',
       name: 'preferences',
       component: () => import('@/views/PreferencesView.vue'),

@@ -48,6 +48,14 @@ const (
 	ensureMinInterval = 500 * time.Millisecond
 )
 
+const (
+	// DefaultBucket and DefaultTTL are the lock bucket every Cortex process
+	// (worker AND server) must use: New creates-or-UPDATES the bucket, so a
+	// differing TTL between processes would keep rewriting it.
+	DefaultBucket = "cortex_locks"
+	DefaultTTL    = 60 * time.Second
+)
+
 // Locker hands out per-key locks backed by one KV bucket.
 type Locker struct {
 	js     jetstream.JetStream

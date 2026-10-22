@@ -172,7 +172,7 @@ should encode *why* the behaviour matters, not just what it does (Rule 9).
   cascade to chunks. See docs/CHUNKING.md.
 - **Weaviate runs with `AUTOSCHEMA_ENABLED=false`** (compose, TrueNAS compose, CI,
   `scripts/wv-test.sh`). Schema lives only in code: a new property written by ANY path
-  must be declared in `memoryProperties`/`chunkProperties`/`summaryProperties`/
+  must be declared in `memoryProperties`/`chunkProperties`/`summaryProperties`/`trashProperties`/
   `userProperties`/`apiKeyProperties` (ensureProps adds it to existing classes), else
   the write fails. Why: a worker write during a reindex/migrate-mt class drop would
   otherwise auto-create a wrong-shaped class. See `autoschema_integration_test.go`.
@@ -206,10 +206,22 @@ should encode *why* the behaviour matters, not just what it does (Rule 9).
   NATS via `internal/natstest`; `cmd/worker` has a multi-replica convergence sim.
 - **Idempotent ids.** Object id = a UUID; the worker upserts by id, so
   redelivery/retry/reindex overwrites rather than duplicates.
-- Two Weaviate classes: `Memory` and `ConversationSummary` (one per
-  conversation, upserted). A namespace conceptually spans **both** — anything that
+- Weaviate classes: `Memory`, `MemoryChunk`, `Trash` and `ConversationSummary` (one
+  summary per conversation, upserted). A namespace conceptually spans **both** — anything that
   renames/deletes a namespace must touch both classes or it orphans summaries.
 
+- **Deletes are soft (Trash class).** `TenantStore.Delete`/`DeleteWithReason` (explicit
+  delete, worker `supersedes` → reason `supersedes:<id>`, `DeleteNamespace` per memory →
+  `namespace-delete`) copy the record into the `Trash` class (same tenant/id, no vector,
+  `internal/store/trash.go`) BEFORE deleting; trash write failure = nothing deleted.
+  `Memory` has no deleted flag. Entries keep accessCount/lastAccessedAt/model/dims (not dupCandidates/indexedSeq). Restore (ids, or `all`+namespace+reason bulk) = `bus.PublishIndex` (+ `PublishLink` for live
+  endpoints) then drop the entry; never overwrites a live id; purge/sweep queue link REMOVEs to neighbours; `Delete.reason` ∈ {delete, stale-review, duplicate-review}. Retention: `TRASH_RETENTION`
+  (default 168h, 0 = forever) + hourly sweep in cmd/server (`Service.SweepTrash` →
+  `Store.PurgeExpiredTrash`, all tenants). Trash is NOT in backups. `DeleteClass` leaves
+  Trash alone (reindex rebuild keeps it); `DeleteAllClasses` also drops it (migrate-mt,
+  which snapshots + converts the trash into the admin tenant; tests use it for a clean
+  slate). `TRASH_RETENTION` is parsed strictly (bad value = server exits). DropTenant wipes
+  the user's trash deliberately. Summaries are not trashed.
 - **Observability** lives in `internal/obs` (shared registry, `/healthz` `/readyz` `/metrics`
   handlers, `obs.Serve` for the dedicated metrics listeners, dependency probes reusing `Store.Ready` / `Embedder.Reachable`). Server RPC metrics are
   a Connect interceptor + a scrape-time queue collector in `internal/rpc/metrics.go`; worker metrics
@@ -291,7 +303,8 @@ and scripting without going through Claude. Global flags: `--server`
 | `list [-n '*'] [-l N] [-t tag] [-T anyTag] [-x excludeTag]` | List newest-first with tag/namespace filters. |
 | `get <id> [--json]` | Show one memory by id (full text + linked ids) via the `GetMemory` RPC (tenant-scoped; NotFound for unknown/other-tenant ids; no reinforcement). Same RPC backs the `cortex_memory_get` MCP tool, which also marks the id delivered in recallstate. |
 | `search "<q>" [-n '*'] [-l N] [-d 0.6] [--autocut N] [-t/-T/-x tag] [--reinforce]` | Hybrid (BM25+vector) semantic search. `-d` = distance cutoff. CLI does NOT reinforce by default. |
-| `delete <id>` | Delete one memory by id. |
+| `delete <id>` | Delete one memory by id (soft: moved to the `Trash` class, see §4). |
+| `trash ls [-n ns]` / `trash restore <id>...` / `trash purge <id>... \| --all [-n ns] [--yes]` | Soft-delete trash (`ListTrash`/`RestoreFromTrash`/`PurgeTrash` RPCs; `cmd/cli/trash.go`). |
 | `export [-n '*'] [-o file]` | Dump memories (text+metadata, no vectors) to JSON (stdout by default). |
 | `import <file> [--batch N]` | Restore a dump via the NATS ingest queue (worker re-embeds). Preserves ids/links. **This is how you load seed data** — point `--server` at the target. |
 | `reindex [-n '*'] [--yes]` | Server snapshots then republishes all memories for re-embed. `--yes` allows a destructive class rebuild on an embedding-dimension change. |
@@ -317,6 +330,7 @@ and scripting without going through Claude. Global flags: `--server`
 | `config init [--force]` / `config show` | Scaffold / print the effective `cortex.yaml`. |
 | `onboard [--force]` | Interactive first-run: prompts for server URL + API token (the only non-default values), writes `cortex.yaml` with defaults for everything else. Shares the config template with `config init`; token read no-echo. |
 | `hash-password` | Print an argon2id hash for `CORTEX_UI_PASSWORD`. |
+| `tags [-n ns]` / `tags rename <from> <to> [-n ns] [--yes]` / `tags delete <tag> [-n ns] [--yes]` | Tag management (`internal/store/tags.go`, `cmd/cli/tags.go`, **Tags** UI view). Rename into an existing tag merges (dedup). Metadata-only merge of `tags` on the memory AND its chunks; each memory is rewritten under the worker's per-memory `dlock` key after re-reading its tags. Single-flight per tenant; refused while a reindex/restore gate is held. `from`/`tag` match EXACTLY (only `to` is trimmed); tags are normalised on write (`memory.NormalizeTags`). Producers that republish stored tags (`UpdateMemory` w/o replace_tags, `Reindex`) set `Record.KeepTags` so the worker keeps stored tags (never reintroduce tags from those snapshots). Read-only MCP tool `cortex_tags_list`. The `preference` tag needs `--yes`/`confirm_preference`. Summaries have no tags. |
 
 There is **no** namespace-management CLI command — rename/delete a namespace is a
 UI feature (the **Namespaces** view), backed by the `ListNamespaces` /

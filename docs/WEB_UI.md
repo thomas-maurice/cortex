@@ -91,6 +91,8 @@ user/pass check for a user store and emit per-user claims.
 | `/recall-preview` | **Recall preview** — what would the recall hook inject for a prompt? | `PreviewRecall` |
 | `/sessions` | **Sessions** — conversation summaries (edit in place) | `ListSummaries`, `SummarizeSession` |
 | `/namespaces` | **Namespaces** — per-namespace counts; rename / delete a whole namespace | `ListNamespaces`, `RenameNamespace`, `DeleteNamespace` |
+| `/tags` | **Tags** — per-tag counts + last activity; rename / merge / delete; click opens Memories filtered by the tag (`/memories?tag=…&namespace=…`) | `ListTags`, `RenameTag`, `DeleteTag` |
+| `/trash` | **Trash** — deleted memories; restore / purge one / purge all (confirm dialogs) | `ListTrash`, `RestoreFromTrash`, `PurgeTrash` |
 | `/preferences` | **Preferences** — `global` + `preference` memories, edit/add/delete | `List`, `Save`, `UpdateMemory`, `Delete` |
 | `/backup` | **Backup** — export / import memories (JSON, no vectors) | `List`, `RestoreMemories` |
 | `/queue` | **Indexing** — live index-queue counts + dead letters; auto-refreshes | `IndexQueue`, `Dead` |
@@ -102,8 +104,36 @@ A table of every namespace with its memory count, summary count, and last
 activity. **Rename** is inline and metadata-only — the server PATCHes the
 `namespace` field on each object (memories *and* conversation summaries), so
 nothing is re-embedded; renaming into an existing namespace merges the two.
-**Delete** removes an entire namespace's memories and summaries and is guarded by
-a typed confirmation (you must type the namespace name).
+**Delete** removes an entire namespace and is guarded by a typed confirmation (you
+must type the namespace name): its memories are moved to the trash (restorable), its
+summaries are permanently removed.
+
+### Trash (`ui/src/views/TrashView.vue`)
+
+Table of soft-deleted memories (text excerpt, namespace, deleted-at, reason) newest
+first, with the server's retention shown. **Restore** re-queues a memory for indexing
+under its original id; **Purge** deletes one permanently. The view pages (50/page), filters by
+namespace and reason, supports multi-select with **Restore selected** / **Purge selected**, and
+**Restore all (matching)** / **Purge all (matching)** (the latter requires typing `purge`). Deleting from the Memories view / inspector says "moved to trash".
+
+### Tags (`ui/src/views/TagsView.vue`)
+
+A table of every tag (exact, case-sensitive: `k8s` and `K8s` are separate rows)
+with its memory count and "Newest memory" (createdAt of the newest memory carrying it), a filter box and an
+optional namespace scope. **Rename** is inline; when the target already exists the
+view says so and the button becomes **Merge** (memories carrying both end up with
+the tag once). **Delete** removes the tag from every memory but keeps the
+memories. Both are metadata-only (memories *and* their search chunks are patched,
+nothing is re-embedded). The reserved `preference` tag (it drives the
+standing-preferences hook) is refused by the server unless `confirm_preference`
+is set; the UI asks for explicit confirmation first. Clicking a tag opens
+Memories with that tag pre-selected (`?tag=` / `?namespace=` query params); because
+the server filter is fuzzy, that view re-filters to exact tags, doubling the query
+limit (up to 10 rounds / 10000 rows) until a page fills, and notes when fuzzy
+matches were hidden. Rename/delete use the namespace the counts were loaded with
+(Refresh to change it), never the live input box. Editing a memory in the inspector
+or Preferences view only sends tags when the tag field was actually changed, so a
+stale loaded list cannot undo a rename.
 
 ### Indexing (`ui/src/views/QueueView.vue`)
 
@@ -207,7 +237,7 @@ ui/
     utils/api.js           /auth/login client
     views/                 LoginView, MemoriesView, GraphView, ExploreView,
                            RecallPreviewView,
-                           SessionsView, NamespacesView, PreferencesView,
+                           SessionsView, NamespacesView, TagsView, TrashView, PreferencesView,
                            BackupView, QueueView (Indexing), StatusView
 internal/rpc/
   jwt.go                   HS256 issue/parse

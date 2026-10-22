@@ -56,9 +56,9 @@ func TestMultiTenantIsolation(t *testing.T) {
 	st.SetMultiTenant(true)
 
 	// Start clean.
-	_ = st.DeleteClass(ctx)
+	_ = st.DeleteAllClasses(ctx)
 	require.NoError(t, st.EnsureSchema(ctx))
-	t.Cleanup(func() { _ = st.DeleteClass(ctx) })
+	t.Cleanup(func() { _ = st.DeleteAllClasses(ctx) })
 
 	// Two distinct tenants: the Weaviate tenant name is their "user ID".
 	const tenantA = "user-alice"
@@ -233,9 +233,9 @@ func TestMultiTenantFlagOff(t *testing.T) {
 	// MT is explicitly OFF — the default; this call mirrors cmd/server/main.go.
 	st.SetMultiTenant(false)
 
-	_ = st.DeleteClass(ctx)
+	_ = st.DeleteAllClasses(ctx)
 	require.NoError(t, st.EnsureSchema(ctx))
-	t.Cleanup(func() { _ = st.DeleteClass(ctx) })
+	t.Cleanup(func() { _ = st.DeleteAllClasses(ctx) })
 
 	// A Tenant("") with MT off must behave like the old Store — no WithTenant.
 	ts := st.Tenant("")

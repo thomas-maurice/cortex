@@ -364,7 +364,7 @@ func main() {
 		pf.StringVar(s.target, s.key, s.def, s.usage)
 	}
 
-	root.AddCommand(saveCmd(), editCmd(), listCmd(), getCmd(), searchCmd(), deleteCmd(), exportCmd(), importCmd(), reindexCmd(), deadCmd(), statusCmd(), doctorCmd(), summarizeCmd(), summariesCmd(), recallCmd(), candidatesCmd(), consolidateCmd(), hashPasswordCmd(), configCmd(), onboardCmd(), migrateMTCmd(), usersCmd(), upgradeCmd(), versionCmd(), backupCmd(), restoreCmd(), hookCmd(), stateCmd())
+	root.AddCommand(saveCmd(), editCmd(), listCmd(), getCmd(), searchCmd(), deleteCmd(), exportCmd(), importCmd(), reindexCmd(), deadCmd(), statusCmd(), doctorCmd(), summarizeCmd(), summariesCmd(), recallCmd(), candidatesCmd(), consolidateCmd(), hashPasswordCmd(), configCmd(), onboardCmd(), migrateMTCmd(), usersCmd(), upgradeCmd(), versionCmd(), backupCmd(), restoreCmd(), hookCmd(), stateCmd(), trashCmd(), tagsCmd())
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -619,7 +619,7 @@ func searchCmd() *cobra.Command {
 func deleteCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "delete <id>",
-		Short: "Delete a memory by ID (get the ID from list or search)",
+		Short: "Delete a memory by ID (moved to the trash; see `cortex trash`)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			id := strings.TrimSpace(args[0])
@@ -629,7 +629,7 @@ func deleteCmd() *cobra.Command {
 			if _, err := client().Delete(cmd.Context(), connect.NewRequest(&cortexv1.DeleteRequest{Id: id})); err != nil {
 				return err
 			}
-			fmt.Println("deleted", id)
+			fmt.Println("deleted", id, "(moved to trash; `cortex trash restore` to undo)")
 			return nil
 		},
 	}
@@ -1234,6 +1234,7 @@ func statusCmd() *cobra.Command {
 			fmt.Printf("weaviate %s\n", okStr(m.GetWeaviateOk()))
 			fmt.Printf("ollama   %s (model=%s dims=%d)\n", okStr(m.GetOllamaOk()), m.GetModel(), m.GetDims())
 			fmt.Printf("memories %d\n", m.GetMemoryCount())
+			fmt.Printf("trash    %d\n", m.GetTrashCount())
 			return nil
 		},
 	}
@@ -1540,6 +1541,7 @@ func migrateMTCmd() *cobra.Command {
 			fmt.Printf("summaries exported:  %d\n", m.GetSummariesExported())
 			fmt.Printf("memories queued:     %d\n", m.GetMemoriesQueued())
 			fmt.Printf("summaries queued:    %d\n", m.GetSummariesQueued())
+			fmt.Printf("trash migrated:      %d\n", m.GetTrashMigrated())
 			fmt.Printf("tenant:              %s\n", m.GetTenant())
 			fmt.Printf("\n%s\n", m.GetMessage())
 			return nil
