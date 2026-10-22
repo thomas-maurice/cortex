@@ -80,9 +80,10 @@ func TestScanAllPagesEveryRow(t *testing.T) {
 		wantSums[cid] = true
 	}
 
-	require.Eventually(t, func() bool {
+	require.EventuallyWithT(t, func(c *assert.CollectT) {
 		recs, err := ts.ListAll(ctx, "")
-		return err == nil && len(recs) == 9
+		require.NoError(c, err)
+		assert.Len(c, recs, 9)
 	}, 10*time.Second, 200*time.Millisecond, "memories did not become queryable")
 
 	ids := func(recs []memory.Record) map[string]bool {

@@ -256,8 +256,14 @@ func (d *workerDeps) startPools(ctx context.Context) (index, link *pool, err err
 	// blocking or being blocked by the index stream.
 	indexFilters := []string{memory.SubjectIndex, memory.SubjectSummary}
 	linkFilters := []string{memory.SubjectLink}
+	// Both consumers re-ensure the SAME stream when it is wiped; serialise that so
+	// one's stream update never overlaps the other's consumer create (nats-server
+	// v2.15.1 races fileStore.UpdateConfig against ConsumerStore on the stream config).
+	var ensureMu sync.Mutex
 	recreate := func(durable string, filters []string, maxDeliver int) func(context.Context) (jetstream.Consumer, error) {
 		return func(ctx context.Context) (jetstream.Consumer, error) {
+			ensureMu.Lock()
+			defer ensureMu.Unlock()
 			if err := bus.EnsureStream(ctx, d.js); err != nil {
 				return nil, err
 			}

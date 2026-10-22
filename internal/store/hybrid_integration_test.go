@@ -81,9 +81,10 @@ func TestHybridSurfacesKeyword(t *testing.T) {
 	}
 
 	// Wait until all three are queryable (Weaviate indexing is near-real-time).
-	require.Eventually(t, func() bool {
-		c, err := ts.Count(ctx, ns)
-		return err == nil && c == 3
+	require.EventuallyWithT(t, func(c *assert.CollectT) {
+		n, err := ts.Count(ctx, ns)
+		require.NoError(c, err)
+		assert.Equal(c, 3, n)
 	}, 10*time.Second, 200*time.Millisecond, "memories did not become searchable")
 
 	rankOf := func(hits []memory.Hit, id string) int {

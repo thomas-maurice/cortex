@@ -120,18 +120,26 @@ golangci-lint run  # CI runs this (v2 config in .golangci.yml, errcheck included
 Some store tests are **integration tests against a real Weaviate**, gated on env
 so `go test ./...` skips them in CI:
 
+Use ONE throwaway Weaviate **per run** — never share one between concurrent runs
+or agents. Every integration test uses the global class names `Memory` /
+`MemoryChunk` / `ConversationSummary` and calls `DeleteClass`+`EnsureSchema` in
+setup, so two test processes on one Weaviate delete each other's classes mid-test
+(shows up as a bare 10s "did not become queryable" timeout or 422/500). Also never
+point them at the dev stack. Run the non-MT and MT (`CORTEX_TEST_MULTI_TENANT=1`)
+suites sequentially or on separate containers, and use `-p 1` when running the
+store and rpc integration packages together.
+
 ```bash
-# Spin up a THROWAWAY Weaviate (never point these at the dev stack — the tests
-# call DeleteClass, which WIPES all memories):
-docker run -d --name wv-test -p 8085:8080 -p 50055:50051 \
-  -e AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED=true \
-  -e PERSISTENCE_DATA_PATH=/var/lib/weaviate \
-  -e DEFAULT_VECTORIZER_MODULE=none -e ENABLE_MODULES="" \
-  cr.weaviate.io/semitechnologies/weaviate:1.38.0
-CORTEX_TEST_WEAVIATE_REST=localhost:8085 CORTEX_TEST_WEAVIATE_GRPC=localhost:50055 \
-  go test ./internal/store -v
-docker rm -f wv-test
+scripts/wv-test.sh run ./internal/store                                 # non-MT
+CORTEX_TEST_MULTI_TENANT=1 scripts/wv-test.sh run -p 1 ./internal/store ./internal/rpc   # MT (rpc integration test is MT-only)
+# manual: eval "$(scripts/wv-test.sh start)"; go test ...; scripts/wv-test.sh stop <name>
 ```
+
+The script starts a uniquely named container on random host ports
+(`-p 127.0.0.1::8080 -p 127.0.0.1::50051`, resolved via `docker port`), exports
+`CORTEX_TEST_WEAVIATE_REST/GRPC` for the `go test` it runs, and always removes the
+container (trap). If `DOCKER_HOST` points at a missing socket, use
+`docker --context desktop-linux ...` (or `export DOCKER_CONTEXT=desktop-linux`).
 
 Test conventions: testify (`require` for setup, `assert` for checks). Tests
 should encode *why* the behaviour matters, not just what it does (Rule 9).
