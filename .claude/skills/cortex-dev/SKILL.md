@@ -211,7 +211,7 @@ should encode *why* the behaviour matters, not just what it does (Rule 9).
   renames/deletes a namespace must touch both classes or it orphans summaries.
 
 - **Deletes are soft (Trash class).** `TenantStore.Delete`/`DeleteWithReason` (explicit
-  delete, worker `supersedes` → reason `supersedes:<id>`, `DeleteNamespace` per memory →
+  delete, worker `supersedes` → reason `supersedes:<id>`; before trashing, `applySupersedes` carries the source's links to the merged memory via the link queue (ADD new↔N, REMOVE source↔N), `DeleteNamespace` per memory →
   `namespace-delete`) copy the record into the `Trash` class (same tenant/id, no vector,
   `internal/store/trash.go`) BEFORE deleting; trash write failure = nothing deleted.
   `Memory` has no deleted flag. Entries keep accessCount/lastAccessedAt/model/dims (not dupCandidates/indexedSeq). Restore (ids, or `all`+namespace+reason bulk) = `bus.PublishIndex` (+ `PublishLink` for live
@@ -245,6 +245,7 @@ Package map: `internal/recall` (hook query logic, shared by hook + server), `int
 `internal/memory` (shared model + stream/class names), `internal/config` (viper).
 UI in `ui/src/views/*.vue` wired through `ui/src/router/index.js` + the navbar in
 `ui/src/App.vue`; RPC client in `ui/src/utils/connect.js`.
+Merge carry-over (links, access stats, dismissals, createdAt/conversationId) lives in `internal/merge`, shared by the worker's `applySupersedes` and the `MergeInto` RPC (Duplicates "Keep left/right"). The **Duplicates** view (`DuplicatesView.vue`, /duplicates under Organize) reviews worker-flagged pairs via `ListDuplicateCandidates`/`DismissDuplicate`/`Delete`/`Save{supersedes}`; pair-grouping lives in the pure `ui/src/utils/duplicates.js` (no JS test harness — verify with a throwaway node script).
 
 ## 4b. Multi-tenancy (DEFAULT ON) + migration (`cortex migrate-mt`)
 

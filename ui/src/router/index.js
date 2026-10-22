@@ -53,6 +53,12 @@ const router = createRouter({
       meta: { requiresAuth: true },
     },
     {
+      path: '/duplicates',
+      name: 'duplicates',
+      component: () => import('@/views/DuplicatesView.vue'),
+      meta: { requiresAuth: true },
+    },
+    {
       path: '/trash',
       name: 'trash',
       component: () => import('@/views/TrashView.vue'),

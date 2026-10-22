@@ -283,3 +283,23 @@ type syncBuf struct {
 
 func (s *syncBuf) Write(p []byte) (int, error) { s.mu.Lock(); defer s.mu.Unlock(); return s.b.Write(p) }
 func (s *syncBuf) String() string              { s.mu.Lock(); defer s.mu.Unlock(); return s.b.String() }
+
+// If every attempt exhausts the lease budget, AcquireAll must give up at the
+// overall wait with ErrTimeout instead of retrying forever (which would pin a
+// worker slot, with keepalives, indefinitely).
+func TestAcquireAllTerminatesWhenLeaseBudgetAlwaysExpires(t *testing.T) {
+	t.Parallel()
+	l := newLocker(t, time.Minute, "w")
+	l.ttl = 0 // Hold() == 0: the budget is spent before the section can start
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := l.AcquireAll(context.Background(), []string{"a", "b"}, 700*time.Millisecond)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		require.ErrorIs(t, err, ErrTimeout)
+	case <-time.After(10 * time.Second):
+		t.Fatal("AcquireAll did not terminate within the overall wait")
+	}
+}

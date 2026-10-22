@@ -211,6 +211,12 @@ port as the Connect API; open the server's address in a browser. Views:
 - **Expiry** — New memory and the inspector's edit mode have an expiry picker
   (never / 1 day / 1 week / 1 month / custom date); memories show an "expires in 3d"
   or "expired" badge, and the Memories view has an *Include expired memories* toggle.
+- **Duplicates** — review the pairs the worker flagged as likely duplicates
+  (`DEDUP_DISTANCE`), side by side (text, namespace, tags, date, link count; a pair
+  shows once even if both sides flag each other). Per pair: **Not duplicates**
+  (dismiss, never re-flagged), **Keep left / right** (folds the other into the kept one via `MergeInto` — its links, dismissals and stats are carried over — and trashes it, with an undo toast), or **Merge…** (editor prefilled with both texts, saved
+  with `supersedes` = both ids so they move to the trash once the merge is indexed; their links are carried over to the merged memory).
+  CLI/MCP equivalents: `cortex candidates`, `cortex_review_candidates`.
 - **Trash** — every deleted memory (explicit delete, `supersedes`, namespace delete)
   lands here first. List with deletion time and reason, **restore** (re-queued for
   indexing under the same id), **purge** one or all (confirm dialogs). Entries
@@ -494,7 +500,7 @@ The MCP server exposes these tools to Claude:
 
 | Tool | What it does |
 |------|--------------|
-| `cortex_memory_save` | Queue a memory for indexing. Args: `text`, `namespace?`, `tags?`, `expiresIn?` (e.g. `"7d"`, `"36h"` — set it for TIME-BOUND facts; the memory stops being recalled once it lapses), `linkTo?` (ids to bidirectionally link this memory to — queued and applied once both ends are indexed, so targets need not exist yet), `supersedes?` (ids this memory replaces — the worker deletes them once this one is indexed). Returns its `id`. |
+| `cortex_memory_save` | Queue a memory for indexing. Args: `text`, `namespace?`, `tags?`, `expiresIn?` (e.g. `"7d"`, `"36h"` — set it for TIME-BOUND facts; the memory stops being recalled once it lapses), `linkTo?` (ids to bidirectionally link this memory to — queued and applied once both ends are indexed, so targets need not exist yet), `supersedes?` (ids this memory replaces — the worker trashes them once this one is indexed; this memory inherits their links). Returns its `id`. |
 | `cortex_memory_search` | **Hybrid** search (BM25 keyword + vector, blended by `SEARCH_ALPHA`, default 0.5) so exact tokens/codenames resolve, not just semantic matches. Args: `query`, `namespace?` (`*` = all namespaces), `limit?`, `tags?` (must have all), `excludeTags?`, `maxDistance?` (relevance cutoff), `includeExpired?` (also return expired memories; hidden by default). Each hit includes its `validUntil`/`expired` when time-bound; its `id`, any `linkedIds`, `matched` (for long, chunk-indexed memories: the excerpt that matched the query; omitted when it is the whole text), and any `dupCandidates` (flagged likely-duplicates — the output hints when consolidation would help). When **living memory** is enabled (`RERANK_WEIGHT`>0, off by default), search also re-orders results by recency-decayed usage and reinforces its top hit(s) — frequently-recalled memories float up over time. See [`docs/DESIGN.md`](docs/DESIGN.md#living-memory--decay--reinforcement-opt-in). |
 | `cortex_tags_list` | **Read-only** tag listing (`namespace?`): each tag in use with its memory count, most used first. Call it before saving to REUSE an existing tag instead of inventing `k8s`/`kubernetes` variants. Rename/delete are intentionally not exposed over MCP (use the CLI/UI). |
 | `cortex_memory_get` | Fetch ONE memory by `id`, full text (follow `linkedIds` from search hits, or ids from `cortex_consolidate` / `cortex_review_candidates`). Same shape as a search hit; counts as delivered for session dedup so later searches stub it; does not reinforce. |
@@ -522,7 +528,11 @@ turns that into a safe, LLM-driven merge:
    memories that preserve every distinct fact and drop the redundancy.
 3. **Supersede (worker).** Each compiled memory is saved with `supersedes` set to
    the source ids it absorbs (only ids from the manifest). The worker deletes
-   those sources **only after the new memory is durably indexed**.
+   those sources **only after the new memory is durably indexed**, and first
+   carries their links over: the merged memory is linked to every live neighbour
+   of the sources (excluding the sources themselves), and those neighbours stop
+   pointing at the trashed ids. Claude need not pass `linkTo` for them. Access counts, not-a-duplicate dismissals,
+   the oldest `createdAt` and the conversation id are carried over too.
 
 That ordering is the safety property: because deletion happens *after* the merged
 memory is persisted, a crash mid-consolidation can leave stale sources behind (the
@@ -687,7 +697,7 @@ authenticate with `--token` / `CORTEX_AUTH_TOKEN`.
 | `cortex tags [-n ns]` | List tags with memory counts and last activity. `tags rename <from> <to> [-n ns]` fixes drift (`k8s` / `kubernetes`; merges into an existing tag), `tags delete <tag> [-n ns] [--yes]` removes a tag from every memory. Touching the reserved `preference` tag needs `--yes`. |
 | `cortex trash ls [-n ns] [--reason r]` / `trash restore <id>... \| --all [-n ns] [--reason r]` / `trash purge <id>... \| --all [-n ns] [--reason r] [--yes]` | Soft-delete trash: list trashed memories, restore them (re-queued for indexing, same id, with their recall history; ids are rejected if a live memory has that id; `--all` restores every match independently and reports failures) or purge them permanently. `cortex status` shows the trash count. |
 | `cortex export -o backup.json` | Dump all memories (text + metadata, no vectors) to JSON. |
-| `cortex import backup.json` | Restore a dump into the target via its NATS ingest queue (worker re-embeds). Preserves ids/links; point `--server` at the target. See [scripts/prod-to-dev.sh](scripts/prod-to-dev.sh). |
+| `cortex import backup.json` | Restore a dump into the target via its NATS ingest queue (worker re-embeds). Preserves ids/links (over an existing memory: earliest `createdAt` wins, `conversationId` never blanked); point `--server` at the target. See [scripts/prod-to-dev.sh](scripts/prod-to-dev.sh). |
 | `cortex reindex --yes` | Re-embed every memory through the worker (see below). |
 | `cortex migrate-mt [--yes]` | Migrate a non-MT store to multi-tenancy (one-shot; requires `CORTEX_MULTI_TENANT=true` on the server). |
 | `cortex users list \| get <u> \| add <u> [--role] \| delete <u> \| set-role <u> <role> \| reset-password <u>` | Manage users (multi-tenant mode; needs an **admin** `--token`). The break-glass path to fix accounts without the web UI. |
@@ -695,7 +705,7 @@ authenticate with `--token` / `CORTEX_AUTH_TOKEN`.
 | `cortex doctor` | Per-check diagnostics from the server. |
 | `cortex backup` / `backup list\|s3-list\|download\|delete <name>` | **Admin.** Full server-side backup: every tenant's memories + summaries plus the user/API-key registry (hashes), written as a timestamped JSON file to the server's backup dir — and, when the offsite (S3) config is enabled, also uploaded to the bucket. Manage local files with `list`/`download`/`delete`; list the offsite copies with `s3-list`. Set `BACKUP_INTERVAL` (+ `BACKUP_KEEP`, default 7) on the server for automatic periodic backups with retention. Offsite (S3) upload is configured entirely via server env vars (`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` + `CORTEX_S3_BUCKET`/`CORTEX_S3_ENDPOINT`/`CORTEX_S3_PREFIX`/`CORTEX_S3_REGION`/`CORTEX_S3_USE_SSL`/`CORTEX_S3_ENABLED`); credentials are held in memory only, never stored or exposed. Works with AWS/MinIO/R2/SeaweedFS. |
 | `cortex backup self [-o file]` | **Any user.** Download a backup of YOUR OWN data (memories + conversation summaries) to a local file. |
-| `cortex restore <name> \| --file <local> \| --s3 <object-key> [--yes]` | **Admin.** Restore a full backup — by server-side filename, by uploading a local copy, or from the offsite S3 bucket (`--s3`, server downloads it; see `backup s3-list`): recreates missing users/API keys (existing ones untouched), re-queues every record into its original tenant; the worker re-embeds. Safe to re-run (upsert-by-id). |
+| `cortex restore <name> \| --file <local> \| --s3 <object-key> [--yes]` | **Admin.** Restore a full backup — by server-side filename, by uploading a local copy, or from the offsite S3 bucket (`--s3`, server downloads it; see `backup s3-list`): recreates missing users/API keys (existing ones untouched), re-queues every record into its original tenant; the worker re-embeds. Safe to re-run (upsert-by-id). Restoring over a memory that already exists keeps the earliest `createdAt` and never blanks its `conversationId` (a restore cannot revert a merge's provenance). |
 | `cortex restore self <local-file> [--yes]` | **Any user.** Restore a self-backup into YOUR OWN tenant — tenant attribution in the file is ignored, so it can only ever write to yourself. |
 | `cortex upgrade [--yes]` | Upgrade the local `cortex` + `cortex-mcp` binaries to the **server's** version: downloads the matching GitHub release, verifies its checksum, atomically replaces the binaries. Refuses on dev builds and major-version mismatches. Uses the public (unauthenticated) `GetVersion` RPC, so it works even with stale credentials. Also exposed to the LLM as the `cortex_upgrade` MCP tool — the MCP server probes the server version at startup and announces an available upgrade via its instructions. |
 | `cortex version [--json]` | Print the CLI version and the server's version (public `GetVersion` RPC, no token needed). `--json` emits `{"client":...,"server":...}` for scripting; if the server is unreachable the CLI version is still printed and the exit code is non-zero. |
@@ -912,7 +922,7 @@ docker compose up -d --scale worker=3     # or `deploy: {replicas: 3}` in the co
 ```
 
 `WORKER_METRICS_ADDR` is per container, so replicas do not clash (the port is not
-published). `WORKER_CONCURRENCY` (default `4`) bounds in-flight messages per
+published). `WORKER_MAX_PROCESSING` (default `10m`, `0` = off) caps one message's total processing time (then it fails and counts toward dead-lettering). `WORKER_CONCURRENCY` (default `4`) bounds in-flight messages per
 consumer within one process. Correctness does not depend on a single worker: each
 memory's read-modify-write runs under a per-id lock in a NATS KV bucket
 (`cortex_locks`, 60s TTL), index messages carry their stream sequence so an
@@ -1069,7 +1079,7 @@ internal/
   embed/           Ollama embeddings client
   store/           Weaviate: schema, upsert, chunk-based gRPC search, links, delete
   rpc/             Connect service impl, auth (token+JWT), login, JWT, client helper
-ui/                embedded Vue 3 SPA (Memories, Graph, Explore, Recall preview, Sessions, Namespaces, Tags, Trash, Preferences, Backup, Indexing, Status)
+ui/                embedded Vue 3 SPA (Memories, Graph, Explore, Recall preview, Sessions, Namespaces, Tags, Duplicates, Trash, Preferences, Backup, Indexing, Status)
 testdata/          fake seed memories for a dev stack (cortex import format)
 docker-compose.yml   nats + weaviate + ollama + worker + server
 deploy/truenas/      TrueNAS Scale compose (non-root, host bind mounts, Traefik h2c)

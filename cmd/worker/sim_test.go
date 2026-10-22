@@ -156,10 +156,10 @@ func runConvergence(t *testing.T, seed uint64) {
 			cur, _, _ := ts.Get(t.Context(), id)
 			if i%3 == 0 {
 				tok := fmt.Sprintf("not-dup-%d", i)
-				assert.NoError(t, ts.SetNotDuplicateOf(id, append(cur.NotDuplicateOf, tok)))
+				assert.NoError(t, ts.SetNotDuplicateOf(t.Context(), id, append(cur.NotDuplicateOf, tok)))
 				dismissed[id] = append(dismissed[id], tok)
 			} else {
-				assert.NoError(t, ts.Reinforce(id, cur.AccessCount+1))
+				assert.NoError(t, ts.Reinforce(t.Context(), id, cur.AccessCount+1, time.Now()))
 				reinforces[id]++
 			}
 		}

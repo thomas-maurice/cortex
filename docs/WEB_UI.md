@@ -92,6 +92,7 @@ user/pass check for a user store and emit per-user claims.
 | `/sessions` | **Sessions** — conversation summaries (edit in place) | `ListSummaries`, `SummarizeSession` |
 | `/namespaces` | **Namespaces** — per-namespace counts; rename / delete a whole namespace | `ListNamespaces`, `RenameNamespace`, `DeleteNamespace` |
 | `/tags` | **Tags** — per-tag counts + last activity; rename / merge / delete; click opens Memories filtered by the tag (`/memories?tag=…&namespace=…`) | `ListTags`, `RenameTag`, `DeleteTag` |
+| `/duplicates` | **Duplicates** — side-by-side review of worker-flagged duplicate pairs; dismiss / keep one / merge | `ListDuplicateCandidates`, `DismissDuplicate`, `Delete`, `RestoreFromTrash`, `Save` (`supersedes`) |
 | `/trash` | **Trash** — deleted memories; restore / purge one / purge all (confirm dialogs) | `ListTrash`, `RestoreFromTrash`, `PurgeTrash` |
 | `/preferences` | **Preferences** — `global` + `preference` memories, edit/add/delete | `List`, `Save`, `UpdateMemory`, `Delete` |
 | `/backup` | **Backup** — export / import memories (JSON, no vectors) | `List`, `RestoreMemories` |
@@ -120,6 +121,17 @@ and toasts "Updated". Memories carry an "expires in 3d" badge (or a red "expired
 Expired memories are hidden by the server; the Memories view's *Include expired* switch
 sets `includeExpired` on `Search`/`List`. Expired memories are moved to the Trash (reason
 `expired`) by the server's hourly sweep after `EXPIRY_GRACE`.
+### Duplicates (`ui/src/views/DuplicatesView.vue`)
+
+Lists the pairs the worker flagged at index time. The server returns directed groups
+(A lists B, B usually lists A); `utils/duplicates.js` (`buildPairs`, pure, no Vue)
+collapses them so each unordered pair shows once, older memory on the left. Per pair:
+**Not duplicates** -> `DismissDuplicate`; **Keep left/right** -> confirm, `Delete` the
+other (moves to Trash; the toast has **Undo** -> `RestoreFromTrash`); **Merge…** opens a
+dialog prefilled with both texts, the union of tags and the left namespace, and saves
+with `supersedes` = both ids (the worker trashes both originals only after the merge is
+indexed and carries their links over to the merged memory; the pair is hidden locally meanwhile). **Keep left/right** calls `MergeInto` (carries links, dismissals, stats, createdAt onto the kept memory before trashing the other). A side that is a `global` + `preference` memory gets a badge and a warning when the result would no longer be one. The truncation banner uses the server's `truncated` flag. Namespace filter is server-side
+(`*` = all). No pair distance is shown (the RPC does not return it). No nav badge.
 
 ### Trash (`ui/src/views/TrashView.vue`)
 
@@ -247,11 +259,12 @@ ui/
     stores/auth.js         JWT store (persisted, expiry-checked)
     gen/cortex/v1/cortex_pb.ts  GENERATED messages + MemoryService descriptor
     utils/connect.js       typed Connect client (createClient; attaches the JWT)
+    utils/duplicates.js    pure pair-grouping/merge-draft helpers (Duplicates view)
     utils/api.js           /auth/login client
     components/Expiry*.vue expiry picker + badge (helpers in lib/expiry.js)
     views/                 LoginView, MemoriesView, GraphView, ExploreView,
                            RecallPreviewView,
-                           SessionsView, NamespacesView, TagsView, TrashView, PreferencesView,
+                           SessionsView, NamespacesView, TagsView, DuplicatesView, TrashView, PreferencesView,
                            BackupView, QueueView (Indexing), StatusView
 internal/rpc/
   jwt.go                   HS256 issue/parse

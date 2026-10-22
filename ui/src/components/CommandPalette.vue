@@ -50,6 +50,7 @@ import { openInspector } from '@/lib/inspector'
 import {
   Archive,
   BookOpen,
+  Copy,
   Database,
   Eye,
   KeyRound,
@@ -87,6 +88,7 @@ const views = [
   { route: 'recall-preview', label: 'Recall preview', icon: Eye },
   { route: 'sessions', label: 'Sessions', icon: MessagesSquare },
   { route: 'namespaces', label: 'Namespaces', icon: Layers },
+  { route: 'duplicates', label: 'Duplicates', icon: Copy },
   { route: 'preferences', label: 'Preferences', icon: SlidersHorizontal },
   { route: 'backup', label: 'Backup', icon: Archive },
   { route: 'status', label: 'Status', icon: Server },

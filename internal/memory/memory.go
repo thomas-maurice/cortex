@@ -282,6 +282,7 @@ type DeadLetter struct {
 const (
 	TrashReasonDelete          = "delete"
 	TrashReasonSupersedes      = "supersedes:"
+	TrashReasonMergedInto      = "merged-into:"
 	TrashReasonNamespaceDelete = "namespace-delete"
 	// Reasons a caller may pass to Delete (so mass deletions are filterable).
 	TrashReasonStaleReview     = "stale-review"

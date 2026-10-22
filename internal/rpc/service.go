@@ -27,6 +27,7 @@ import (
 	"github.com/thomas-maurice/cortex/internal/embed"
 	"github.com/thomas-maurice/cortex/internal/identity"
 	"github.com/thomas-maurice/cortex/internal/memory"
+	"github.com/thomas-maurice/cortex/internal/merge"
 	"github.com/thomas-maurice/cortex/internal/store"
 )
 
@@ -122,8 +123,9 @@ type Service struct {
 	embedder *embed.Client
 	cfg      Config
 	log      *slog.Logger
-	// linkMu serializes the read-modify-write that DismissDuplicate performs on
-	// each memory's not-duplicate / candidate lists, preventing lost updates.
+	// linkMu serializes, WITHIN this process only, the read-modify-write that
+	// DismissDuplicate performs on each memory's not-duplicate / candidate lists.
+	// Cross-replica safety comes from the per-memory dlocks (lockMemories).
 	// (Link/Unlink no longer mutate the store directly — they publish to
 	// SubjectLink and the worker's link consumer serialises the apply.)
 	linkMu sync.Mutex
@@ -132,19 +134,21 @@ type Service struct {
 	// memory cannot both read the old count and lose an increment.
 	reinforceMu sync.Mutex
 
+	// Cross-replica per-memory locks shared with the worker (see lockMemories).
+	// memLocks is a test seam replacing them.
+	lockerMu sync.Mutex
+	locker   *dlock.Locker
+	memLocks func(ctx context.Context, tenant string, ids []string) (context.Context, func(), error)
+
 	// Single-flight guards (see tenantGate): one in-flight backup / reindex /
 	// restore per tenant, and one admin bulk operation server-wide, so no tenant
 	// can multiply the memory/Ollama cost of "fetch everything" RPCs.
-	backupGate, reindexGate, restoreGate, adminGate tenantGate
+	backupGate, reindexGate, restoreGate, adminGate, mergeGate tenantGate
 	// previewGate: one in-flight PreviewRecall per tenant (each fans out to many
 	// embeds + searches).
 	previewGate tenantGate
 	// tagGate: one in-flight tag rename/delete per tenant (each scans the tenant).
 	tagGate tenantGate
-	// locker is the per-memory KV lock shared with the worker (see memoryLocker);
-	// created lazily so NewService stays infallible. Tests may preset it.
-	lockerMu sync.Mutex
-	locker   *dlock.Locker
 	// scanGate: one in-flight DeleteNamespace / ListTrash / PurgeTrash(all) per
 	// tenant — each scans or buffers a whole namespace or trash (DeleteNamespace and
 	// the bulk PurgeTrash/RestoreFromTrash forms; read-only ListTrash is not gated).
@@ -241,6 +245,11 @@ func normalizeMemoryIDs(field string, ids []string) ([]string, error) {
 	return out, nil
 }
 
+// maxSupersedes bounds a Save's supersedes list. The worker locks every source (and
+// their dismissal counterparts) for the merge; an unbounded list would let one tenant
+// pin worker slots. Same bound as MergeInto.
+const maxSupersedes = merge.MaxSources
+
 func (s *Service) Save(ctx context.Context, req *connect.Request[cortexv1.SaveRequest]) (*connect.Response[cortexv1.SaveResponse], error) {
 	text := strings.TrimSpace(req.Msg.GetText())
 	if text == "" {
@@ -257,6 +266,9 @@ func (s *Service) Save(ctx context.Context, req *connect.Request[cortexv1.SaveRe
 
 	// Validate every referenced id before publishing anything, so a bad id fails
 	// the whole save instead of being dropped asynchronously after "queued".
+	if n := len(req.Msg.GetSupersedes()); n > maxSupersedes {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("supersedes: at most %d ids (got %d)", maxSupersedes, n))
+	}
 	supersedes, err := normalizeMemoryIDs("supersedes", req.Msg.GetSupersedes())
 	if err != nil {
 		return nil, err
@@ -1049,14 +1061,21 @@ func (s *Service) ListDuplicateCandidates(ctx context.Context, req *connect.Requ
 	}
 	// Expired memories are deliberately NOT filtered here: dedup ignores expiry so a
 	// stale expired copy of a fact is still flagged and can be merged or dropped.
+	// Uncapped: dead candidates (deleted/trashed since flagging) are dropped
+	// BEFORE the limit, else a handful of stale groups at the top would hide real
+	// pairs or leave the page empty. Resolution stops once limit+1 live groups are
+	// found (newest first), so the cost is bounded by what is shown.
 	flagged, err := ts.ListWithCandidates(ctx,
-		resolveNamespace(req.Msg.GetNamespace(), s.cfg.DefaultNamespace),
-		int(req.Msg.GetLimit()))
+		resolveNamespace(req.Msg.GetNamespace(), s.cfg.DefaultNamespace), 0)
 	if err != nil {
 		return nil, err
 	}
+	limit := int(req.Msg.GetLimit())
+	if limit <= 0 {
+		limit = 50
+	}
 
-	out := &cortexv1.ListDuplicateCandidatesResponse{Groups: make([]*cortexv1.DuplicateGroup, 0, len(flagged))}
+	out := &cortexv1.ListDuplicateCandidatesResponse{Groups: make([]*cortexv1.DuplicateGroup, 0, min(len(flagged), limit))}
 	for _, rec := range flagged {
 		cands := make([]*cortexv1.Memory, 0, len(rec.DupCandidates))
 		for _, id := range rec.DupCandidates {
@@ -1072,6 +1091,10 @@ func (s *Service) ListDuplicateCandidates(ctx context.Context, req *connect.Requ
 		}
 		if len(cands) == 0 {
 			continue
+		}
+		if len(out.Groups) >= limit {
+			out.Truncated = true
+			break
 		}
 		out.Groups = append(out.Groups, &cortexv1.DuplicateGroup{
 			Memory:     recordToProto(rec),
@@ -1097,6 +1120,24 @@ func (s *Service) DismissDuplicate(ctx context.Context, req *connect.Request[cor
 	a, b, err := s.linkEndpoints(ctx, ts, req.Msg.GetId(), req.Msg.GetTargetId())
 	if err != nil {
 		return nil, err
+	}
+	// Both ends' notDuplicateOf/dupCandidates are read-modify-written: hold their
+	// per-memory locks (shared with the worker and other replicas) and re-read.
+	hctx, unlock, err := s.lockMemories(ctx, a.ID, b.ID)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+	ctx = hctx
+	for _, r := range []*memory.Record{&a, &b} {
+		fresh, ok, err := ts.Get(ctx, r.ID)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("memory %s not found", r.ID))
+		}
+		*r = fresh
 	}
 
 	aNot := addUnique(a.NotDuplicateOf, b.ID)
@@ -1429,32 +1470,6 @@ const maxTagLen = 128
 
 // preferenceTag is the tag that drives the cortex-prefs SessionStart hook.
 const preferenceTag = "preference"
-
-// memoryLocker returns the per-memory lock func for the caller's tenant. It takes
-// the SAME dlock key the worker's index/link commits take (kind "mem", tenant =
-// the authenticated user id, "" without identity: exactly what bus.PublishIndex
-// stamps), so a tag rewrite cannot interleave with an index commit of that memory.
-func (s *Service) memoryLocker(ctx context.Context) (store.MemoryLocker, error) {
-	s.lockerMu.Lock()
-	if s.locker == nil {
-		if s.js == nil {
-			s.lockerMu.Unlock()
-			return nil, connect.NewError(connect.CodeUnavailable, errors.New("lock service unavailable"))
-		}
-		l, err := dlock.New(ctx, s.js, dlock.DefaultBucket, dlock.DefaultTTL, "server")
-		if err != nil {
-			s.lockerMu.Unlock()
-			return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("lock service: %w", err))
-		}
-		s.locker = l
-	}
-	l := s.locker
-	s.lockerMu.Unlock()
-	tenant := gateKey(ctx)
-	return func(ctx context.Context, id string) (context.Context, func(), error) {
-		return l.AcquireAll(ctx, []string{dlock.Key("mem", tenant, id)}, l.Wait())
-	}, nil
-}
 
 // ListTags aggregates the caller's tags with memory counts and last activity.
 // Deliberately not gated: read-only, streamed scan with O(distinct tags) memory,
