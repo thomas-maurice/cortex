@@ -190,3 +190,63 @@ func TestSupersedesOverCapIsDeadLettered(t *testing.T) {
 	assert.EqualValues(t, 1, outcome(s.m, kindIndex, outcomeDead))
 	assert.Empty(t, s.fs.deleteReasons, "nothing is deleted")
 }
+
+// A merge of only time-bound facts must not outlive them: the survivor inherits
+// the LATEST source expiry (set via SetValidUntil, since validUntil is not
+// index-owned). A permanent source keeps it permanent, and a survivor that
+// already has an expiry keeps its own.
+func TestSupersedesInheritsExpiry(t *testing.T) {
+	soon := time.Now().Add(24 * time.Hour).UTC().Truncate(time.Second)
+	later := soon.Add(72 * time.Hour)
+	own := soon.Add(500 * time.Hour)
+	cases := []struct {
+		name       string
+		srcA, srcB time.Time
+		keep       time.Time
+		want       time.Time
+	}{
+		{"all sources expire: latest wins", soon, later, time.Time{}, later},
+		{"one permanent source: stays permanent", soon, time.Time{}, time.Time{}, time.Time{}},
+		{"survivor's own expiry is kept", soon, later, own, own},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newStack(t, 1, time.Minute)
+			s.startWorker(1)
+			const tenant = "tenant-expiry"
+			ctx := tenantCtx(tenant)
+			a, b, m := uuid.NewString(), uuid.NewString(), uuid.NewString()
+			seed(t, s, tenant, memory.Record{ID: a, Text: "a", ValidUntil: tc.srcA})
+			seed(t, s, tenant, memory.Record{ID: b, Text: "b", ValidUntil: tc.srcB})
+			rec := memory.Record{ID: m, Text: "merged", Namespace: "ns", CreatedAt: time.Now().UTC(), ValidUntil: tc.keep, Supersedes: []string{a, b}}
+			require.NoError(t, bus.PublishIndex(ctx, s.js, rec))
+			s.waitIdle()
+			got, ok := s.fs.peek(tenant, m)
+			require.True(t, ok)
+			assert.True(t, tc.want.Equal(got.ValidUntil), "want %v got %v", tc.want, got.ValidUntil)
+		})
+	}
+}
+
+// Redelivery after a source was already trashed must not turn a permanent merge
+// into an expiring one (the remaining sources alone look "all expiring").
+func TestSupersedesRedeliveryDoesNotInventExpiry(t *testing.T) {
+	s := newStack(t, 1, time.Minute)
+	s.startWorker(1)
+	const tenant = "tenant-expiry-redeliver"
+	ctx := tenantCtx(tenant)
+	a, b, m := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	soon := time.Now().Add(time.Hour).UTC()
+	seed(t, s, tenant, memory.Record{ID: a, Text: "a"}) // permanent
+	seed(t, s, tenant, memory.Record{ID: b, Text: "b", ValidUntil: soon})
+	rec := memory.Record{ID: m, Text: "merged", CreatedAt: time.Now().UTC(), Supersedes: []string{a, b}}
+	require.NoError(t, bus.PublishIndex(ctx, s.js, rec))
+	s.waitIdle()
+	// Crash simulation: the permanent source is gone, the expiring one is live again.
+	seed(t, s, tenant, memory.Record{ID: b, Text: "b", ValidUntil: soon})
+	require.NoError(t, bus.PublishIndex(ctx, s.js, rec))
+	s.waitIdle()
+	got, ok := s.fs.peek(tenant, m)
+	require.True(t, ok)
+	assert.True(t, got.ValidUntil.IsZero())
+}

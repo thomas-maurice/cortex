@@ -46,6 +46,7 @@
               <Badge variant="secondary"><Layers class="size-3" />{{ m.namespace }}</Badge>
               <Badge v-if="isGlobalPreference(m)" variant="destructive" title="Injected into every session by the prefs hook">global preference</Badge>
               <Badge v-for="t in m.tags" :key="t" variant="outline"><Tag class="size-3" />{{ t }}</Badge>
+              <ExpiryBadge :valid-until="m.validUntil" />
               <span v-if="m.createdAt">{{ formatTimestamp(m.createdAt) }}</span>
               <span class="inline-flex items-center gap-1" title="explicit links"><Link2 class="size-3" />{{ (m.linkedIds || []).length }}</span>
               <span class="font-mono">{{ m.id.slice(0, 8) }}</span>
@@ -87,11 +88,21 @@
             The two memories are in different namespaces ({{ mergePair.left.namespace }} / {{ mergePair.right.namespace }}).
             The merged memory is saved into the namespace set below; both originals are still replaced.
           </p>
+          <p v-if="expiredSides" class="text-sm text-amber-600 dark:text-amber-400">
+            {{ expiredSides === 2 ? 'Both originals are' : 'One of the originals is' }} already expired (hidden from search and recall).
+            <template v-if="expiredSides === 2">Unless you pick a future expiry date below, the merged memory inherits the later, already lapsed expiry.</template>
+            <template v-else>The merged memory only expires if both originals do; check the expiry below.</template>
+          </p>
           <Textarea v-model="draft.text" rows="12" placeholder="Merged memory text…" />
           <div class="flex flex-wrap gap-2">
             <Input v-model="draft.namespace" class="flex-1" placeholder="namespace" />
             <Input v-model="draft.tags" class="flex-1" placeholder="tags, comma separated" />
           </div>
+          <ExpiryPicker v-model:model="draftExpiry" />
+          <p class="text-xs text-muted-foreground">
+            Prefilled from the originals: the merged memory expires only if both do (at the later date). Choosing
+            "Never expires" while both originals expire still inherits the later expiry.
+          </p>
         </div>
         <DialogFooter>
           <Button variant="outline" :disabled="saving" @click="mergeOpen = false">Cancel</Button>
@@ -112,7 +123,10 @@ import { renderMarkdown } from '@/utils/markdown'
 import { confirmDialog } from '@/lib/confirm'
 import { useAuthStore } from '@/stores/auth'
 import { formatTimestamp } from '@/utils/text'
-import { buildPairs, isGlobalPreference, mergeDraft } from '@/utils/duplicates'
+import { buildPairs, isGlobalPreference, mergeDraft, mergeExpiry } from '@/utils/duplicates'
+import { expiryRequest } from '@/lib/expiry'
+import ExpiryBadge from '@/components/ExpiryBadge.vue'
+import ExpiryPicker from '@/components/ExpiryPicker.vue'
 import ClampedMarkdown from '@/components/ClampedMarkdown.vue'
 import { Check, Copy, Layers, Link2, Loader2, Merge, RotateCw, Tag, X } from 'lucide-vue-next'
 import { Alert, AlertDescription } from '@/components/ui/alert'
@@ -139,6 +153,8 @@ const error = ref('')
 const mergeOpen = ref(false)
 const draft = ref(null)
 const mergePair = ref(null)
+const draftExpiry = ref({ preset: 'none', date: '' })
+const expiredSides = ref(0)
 const prefWarning = computed(() => {
   const p = mergePair.value
   if (!p || !draft.value || !(isGlobalPreference(p.left) || isGlobalPreference(p.right))) return false
@@ -233,10 +249,18 @@ function openMerge(p) {
   mergePair.value = p
   const d = mergeDraft(p)
   draft.value = { text: d.text, namespace: d.namespace, tags: d.tags.join(', '), supersedes: d.supersedes }
+  const ex = mergeExpiry(p)
+  draftExpiry.value = ex.model
+  expiredSides.value = ex.expiredSides
   mergeOpen.value = true
 }
 
 async function saveMerge() {
+  const exp = expiryRequest(draftExpiry.value)
+  if (exp.error) {
+    error.value = exp.error
+    return
+  }
   saving.value = true
   error.value = ''
   try {
@@ -246,6 +270,7 @@ async function saveMerge() {
       namespace: draft.value.namespace,
       tags,
       supersedes: draft.value.supersedes,
+      ...exp,
     })
     mergeOpen.value = false
     // The originals stay live until the worker indexes the merge, so a reload

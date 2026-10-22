@@ -53,3 +53,28 @@ export function mergeDraft(pair) {
 export function isGlobalPreference(m) {
   return !!m && m.namespace === 'global' && (m.tags || []).includes('preference')
 }
+
+function untilMs(m) {
+  const t = m && m.validUntil
+  return t ? Number(t.seconds ?? 0) * 1000 + Math.floor(Number(t.nanos ?? 0) / 1e6) : 0
+}
+
+// Expiry the merged memory should start with, mirroring the worker's rule
+// (internal/merge.InheritedExpiry): only when BOTH originals expire does the merge
+// expire, at the LATER of the two; if either is permanent it stays permanent.
+// Returns { model, expiredSides } where model is an ExpiryPicker model and
+// expiredSides counts originals whose expiry has already passed. A latest expiry
+// already in the past cannot be a picker date (must be in the future), so it
+// falls back to "never" and the dialog warns instead.
+export function mergeExpiry(pair, now = Date.now()) {
+  const l = untilMs(pair.left)
+  const r = untilMs(pair.right)
+  const expiredSides = [l, r].filter((x) => x && x <= now).length
+  const none = { preset: 'none', date: '' }
+  if (!l || !r) return { model: none, expiredSides }
+  const latest = Math.max(l, r)
+  if (latest <= now) return { model: none, expiredSides }
+  const d = new Date(latest)
+  const p = (n) => String(n).padStart(2, '0')
+  return { model: { preset: 'custom', date: `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}` }, expiredSides }
+}

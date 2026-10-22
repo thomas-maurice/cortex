@@ -173,8 +173,19 @@ merge. The worker also never flags a record as a duplicate of its own `supersede
 `MergeInto(keep_id, remove_ids)` (Duplicates "Keep left/right") runs the same carry
 synchronously on a live memory, then trashes the removed ones with reason
 `merged-into:<keep>` (one in-flight per tenant, max 50 ids, validated before any write).
+**Expiry of a merge.** `validUntil` is not index-owned, so a merge handles it separately
+(`merge.InheritedExpiry`, `commitIndex`, under the new memory's lock and before any source is
+trashed): when the merged memory has no expiry and EVERY source has one, it gets the LATEST
+source expiry via `SetValidUntil`; one permanent source keeps it permanent; a memory that
+already has an expiry keeps it; and if a source is already missing (an interrupted earlier
+attempt, or a bogus id) nothing is inherited, so a redelivery cannot turn a permanent merge
+into an expiring one. `MergeInto` never changes the kept memory's expiry. A Save cannot
+express an explicit "never expires" against that rule, so it is always inherited when all
+sources expire. The Duplicates merge dialog prefills the same value.
+
 **Locking of merges.** The server shares the worker's per-memory lock scheme (same KV
-bucket `dlock.DefaultBucket`, `dlock.Key("mem", tenant, id)`, `Service.lockMemories`):
+bucket `dlock.DefaultBucket`, `dlock.Key("mem", tenant, id)`, `Service.lockMemories`, the ONE server-side
+locker, also behind the tag rename/delete adapter `memoryLocker`):
 `MergeInto` locks keep + removed + dismissal counterparts for the whole
 provenance -> carry -> trash sequence, and `DismissDuplicate` locks both ids, so these
 read-modify-writes exclude worker commits and other replicas (the old `linkMu` is only a

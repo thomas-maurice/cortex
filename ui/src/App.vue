@@ -185,8 +185,7 @@ const coreNav = [
 
 // Route names grouped under each nav dropdown, so the toggle shows an active
 // state when one of its children is the current route.
-const organizeRoutes = ['sessions', 'namespaces', 'tags', 'trash', 'preferences', 'backup']
-const organizeRoutes = ['sessions', 'namespaces', 'duplicates', 'trash', 'preferences', 'backup']
+const organizeRoutes = ['sessions', 'namespaces', 'tags', 'duplicates', 'trash', 'preferences', 'backup']
 const systemRoutes = ['status', 'queue', 'apikeys', 'users']
 
 // Flat list for the mobile sheet, honoring the same role/MT gates as the

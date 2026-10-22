@@ -125,3 +125,18 @@ func TestLockIDsBoundsAndDedups(t *testing.T) {
 	_, err = LockIDs(ctx, st, "k", []string{"a"})
 	assert.ErrorIs(t, err, ErrTooLarge)
 }
+
+// A merge of only time-bound facts must expire with the LAST of them; any
+// permanent source (or an unknown one) keeps the merged memory permanent, and a
+// keep that already has its own expiry is never rewritten.
+func TestInheritedExpiry(t *testing.T) {
+	soon := time.Now().Add(24 * time.Hour).UTC().Truncate(time.Second)
+	later := soon.Add(48 * time.Hour)
+	exp := func(u time.Time) memory.Record { return memory.Record{ValidUntil: u} }
+
+	assert.Equal(t, later, InheritedExpiry(time.Time{}, []memory.Record{exp(soon), exp(later)}, 2))
+	assert.True(t, InheritedExpiry(time.Time{}, []memory.Record{exp(soon), {}}, 2).IsZero(), "a permanent source keeps the merge permanent")
+	assert.True(t, InheritedExpiry(soon, []memory.Record{exp(later)}, 1).IsZero(), "keep's own expiry wins")
+	assert.True(t, InheritedExpiry(time.Time{}, []memory.Record{exp(soon)}, 2).IsZero(), "a missing source is unknown, not inherited")
+	assert.True(t, InheritedExpiry(time.Time{}, nil, 0).IsZero())
+}

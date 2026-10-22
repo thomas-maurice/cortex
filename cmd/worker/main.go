@@ -625,6 +625,9 @@ type tenantStore interface {
 	// touches them to carry a superseded memory's stats/dismissals (internal/merge).
 	Reinforce(ctx context.Context, id string, count int, at time.Time) error
 	SetNotDuplicateOf(ctx context.Context, id string, ids []string) error
+	// SetValidUntil is the sole writer of an existing memory's expiry; the worker
+	// only uses it so a merge of time-bound memories inherits the latest expiry.
+	SetValidUntil(ctx context.Context, id string, until time.Time) error
 	GetSummarySeq(ctx context.Context, conversationID string) (seq uint64, stream int64, err error)
 	UpsertSummary(ctx context.Context, sum memory.Summary, vector []float32) error
 	SearchMemoryVectors(ctx context.Context, vec []float32, opts store.SearchOpts) ([]memory.Hit, error)
@@ -1010,8 +1013,9 @@ func commitIndex(ctx context.Context, log *slog.Logger, js jetstream.JetStream, 
 			rec.ConversationID = stored.ConversationID
 		}
 	}
-	if srcIDs := planSupersedes(rec.ID, rec.Supersedes); len(srcIDs) > 0 {
-		var srcs []memory.Record
+	var srcs []memory.Record // live sources read before any is trashed
+	srcIDs := planSupersedes(rec.ID, rec.Supersedes)
+	if len(srcIDs) > 0 {
 		for _, id := range srcIDs {
 			src, found, err := ts.Get(hctx, id)
 			if err != nil {
@@ -1046,6 +1050,20 @@ func commitIndex(ctx context.Context, log *slog.Logger, js jetstream.JetStream, 
 	// the memory would otherwise exist but be unfindable. Idempotent on retry.
 	if err := ts.ReplaceChunks(hctx, rec, cvs); err != nil {
 		return false, fmt.Errorf("chunk index: %w", err)
+	}
+	// validUntil is not index-owned, so a merge inherits its sources' expiry here,
+	// under the lock and BEFORE any source is trashed (see merge.InheritedExpiry;
+	// a retry after a source was trashed sees fewer sources and inherits nothing).
+	if len(srcIDs) > 0 {
+		keepUntil := rec.ValidUntil
+		if exists {
+			keepUntil = stored.ValidUntil
+		}
+		if until := merge.InheritedExpiry(keepUntil, srcs, len(srcIDs)); !until.IsZero() {
+			if err := ts.SetValidUntil(hctx, rec.ID, until); err != nil {
+				return false, fmt.Errorf("inherit expiry: %w", err)
+			}
+		}
 	}
 	// Requested links are not applied here: they travel on SubjectLink and are
 	// applied by the link consumer, which waits for both endpoints to exist.

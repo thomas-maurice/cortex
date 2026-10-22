@@ -189,6 +189,10 @@ func (ft *fakeTenant) SetNotDuplicateOf(_ context.Context, id string, ids []stri
 	return ft.mergeField(id, "set-notdup", func(o *memory.Record) { o.NotDuplicateOf = slices.Clone(ids) })
 }
 
+func (ft *fakeTenant) SetValidUntil(_ context.Context, id string, until time.Time) error {
+	return ft.mergeField(id, "set-valid-until", func(o *memory.Record) { o.ValidUntil = until })
+}
+
 func (ft *fakeTenant) ReplaceChunks(_ context.Context, rec memory.Record, chunks []store.ChunkVec) error {
 	ft.f.yield()
 	ft.f.mu.Lock()

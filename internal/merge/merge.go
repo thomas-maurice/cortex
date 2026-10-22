@@ -51,6 +51,30 @@ func Provenance(keep memory.Record, sources []memory.Record) (time.Time, string)
 	return created, conv
 }
 
+// InheritedExpiry returns the expiry a merged memory should adopt, or the zero
+// time for "change nothing". A merged memory made only of time-bound facts must
+// not outlive them, so when keep has no expiry (keepUntil zero) and EVERY one of
+// the wanted sources has one, it is the LATEST source expiry. If any source is
+// permanent the merge stays permanent, and if fewer than wanted sources are
+// present (one already trashed by an earlier, interrupted attempt, or a bogus id)
+// the answer is unknown, so nothing is inherited. A keep that already has an
+// expiry is never changed.
+func InheritedExpiry(keepUntil time.Time, sources []memory.Record, wanted int) time.Time {
+	if !keepUntil.IsZero() || wanted == 0 || len(sources) != wanted {
+		return time.Time{}
+	}
+	var latest time.Time
+	for _, s := range sources {
+		if s.ValidUntil.IsZero() {
+			return time.Time{}
+		}
+		if s.ValidUntil.After(latest) {
+			latest = s.ValidUntil
+		}
+	}
+	return latest
+}
+
 // Bounds on one merge. A lock set is held for the whole carry and a worker slot is
 // pinned while it is acquired, so neither the source list nor the (sources +
 // dismissal counterparts) lock set may be attacker-sized.
