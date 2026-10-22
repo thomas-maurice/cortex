@@ -14,6 +14,8 @@ import (
 	"github.com/thomas-maurice/cortex/internal/memory"
 )
 
+const scanBusyMsg = "a namespace delete / trash listing / trash purge is already running for this account; try again when it finishes"
+
 const (
 	defaultTrashLimit = 100
 	maxTrashIDs       = 1000
@@ -38,6 +40,11 @@ func trashToProto(e memory.TrashEntry) *cortexv1.TrashEntry {
 // store is tenant-scoped from the request identity, so another tenant's trash is
 // simply not visible.
 func (s *Service) ListTrash(ctx context.Context, req *connect.Request[cortexv1.ListTrashRequest]) (*connect.Response[cortexv1.ListTrashResponse], error) {
+	release, err := s.gated(ctx, &s.scanGate, false, scanBusyMsg)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	ts, err := s.tenantStore(ctx)
 	if err != nil {
 		return nil, err
@@ -168,13 +175,18 @@ func (s *Service) RestoreFromTrash(ctx context.Context, req *connect.Request[cor
 // PurgeTrash permanently deletes trash entries: the listed ids (all must exist in
 // the caller's trash) or, with all=true, everything (optionally one namespace).
 func (s *Service) PurgeTrash(ctx context.Context, req *connect.Request[cortexv1.PurgeTrashRequest]) (*connect.Response[cortexv1.PurgeTrashResponse], error) {
-	ts, err := s.tenantStore(ctx)
-	if err != nil {
-		return nil, err
-	}
 	if req.Msg.GetAll() {
 		if len(req.Msg.GetIds()) > 0 {
 			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("ids and all are mutually exclusive"))
+		}
+		release, err := s.gated(ctx, &s.scanGate, false, scanBusyMsg)
+		if err != nil {
+			return nil, err
+		}
+		defer release()
+		ts, err := s.tenantStore(ctx)
+		if err != nil {
+			return nil, err
 		}
 		n, err := ts.PurgeTrash(ctx, req.Msg.GetNamespace())
 		if err != nil {
@@ -183,6 +195,10 @@ func (s *Service) PurgeTrash(ctx context.Context, req *connect.Request[cortexv1.
 		return connect.NewResponse(&cortexv1.PurgeTrashResponse{Purged: int32(n)}), nil
 	}
 	ids, err := trashIDs(req.Msg.GetIds())
+	if err != nil {
+		return nil, err
+	}
+	ts, err := s.tenantStore(ctx)
 	if err != nil {
 		return nil, err
 	}

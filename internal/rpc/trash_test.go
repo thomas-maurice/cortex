@@ -257,3 +257,13 @@ func TestWriteTrashSidecar(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, none, "no trash, no file")
 }
+
+// The reindex/migrate snapshot holds every memory's plaintext: owner-only.
+func TestWriteBackupIsOwnerOnly(t *testing.T) {
+	svc := &Service{cfg: Config{BackupDir: t.TempDir()}, log: slog.Default()}
+	path, err := svc.writeBackup([]memory.Record{{ID: uuid.NewString(), Text: "secret"}})
+	require.NoError(t, err)
+	fi, err := os.Stat(path)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o600), fi.Mode().Perm())
+}

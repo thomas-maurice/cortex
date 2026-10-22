@@ -154,19 +154,25 @@ const namespaceDeleteWorkers = 8
 // were fully trashed AND deleted. Records whose trash write failed are never
 // deleted; records already trashed stay restorable.
 func (ts *TenantStore) trashAndDelete(ctx context.Context, recs []memory.Record, reason string) (int, error) {
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
 	var (
 		wg       sync.WaitGroup
 		mu       sync.Mutex
 		done     int
 		firstErr error
 	)
+	// In-flight records always run to completion on the caller's ctx (never a
+	// cancelled one), so a record is either fully trashed+deleted (counted) or its
+	// trash write failed / it was never started — the returned count is exact.
+	failed := func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return firstErr != nil
+	}
 	now := time.Now()
 	sem := make(chan struct{}, namespaceDeleteWorkers)
 	for _, rec := range recs {
 		sem <- struct{}{}
-		if ctx.Err() != nil { // a worker failed (or the caller cancelled): start nothing more
+		if failed() || ctx.Err() != nil { // start nothing more after an error
 			<-sem
 			break
 		}
@@ -185,7 +191,6 @@ func (ts *TenantStore) trashAndDelete(ctx context.Context, recs []memory.Record,
 			if err != nil {
 				if firstErr == nil {
 					firstErr = err
-					cancel()
 				}
 				return
 			}

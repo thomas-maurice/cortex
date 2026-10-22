@@ -79,12 +79,29 @@ func (s *Store) ListAllTrash(ctx context.Context) ([]memory.TrashEntry, error) {
 // PutTrashEntry writes an existing trash entry (preserving its deletedAt and
 // reason) into the tenant's trash. Used by migrate-mt to carry the trash over.
 func (ts *TenantStore) PutTrashEntry(ctx context.Context, e memory.TrashEntry) error {
-	return ts.putTrash(ctx, e.Record, e.Reason, e.DeletedAt)
+	at := e.DeletedAt
+	if at.IsZero() {
+		at = time.Now() // legacy undated entry: start its retention clock now
+	}
+	return ts.putTrash(ctx, e.Record, e.Reason, at)
 }
+
+// trashWriteHook is a failure-injection seam for tests: when set it is called
+// before every trash write and a non-nil error fails that write.
+var trashWriteHook func(id string) error
 
 // putTrash writes rec into the Trash class (create-or-replace by memory id, so
 // deleting a restored memory a second time just refreshes the entry).
 func (ts *TenantStore) putTrash(ctx context.Context, rec memory.Record, reason string, at time.Time) error {
+	if at.IsZero() {
+		// A zero deletedAt would make an entry the retention sweep skips forever.
+		return fmt.Errorf("refusing to trash %s without a deletion time", rec.ID)
+	}
+	if trashWriteHook != nil {
+		if err := trashWriteHook(rec.ID); err != nil {
+			return err
+		}
+	}
 	nz := func(xs []string) []string {
 		if xs == nil {
 			return []string{}

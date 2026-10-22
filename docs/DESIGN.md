@@ -141,7 +141,12 @@ classes (`DeleteAllClasses`), recreates them MT and re-writes the trash entries 
 calling admin's tenant (`PutTrashEntry`, deletedAt/reason preserved; count reported as
 `trash_migrated`). The snapshotted trash is first saved to `<backup-name>.trash.json`
 beside the migration backup (the backup itself holds memories only); a post-drop write
-failure points at it, and `cortex import <file>` re-creates the entries as live memories. `DropTenant` (DeleteUser) deliberately wipes the user's trash with
+failure points at it, and `cortex import <file>` re-creates the entries as live memories (deletedAt/reason lost).
+Trash-entry write failures after the rebuild are non-fatal (logged, counted, reported in
+the response; memories/summaries are re-queued first). The sidecar and the reindex
+snapshot are plaintext (0600), never pruned and outlive `TRASH_RETENTION`; trash is not
+in full backups, so restoring one loses it. `DeleteNamespace`, `ListTrash` and
+`PurgeTrash(all)` share a per-tenant single-flight gate (`scanGate`). `DropTenant` (DeleteUser) deliberately wipes the user's trash with
 their data. The sweep skips entries with no valid `deletedAt` (logged). Namespace delete
 trashes+deletes memories with 8 workers, stopping at the first error. `TRASH_RETENTION`
 is parsed strictly (Go duration, e.g. `720h`; `0` = forever; invalid = startup failure).

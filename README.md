@@ -768,7 +768,10 @@ their memories. A reindex rebuild leaves the trash untouched, and `migrate-mt` c
 it over into the calling admin's tenant (entries keep their deletion time). Before the
 classes are dropped the trash is also written to `<backup-name>.trash.json` next to the
 migration backup; if re-writing it fails the error names that file, and `cortex import
-<file>` re-creates its entries as live memories (extra fields are ignored).
+<file>` re-creates its entries as live memories (extra fields are ignored). The sidecar and the reindex snapshot hold plaintext memories
+(mode 0600), are never pruned and so outlive `TRASH_RETENTION` — delete them yourself.
+Trash is not part of full backups: restoring a backup brings back live memories only
+and the trash is lost.
 
 ## Request size limit
 

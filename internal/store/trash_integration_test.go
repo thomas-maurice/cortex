@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"os"
 	"testing"
 	"time"
@@ -319,4 +320,66 @@ func TestTrashNamespaceDeleteFailureDeletesNothing(t *testing.T) {
 	live, err := ts.Count(ctx, "ns")
 	require.NoError(t, err)
 	assert.Equal(t, 12, live, "no memory deleted without a trash copy")
+}
+
+// Failure injection: a trash write that fails partway through a namespace wipe must
+// leave that memory live (never deleted without a trash copy), the returned count
+// must equal the memories actually trashed+deleted, and a retry finishes the rest.
+func TestTrashNamespaceDeletePartialFailureAndRetry(t *testing.T) {
+	st, _ := trashStore(t)
+	ctx := context.Background()
+	ts := st.Tenant("tenant-a")
+	const n = 25
+	ids := make([]string, n)
+	for i := range ids {
+		r := mkRec("ns", "m")
+		ids[i] = r.ID
+		require.NoError(t, ts.Upsert(ctx, r, trashVec))
+	}
+	poisoned := ids[n/2]
+	trashWriteHook = func(id string) error {
+		if id == poisoned {
+			return errors.New("injected trash failure")
+		}
+		return nil
+	}
+	t.Cleanup(func() { trashWriteHook = nil })
+
+	mem, _, err := ts.DeleteNamespace(ctx, "ns")
+	require.ErrorContains(t, err, "injected trash failure")
+
+	_, live, err := ts.Get(ctx, poisoned)
+	require.NoError(t, err)
+	assert.True(t, live, "memory whose trash write failed must not be deleted")
+	_, inTrash, err := ts.GetTrash(ctx, poisoned)
+	require.NoError(t, err)
+	assert.False(t, inTrash)
+
+	gone := 0
+	for _, id := range ids {
+		_, live, err := ts.Get(ctx, id)
+		require.NoError(t, err)
+		if !live {
+			gone++
+			_, ok, err := ts.GetTrash(ctx, id)
+			require.NoError(t, err)
+			assert.True(t, ok, "%s deleted but not trashed", id)
+		}
+	}
+	assert.Equal(t, gone, mem, "returned count == memories actually trashed+deleted")
+
+	trashWriteHook = nil
+	mem2, _, err := ts.DeleteNamespace(ctx, "ns")
+	require.NoError(t, err)
+	assert.Equal(t, n-gone, mem2, "retry handles exactly the remainder")
+	list, err := ts.ListTrash(ctx, "ns")
+	require.NoError(t, err)
+	assert.Len(t, list, n)
+}
+
+// putTrash must refuse a zero deletion time: such an entry could never be swept.
+func TestPutTrashRejectsZeroTime(t *testing.T) {
+	st, _ := trashStore(t)
+	err := st.Tenant("tenant-a").putTrash(context.Background(), mkRec("ns", "x"), memory.TrashReasonDelete, time.Time{})
+	require.Error(t, err)
 }

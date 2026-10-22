@@ -129,6 +129,9 @@ type Service struct {
 	// restore per tenant, and one admin bulk operation server-wide, so no tenant
 	// can multiply the memory/Ollama cost of "fetch everything" RPCs.
 	backupGate, reindexGate, restoreGate, adminGate tenantGate
+	// scanGate: one in-flight DeleteNamespace / ListTrash / PurgeTrash(all) per
+	// tenant — each scans or buffers a whole namespace or trash.
+	scanGate tenantGate
 	// afterGate, when non-nil, runs right after a gate is acquired; a non-nil
 	// return aborts the call. Test seam only (lets a test hold a call in flight).
 	afterGate func() error
@@ -1306,6 +1309,11 @@ func (s *Service) DeleteNamespace(ctx context.Context, req *connect.Request[cort
 	if ns == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("namespace must not be empty"))
 	}
+	release, err := s.gated(ctx, &s.scanGate, false, scanBusyMsg)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	ts, err := s.tenantStore(ctx)
 	if err != nil {
 		return nil, err
@@ -1484,15 +1492,6 @@ func (s *Service) MigrateMT(ctx context.Context, _ *connect.Request[cortexv1.Mig
 	}
 	s.log.Info("migrate-mt: classes rebuilt with MT enabled")
 
-	// Carry the trash over into the admin's tenant directly (not via the index
-	// path: trash entries have no vector and must keep their deletedAt/reason).
-	tts := s.store.Tenant(targetTenant)
-	for _, e := range trash {
-		if err := tts.PutTrashEntry(ctx, e); err != nil {
-			return nil, fmt.Errorf("migrate trash entry %s (classes already rebuilt; all %d trash entries are saved in %s, re-import with `cortex import`): %w", e.ID, len(trash), trashPath, err)
-		}
-	}
-
 	// Re-import every record into the bootstrap admin's tenant.
 	// Build a context carrying the bootstrap identity so PublishIndex stamps
 	// the correct UserID on the NATS payload.
@@ -1524,10 +1523,25 @@ func (s *Service) MigrateMT(ctx context.Context, _ *connect.Request[cortexv1.Mig
 		summariesQueued++
 	}
 
+	// Carry the trash over LAST and non-fatally: memories and summaries are already
+	// re-queued, so a trash failure must not abort the (one-shot, un-re-runnable)
+	// migration. Entries go in directly (not via the index path: no vector, and
+	// they keep deletedAt/reason). Failures are logged and counted; the sidecar
+	// file holds every entry.
+	tts := s.store.Tenant(targetTenant)
+	trashFailed := 0
+	for _, e := range trash {
+		if err := tts.PutTrashEntry(ctx, e); err != nil {
+			trashFailed++
+			s.log.Error("migrate-mt: trash entry not migrated", "id", e.ID, "trash_backup", trashPath, "err", err)
+		}
+	}
+
 	s.log.Info("migrate-mt: re-import queued",
 		"memories_queued", memoriesQueued,
 		"summaries_queued", summariesQueued,
-		"trash_migrated", len(trash),
+		"trash_migrated", len(trash)-trashFailed,
+		"trash_failed", trashFailed,
 		"tenant", targetTenant,
 	)
 
@@ -1538,11 +1552,12 @@ func (s *Service) MigrateMT(ctx context.Context, _ *connect.Request[cortexv1.Mig
 		MemoriesQueued:    int32(memoriesQueued),
 		SummariesQueued:   int32(summariesQueued),
 		Tenant:            targetTenant,
-		TrashMigrated:     int32(len(trash)),
+		TrashMigrated:     int32(len(trash) - trashFailed),
 		Message: fmt.Sprintf(
 			"migration complete: %d memories and %d summaries queued for re-import into tenant %q "+
-				"(%d trash entries carried over%s); backup at %s; chunks will regenerate as the worker processes the queue",
-			memoriesQueued, summariesQueued, targetTenant, len(trash), trashNote(trashPath), backupPath,
+				"(%d trash entries carried over%s); backup at %s; chunks will regenerate as the worker processes the queue%s",
+			memoriesQueued, summariesQueued, targetTenant, len(trash)-trashFailed, trashNote(trashPath), backupPath,
+			trashFailureNote(trashFailed, trashPath),
 		),
 	}), nil
 }
@@ -1564,6 +1579,17 @@ func writeTrashSidecar(backupPath string, trash []memory.TrashEntry) (string, er
 		return "", err
 	}
 	return path, nil
+}
+
+// trashFailureNote warns that some trash entries were not migrated and where the
+// full copy is. Importing the sidecar restores them as LIVE memories (deletedAt
+// and reason are lost).
+func trashFailureNote(failed int, sidecar string) string {
+	if failed == 0 {
+		return ""
+	}
+	return fmt.Sprintf("; WARNING: %d trash entries could NOT be migrated (see server log) — all are saved in %s; "+
+		"`cortex import %s` restores them as LIVE memories (deletedAt/reason are lost)", failed, sidecar, sidecar)
 }
 
 func trashNote(path string) string {
@@ -1588,7 +1614,7 @@ func (s *Service) writeBackup(recs []memory.Record) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	if err := os.WriteFile(path, data, 0o600); err != nil {
 		return "", fmt.Errorf("write backup: %w", err)
 	}
 	s.log.Info("wrote reindex backup", "path", path, "count", len(recs))
