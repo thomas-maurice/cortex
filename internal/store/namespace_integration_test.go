@@ -56,9 +56,10 @@ func TestNamespaceOperations(t *testing.T) {
 	require.NoError(t, ts.Upsert(ctx, memory.Record{ID: uuid.NewString(), Text: "beta one", Namespace: "beta", CreatedAt: now}, vec))
 	require.NoError(t, ts.UpsertSummary(ctx, memory.Summary{ConversationID: "conv-alpha", Text: "alpha session", Namespace: "alpha", CreatedAt: now, UpdatedAt: now}, vec))
 
-	require.Eventually(t, func() bool {
-		c, err := ts.Count(ctx, "")
-		return err == nil && c == 3
+	require.EventuallyWithT(t, func(c *assert.CollectT) {
+		n, err := ts.Count(ctx, "")
+		require.NoError(c, err)
+		assert.Equal(c, 3, n)
 	}, 10*time.Second, 200*time.Millisecond, "memories did not become queryable")
 
 	statByName := func() map[string]NamespaceStat {
@@ -87,10 +88,12 @@ func TestNamespaceOperations(t *testing.T) {
 		assert.Equal(t, 2, mem)
 		assert.Equal(t, 1, sum, "the summary must move too, or session recall orphans on the old name")
 
-		require.Eventually(t, func() bool {
+		require.EventuallyWithT(t, func(c *assert.CollectT) {
 			m := statByName()
-			_, alphaGone := m["alpha"]
-			return !alphaGone && m["gamma"].MemoryCount == 2 && m["gamma"].SummaryCount == 1 && m["beta"].MemoryCount == 1
+			assert.NotContains(c, m, "alpha")
+			assert.Equal(c, 2, m["gamma"].MemoryCount)
+			assert.Equal(c, 1, m["gamma"].SummaryCount)
+			assert.Equal(c, 1, m["beta"].MemoryCount)
 		}, 10*time.Second, 200*time.Millisecond, "rename did not settle: alpha→gamma with beta untouched")
 	})
 
@@ -100,10 +103,10 @@ func TestNamespaceOperations(t *testing.T) {
 		assert.Equal(t, 2, mem)
 		assert.Equal(t, 1, sum, "the summary must be deleted too, not orphaned")
 
-		require.Eventually(t, func() bool {
+		require.EventuallyWithT(t, func(c *assert.CollectT) {
 			m := statByName()
-			_, gammaGone := m["gamma"]
-			return !gammaGone && m["beta"].MemoryCount == 1
+			assert.NotContains(c, m, "gamma")
+			assert.Equal(c, 1, m["beta"].MemoryCount)
 		}, 10*time.Second, 200*time.Millisecond, "delete did not settle: gamma gone, beta untouched")
 	})
 }

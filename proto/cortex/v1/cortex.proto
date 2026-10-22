@@ -26,6 +26,11 @@ service MemoryService {
   rpc SearchSimilar(SearchSimilarRequest) returns (SearchSimilarResponse) {}
   // List returns stored memories newest-first, without a vector query.
   rpc List(ListRequest) returns (ListResponse) {}
+  // GetMemory fetches ONE memory by id (full record, tenant-scoped). Use it to
+  // follow `linked_ids` from search results or ids from dedup candidates and
+  // consolidate manifests. It is a plain read: unlike Search it never
+  // reinforces the memory. NotFound for an unknown id or another tenant's id.
+  rpc GetMemory(GetMemoryRequest) returns (GetMemoryResponse) {}
   // Delete removes a memory by ID.
   rpc Delete(DeleteRequest) returns (DeleteResponse) {}
   // Status is a fast health/connectivity probe of the backing services.
@@ -300,6 +305,14 @@ message SearchResponse {
 
 message SearchSimilarResponse {
   repeated Hit hits = 1;
+}
+
+message GetMemoryRequest {
+  string id = 1; // the memory's UUID
+}
+
+message GetMemoryResponse {
+  Memory memory = 1;
 }
 
 message ListRequest {

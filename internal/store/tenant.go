@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"errors"
 	"strings"
 
@@ -32,6 +33,24 @@ func (s *Store) Tenant(userID string) *TenantStore {
 		t = userID
 	}
 	return &TenantStore{s: s, t: t}
+}
+
+// tenantAbsent reports whether the tenant is genuinely missing, using exists to
+// query the schema API. Any lookup failure is returned, never mapped to
+// "absent": only a positive confirmation may turn an error into not-found.
+func tenantAbsent(ctx context.Context, exists func(context.Context) (bool, error)) (bool, error) {
+	ok, err := exists(ctx)
+	if err != nil {
+		return false, err
+	}
+	return !ok, nil
+}
+
+// isStatus422 reports whether err is any Weaviate 422 (used where a HEAD response
+// carries no body to match a message against).
+func isStatus422(err error) bool {
+	var wErr *fault.WeaviateClientError
+	return errors.As(err, &wErr) && wErr.StatusCode == 422
 }
 
 // isTenantNotFound reports whether err is Weaviate's 422 "tenant not found"

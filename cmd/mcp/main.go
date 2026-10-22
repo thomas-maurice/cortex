@@ -312,6 +312,14 @@ func main() {
 	}, withTimeout(callTimeout, d.search))
 
 	mcp.AddTool(server, &mcp.Tool{
+		Name: "cortex_memory_get",
+		Description: "Fetch ONE memory by its ID, in full. Use it to follow `linkedIds` from search results, or to open " +
+			"an ID returned by cortex_consolidate / cortex_review_candidates. Always returns the complete text " +
+			"(never a stub) and counts as delivered to this session, so later searches stub it. Unlike a " +
+			"search hit it does not reinforce the memory.",
+	}, withTimeout(callTimeout, d.get))
+
+	mcp.AddTool(server, &mcp.Tool{
 		Name:        "cortex_memory_delete",
 		Description: "Delete a memory by its ID (as returned by cortex_memory_search).",
 	}, withTimeout(callTimeout, d.del))
@@ -614,6 +622,43 @@ func truncateRunes(s string, n int) string {
 		return s
 	}
 	return string(r[:n]) + "…"
+}
+
+// ---- memory_get ----
+
+type GetIn struct {
+	ID string `json:"id" jsonschema:"the memory ID to fetch (e.g. from a search hit's linkedIds, or from cortex_consolidate / cortex_review_candidates)"`
+}
+
+// get returns one memory in full, in the same shape as a search hit (distance is
+// meaningless for a direct fetch and left 0). The id is recorded as delivered —
+// in-process and, when the session id is real, in the shared recallstate — so a
+// later search stubs it instead of repeating the text.
+func (d *deps) get(ctx context.Context, _ *mcp.CallToolRequest, in GetIn) (*mcp.CallToolResult, SearchHit, error) {
+	id := strings.TrimSpace(in.ID)
+	if id == "" {
+		return nil, SearchHit{}, fmt.Errorf("id must not be empty")
+	}
+	resp, err := d.client.GetMemory(ctx, connect.NewRequest(&cortexv1.GetMemoryRequest{Id: id}))
+	if err != nil {
+		return nil, SearchHit{}, err
+	}
+	m := resp.Msg.GetMemory()
+	hit := memToHit(m)
+
+	d.seenMu.Lock()
+	defer d.seenMu.Unlock()
+	d.seen[m.GetId()] = true
+	if d.realSession {
+		if st := recallstate.Load(d.statePath, d.conversationID); st != nil {
+			st.Add(m.GetId())
+		}
+	}
+	text := fmt.Sprintf("id=%s [%s] %s", m.GetId(), m.GetNamespace(), m.GetText())
+	if links := m.GetLinkedIds(); len(links) > 0 {
+		text += "\n   linked: " + strings.Join(links, ", ")
+	}
+	return text2result(text), hit, nil
 }
 
 // ---- memory_delete ----

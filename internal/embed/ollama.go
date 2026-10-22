@@ -15,11 +15,12 @@ import (
 // enough for a cold model load; callers provide a shorter context when needed.
 const ollamaClientTimeout = 60 * time.Second
 
-// Client calls Ollama's /api/embeddings endpoint.
+// Client calls Ollama's /api/embed endpoint (Ollama >= 0.3.4).
 type Client struct {
 	baseURL string
 	model   string
 	http    *http.Client
+	observe func(d time.Duration, err error)
 }
 
 // New returns an embedder. baseURL e.g. "http://localhost:11434",
@@ -31,6 +32,11 @@ func New(baseURL, model string) *Client {
 		http:    &http.Client{Timeout: ollamaClientTimeout},
 	}
 }
+
+// SetObserver registers a callback invoked after every embed HTTP request (one per
+// <=embedMaxBatch inputs) with its total duration (retries included) and final error. Used by the worker for metrics;
+// call before the client is shared between goroutines.
+func (c *Client) SetObserver(fn func(d time.Duration, err error)) { c.observe = fn }
 
 // Model returns the embedding model this client uses.
 func (c *Client) Model() string { return c.model }
@@ -134,15 +140,15 @@ func (c *Client) Pull(ctx context.Context) error {
 }
 
 type embedReq struct {
-	Model  string `json:"model"`
-	Prompt string `json:"prompt"`
+	Model string   `json:"model"`
+	Input []string `json:"input"`
 }
 
 type embedResp struct {
-	Embedding []float32 `json:"embedding"`
+	Embeddings [][]float32 `json:"embeddings"`
 }
 
-// embedMaxAttempts bounds how many times Embed re-issues the request on a
+// embedMaxAttempts bounds how many times a request is re-issued on a
 // transient failure. Embedding is on the SYNCHRONOUS search path — every
 // cortex_memory_search and every auto-recall embeds its query first — so a single
 // Ollama hiccup should not fail a whole recall when a quick retry would succeed.
@@ -152,13 +158,48 @@ const embedMaxAttempts = 3
 // with the retry number. Kept short — the caller's context still bounds total time.
 const embedRetryBackoff = 200 * time.Millisecond
 
-// Embed returns the vector for a single piece of text. Transient failures
-// (network/transport errors and HTTP 5xx) are retried up to embedMaxAttempts,
-// with a short backoff, within the caller's context deadline. A 4xx, a decode
-// failure, or an empty vector are NOT retried: re-issuing an identical request
-// would not change the outcome.
+// embedMaxBatch caps the number of inputs sent in one /api/embed request, so a
+// huge reindex payload cannot blow the HTTP timeout or Ollama's memory. Larger
+// batches are split into sequential requests.
+const embedMaxBatch = 32
+
+// Embed returns the vector for a single piece of text. It is EmbedBatch with one
+// input, so it shares the same endpoint, retry behaviour and observer.
 func (c *Client) Embed(ctx context.Context, text string) ([]float32, error) {
-	body, err := json.Marshal(embedReq{Model: c.model, Prompt: text})
+	vecs, err := c.EmbedBatch(ctx, []string{text})
+	if err != nil {
+		return nil, err
+	}
+	return vecs[0], nil
+}
+
+// EmbedBatch returns one vector per input, in input order. Batches larger than
+// embedMaxBatch are split into sequential requests and concatenated in order.
+// Transient failures (network/transport errors and HTTP 5xx) are retried up to
+// embedMaxAttempts per request, with a short backoff, within the caller's context
+// deadline. A 4xx, a decode failure, a wrong embedding count, or an empty vector
+// are NOT retried: re-issuing an identical request would not change the outcome.
+// The observer fires once per HTTP request (all retries of that request included),
+// not once per EmbedBatch call.
+func (c *Client) EmbedBatch(ctx context.Context, texts []string) ([][]float32, error) {
+	out := make([][]float32, 0, len(texts))
+	for start := 0; start < len(texts); start += embedMaxBatch {
+		end := min(start+embedMaxBatch, len(texts))
+		t0 := time.Now()
+		vecs, err := c.embed(ctx, texts[start:end])
+		if c.observe != nil {
+			c.observe(time.Since(t0), err)
+		}
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, vecs...)
+	}
+	return out, nil
+}
+
+func (c *Client) embed(ctx context.Context, texts []string) ([][]float32, error) {
+	body, err := json.Marshal(embedReq{Model: c.model, Input: texts})
 	if err != nil {
 		return nil, err
 	}
@@ -170,9 +211,9 @@ func (c *Client) Embed(ctx context.Context, text string) ([]float32, error) {
 				return nil, err
 			}
 		}
-		vec, retryable, err := c.embedOnce(ctx, body)
+		vecs, retryable, err := c.embedOnce(ctx, body, len(texts))
 		if err == nil {
-			return vec, nil
+			return vecs, nil
 		}
 		lastErr = err
 		// Stop early on a non-transient failure or a cancelled/expired context
@@ -184,11 +225,12 @@ func (c *Client) Embed(ctx context.Context, text string) ([]float32, error) {
 	return nil, fmt.Errorf("ollama embed: giving up after %d attempts: %w", embedMaxAttempts, lastErr)
 }
 
-// embedOnce issues a single embed request. The bool reports whether a failure is
-// worth retrying: network/transport errors and HTTP 5xx are transient; a 4xx, a
-// decode error, and an empty vector are not.
-func (c *Client) embedOnce(ctx context.Context, body []byte) ([]float32, bool, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/embeddings", bytes.NewReader(body))
+// embedOnce issues a single embed request for want inputs. The bool reports
+// whether a failure is worth retrying: network/transport errors and HTTP 5xx are
+// transient; a 4xx, a decode error, a count mismatch and an empty vector are not.
+// The count check guarantees callers never misalign inputs and vectors.
+func (c *Client) embedOnce(ctx context.Context, body []byte, want int) ([][]float32, bool, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/embed", bytes.NewReader(body))
 	if err != nil {
 		return nil, false, err
 	}
@@ -208,10 +250,15 @@ func (c *Client) embedOnce(ctx context.Context, body []byte) ([]float32, bool, e
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return nil, false, fmt.Errorf("ollama embed decode: %w", err)
 	}
-	if len(out.Embedding) == 0 {
-		return nil, false, fmt.Errorf("ollama embed: empty vector (is model %q pulled?)", c.model)
+	if len(out.Embeddings) != want {
+		return nil, false, fmt.Errorf("ollama embed: got %d embeddings for %d inputs (is model %q pulled?)", len(out.Embeddings), want, c.model)
 	}
-	return out.Embedding, false, nil
+	for i, v := range out.Embeddings {
+		if len(v) == 0 {
+			return nil, false, fmt.Errorf("ollama embed: empty vector at index %d (is model %q pulled?)", i, c.model)
+		}
+	}
+	return out.Embeddings, false, nil
 }
 
 // sleepCtx waits for d, or returns early with ctx.Err() if the context is done

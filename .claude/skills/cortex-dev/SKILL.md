@@ -41,8 +41,8 @@ avoid colliding with other local services:
 | server | **8088** → 8080 | Connect RPC + embedded UI. **Auth is ON in dev** (multi-tenant default): RPC calls need a bearer token (JWT from `/auth/login`, or an API key). Compose defaults the UI login to `admin` / `admin`, but the persisted bootstrap admin's password may differ — as of 2026-07-03 `admin`/`admin` is rejected on the local stack (see §1b). |
 | weaviate | 8081 (REST), 50051 (gRPC) | The live store — **has real data**. |
 | nats | 4223 (client), 8223 (mon) | JetStream; the index queue. |
-| ollama | 11434 | Embeddings. Model `qwen3-embedding:0.6b` (1024-dim). |
-| worker | — | NATS → Ollama → Weaviate. The only writer. |
+| ollama | 11434 | Embeddings via batched `/api/embed` (Ollama >= 0.3.4; `embed.Client.EmbedBatch`, 32/request). Model `qwen3-embedding:0.6b` (1024-dim). |
+| worker | — | NATS → Ollama → Weaviate. The only writer process type, safe as N replicas (`docker compose up -d --scale worker=N`, see §4). Ops HTTP on `:9090` inside the container (`WORKER_METRICS_ADDR`; not published). |
 
 Common commands (run from the repo root):
 
@@ -54,6 +54,12 @@ make logs      # tail worker + server logs
 make model     # pull the embedding model into the running ollama container
 docker compose ps
 ```
+
+The server also serves unauthenticated `GET /healthz`, `/readyz` (503 if NATS/Weaviate/Ollama
+is down; body is ok/fail per check only) on the API port. `/metrics` (Prometheus) is NEVER on the API port: it is on a
+dedicated listener `API_METRICS_ADDR` (default `:9090`, empty disables; also serves
+`/healthz` `/readyz`; not published in dev compose). `/readyz` is cached ~1s — `curl http://localhost:8088/readyz` needs no token. The compose server
+healthcheck runs `cortex-server healthcheck` (distroless image: no wget/curl).
 
 Quick health / smoke checks against the running server (auth is on, so mint a
 JWT first — an `unauthenticated` reply still proves the server is up):
@@ -104,7 +110,9 @@ UI only: `cd ui && npm run build` (prod build) or `npm run dev` (hot reload on
 ## 3. Tests
 
 ```bash
-go test ./...      # unit tests; fast, no external services
+go test ./...      # unit tests; no external services (worker/dlock tests start an
+                   # embedded NATS+JetStream via internal/natstest; ~30s with -race)
+go test -race ./cmd/worker ./internal/dlock   # run these with -race when touching locking
 golangci-lint run  # CI runs this (v2 config in .golangci.yml, errcheck included);
                    # go vet alone is NOT enough — run it before declaring Go work done
 ```
@@ -112,18 +120,26 @@ golangci-lint run  # CI runs this (v2 config in .golangci.yml, errcheck included
 Some store tests are **integration tests against a real Weaviate**, gated on env
 so `go test ./...` skips them in CI:
 
+Use ONE throwaway Weaviate **per run** — never share one between concurrent runs
+or agents. Every integration test uses the global class names `Memory` /
+`MemoryChunk` / `ConversationSummary` and calls `DeleteClass`+`EnsureSchema` in
+setup, so two test processes on one Weaviate delete each other's classes mid-test
+(shows up as a bare 10s "did not become queryable" timeout or 422/500). Also never
+point them at the dev stack. Run the non-MT and MT (`CORTEX_TEST_MULTI_TENANT=1`)
+suites sequentially or on separate containers, and use `-p 1` when running the
+store and rpc integration packages together.
+
 ```bash
-# Spin up a THROWAWAY Weaviate (never point these at the dev stack — the tests
-# call DeleteClass, which WIPES all memories):
-docker run -d --name wv-test -p 8085:8080 -p 50055:50051 \
-  -e AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED=true \
-  -e PERSISTENCE_DATA_PATH=/var/lib/weaviate \
-  -e DEFAULT_VECTORIZER_MODULE=none -e ENABLE_MODULES="" \
-  cr.weaviate.io/semitechnologies/weaviate:1.38.0
-CORTEX_TEST_WEAVIATE_REST=localhost:8085 CORTEX_TEST_WEAVIATE_GRPC=localhost:50055 \
-  go test ./internal/store -v
-docker rm -f wv-test
+scripts/wv-test.sh run ./internal/store                                 # non-MT
+CORTEX_TEST_MULTI_TENANT=1 scripts/wv-test.sh run -p 1 ./internal/store ./internal/rpc   # MT (rpc integration test is MT-only)
+# manual: eval "$(scripts/wv-test.sh start)"; go test ...; scripts/wv-test.sh stop <name>
 ```
+
+The script starts a uniquely named container on random host ports
+(`-p 127.0.0.1::8080 -p 127.0.0.1::50051`, resolved via `docker port`), exports
+`CORTEX_TEST_WEAVIATE_REST/GRPC` for the `go test` it runs, and always removes the
+container (trap). If `DOCKER_HOST` points at a missing socket, use
+`docker --context desktop-linux ...` (or `export DOCKER_CONTEXT=desktop-linux`).
 
 Test conventions: testify (`require` for setup, `assert` for checks). Tests
 should encode *why* the behaviour matters, not just what it does (Rule 9).
@@ -134,7 +150,7 @@ should encode *why* the behaviour matters, not just what it does (Rule 9).
   owner of NATS + Weaviate + Ollama. The MCP server (`cmd/mcp`) and CLI
   (`cmd/cli`) hold no backend connections — they are Connect RPC clients.
 - **Writes are async & durable.** `Save`/`UpdateMemory`/`import` publish onto a
-  NATS JetStream queue; the **worker** (`cmd/worker`, the only writer) embeds the
+  NATS JetStream queue; the **worker** (`cmd/worker`, the only writer; N replicas OK) embeds the
   text via Ollama and upserts into Weaviate. Failures retry, then dead-letter.
 - **Only `text` is embedded.** Every other field (namespace, tags, source,
   conversationId, links…) is filterable metadata, never part of the vector. This
@@ -161,11 +177,34 @@ should encode *why* the behaviour matters, not just what it does (Rule 9).
   is only for `text` changes.
 - **Weaviate access is gRPC, not GraphQL** (`client.Experimental().Search()`).
   Do not reintroduce `client.GraphQL().Get()`.
+- **The worker is replica-safe (do not reintroduce single-worker assumptions).**
+  Per-memory-id distributed lock in the NATS KV bucket `cortex_locks`
+  (`internal/dlock`; 60s TTL, file storage, create-to-acquire, delete-at-our-revision
+  to release; bucket re-ensured on infra errors; link applies lock BOTH ids in sorted
+  order; the hold deadline is anchored at the FIRST lease). Index messages carry their
+  JetStream stream sequence + stream identity → persisted as `indexedSeq` /
+  `indexedStream` (Memory + ConversationSummary); under the lock a lower seq (same
+  stream) is acked as outcome `stale`. Lock contention waits in-handler (never NAK,
+  which would burn `MaxDeliver`). The worker pulls with `Fetch(1)` loops
+  (`cmd/worker/pool.go`, `WORKER_CONCURRENCY` per consumer; never a streaming Consume,
+  which hoards) and `InProgress`-keepalives each message for its whole life. **Field ownership:**
+  index CREATES a missing memory in full (import/restore links kept) but only
+  MERGES its own fields (`TenantStore.UpdateIndexFields`) into an existing one; it
+  must never write `linkedIds` (link consumer), `accessCount`/`lastAccessedAt`
+  (Reinforce) or `notDuplicateOf` (DismissDuplicate). Any new server-side merge
+  field must be added to the ownership table in docs/DESIGN.md. Tests: embedded
+  NATS via `internal/natstest`; `cmd/worker` has a multi-replica convergence sim.
 - **Idempotent ids.** Object id = a UUID; the worker upserts by id, so
   redelivery/retry/reindex overwrites rather than duplicates.
 - Two Weaviate classes: `Memory` and `ConversationSummary` (one per
   conversation, upserted). A namespace conceptually spans **both** — anything that
   renames/deletes a namespace must touch both classes or it orphans summaries.
+
+- **Observability** lives in `internal/obs` (shared registry, `/healthz` `/readyz` `/metrics`
+  handlers, `obs.Serve` for the dedicated metrics listeners, dependency probes reusing `Store.Ready` / `Embedder.Reachable`). Server RPC metrics are
+  a Connect interceptor + a scrape-time queue collector in `internal/rpc/metrics.go`; worker metrics
+  are `cmd/worker/metrics.go` (passed explicitly, nil-safe; embed latency via `embed.Client.SetObserver`).
+  Never put user input, tenant ids or namespaces in metric labels. See README "Observability".
 
 Package map: `internal/rpc` (service + auth/JWT/login + client), `internal/store`
 (Weaviate schema/queries), `internal/bus` (NATS), `internal/embed` (Ollama),
@@ -198,6 +237,12 @@ already MT (one-shot). Safe to re-run `cortex import <backup>` if it stalls (ups
 
 The migration targets ONE tenant (the bootstrap admin). Redistributing data across
 multiple users is a manual/out-of-scope operation.
+
+**Resource guards** (internal/rpc/gate.go): BackupSelf, RestoreSelf and Reindex allow ONE
+in-flight call per tenant; BackupAll/RestoreAll/MigrateMT ONE server-wide. A second call
+gets `ResourceExhausted`. Gates are per server process. Connect requests are capped by
+`CORTEX_MAX_REQUEST_BYTES` (default 256 MiB — raise it for very large `restore` uploads).
+There is still no per-tenant storage quota or rate limit (see docs/DESIGN.md trust model).
 
 **Integration test gate:** `CORTEX_TEST_WEAVIATE_REST` + `CORTEX_TEST_WEAVIATE_GRPC`
 without `CORTEX_TEST_MULTI_TENANT` (migration starts from a non-MT Weaviate).
@@ -232,6 +277,7 @@ and scripting without going through Claude. Global flags: `--server`
 | `save "<text>" [-n ns] [-t tag]… [-L <id>]… [-S <id>]…` | Queue a memory. `-L/--link-to` links to existing ids (applied after indexing); `-S/--supersedes` deletes the ids it replaces once indexed. |
 | `edit <id> "<text>" [-n ns] [-t tag]… [--replace-tags]` | Replace text (re-embeds), keeping id/links/history. Tags kept unless `-t` given; namespace kept unless `-n`. |
 | `list [-n '*'] [-l N] [-t tag] [-T anyTag] [-x excludeTag]` | List newest-first with tag/namespace filters. |
+| `get <id> [--json]` | Show one memory by id (full text + linked ids) via the `GetMemory` RPC (tenant-scoped; NotFound for unknown/other-tenant ids; no reinforcement). Same RPC backs the `cortex_memory_get` MCP tool, which also marks the id delivered in recallstate. |
 | `search "<q>" [-n '*'] [-l N] [-d 0.6] [--autocut N] [-t/-T/-x tag] [--reinforce]` | Hybrid (BM25+vector) semantic search. `-d` = distance cutoff. CLI does NOT reinforce by default. |
 | `delete <id>` | Delete one memory by id. |
 | `export [-n '*'] [-o file]` | Dump memories (text+metadata, no vectors) to JSON (stdout by default). |

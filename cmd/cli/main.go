@@ -10,7 +10,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -23,6 +25,7 @@ import (
 	cortexv1 "github.com/thomas-maurice/cortex/gen/cortex/v1"
 	"github.com/thomas-maurice/cortex/gen/cortex/v1/cortexv1connect"
 	"github.com/thomas-maurice/cortex/internal/config"
+	"github.com/thomas-maurice/cortex/internal/memory"
 	"github.com/thomas-maurice/cortex/internal/rpc"
 	"github.com/thomas-maurice/cortex/internal/upgrade"
 )
@@ -361,7 +364,7 @@ func main() {
 		pf.StringVar(s.target, s.key, s.def, s.usage)
 	}
 
-	root.AddCommand(saveCmd(), editCmd(), listCmd(), searchCmd(), deleteCmd(), exportCmd(), importCmd(), reindexCmd(), deadCmd(), statusCmd(), doctorCmd(), summarizeCmd(), summariesCmd(), recallCmd(), candidatesCmd(), consolidateCmd(), hashPasswordCmd(), configCmd(), onboardCmd(), migrateMTCmd(), usersCmd(), upgradeCmd(), versionCmd(), backupCmd(), restoreCmd(), hookCmd(), stateCmd())
+	root.AddCommand(saveCmd(), editCmd(), listCmd(), getCmd(), searchCmd(), deleteCmd(), exportCmd(), importCmd(), reindexCmd(), deadCmd(), statusCmd(), doctorCmd(), summarizeCmd(), summariesCmd(), recallCmd(), candidatesCmd(), consolidateCmd(), hashPasswordCmd(), configCmd(), onboardCmd(), migrateMTCmd(), usersCmd(), upgradeCmd(), versionCmd(), backupCmd(), restoreCmd(), hookCmd(), stateCmd())
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -490,6 +493,73 @@ func listCmd() *cobra.Command {
 	return cmd
 }
 
+func getCmd() *cobra.Command {
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "get <id>",
+		Short: "Show one memory by ID (follow linked ids from list or search)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			id := strings.TrimSpace(args[0])
+			if id == "" {
+				return fmt.Errorf("id must not be empty")
+			}
+			resp, err := client().GetMemory(cmd.Context(), connect.NewRequest(&cortexv1.GetMemoryRequest{Id: id}))
+			if err != nil {
+				return err
+			}
+			return printGotMemory(os.Stdout, resp.Msg.GetMemory(), asJSON)
+		},
+	}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "print the memory as JSON")
+	return cmd
+}
+
+// printGotMemory renders a single fetched memory: the JSON shape matches
+// `cortex export`; the text form is printMemory's plus the link/provenance
+// lines that make following a graph edge possible.
+func printGotMemory(w io.Writer, m *cortexv1.Memory, asJSON bool) error {
+	if asJSON {
+		rec := exportRecord{
+			ID:             m.GetId(),
+			Text:           m.GetText(),
+			Namespace:      m.GetNamespace(),
+			Tags:           m.GetTags(),
+			Source:         m.GetSource(),
+			Model:          m.GetModel(),
+			Dims:           m.GetDims(),
+			ConversationID: m.GetConversationId(),
+			LinkedIDs:      m.GetLinkedIds(),
+			NotDuplicateOf: m.GetNotDuplicateOf(),
+		}
+		if ts := m.GetCreatedAt(); ts != nil {
+			rec.CreatedAt = ts.AsTime().UTC().Format(time.RFC3339)
+		}
+		b, err := json.MarshalIndent(rec, "", "  ")
+		if err != nil {
+			return err
+		}
+		_, err = fmt.Fprintln(w, string(b))
+		return err
+	}
+	line := fmt.Sprintf("[%s] %s", m.GetNamespace(), m.GetText())
+	if tags := m.GetTags(); len(tags) > 0 {
+		line += "  #" + strings.Join(tags, " #")
+	}
+	meta := "id=" + m.GetId()
+	if m.GetModel() != "" {
+		meta += fmt.Sprintf("  model=%s dims=%d", m.GetModel(), m.GetDims())
+	}
+	if _, err := fmt.Fprintf(w, "%s\n   %s\n", line, meta); err != nil {
+		return err
+	}
+	if links := m.GetLinkedIds(); len(links) > 0 {
+		_, err := fmt.Fprintf(w, "   links=%s\n", strings.Join(links, ","))
+		return err
+	}
+	return nil
+}
+
 func searchCmd() *cobra.Command {
 	var namespace string
 	var limit int
@@ -588,17 +658,16 @@ func exportCmd() *cobra.Command {
 		Short: "Dump stored memories (text + metadata, no vectors) to JSON",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			resp, err := client().List(cmd.Context(), connect.NewRequest(&cortexv1.ListRequest{
-				Namespace: namespace,
-				Limit:     allLimit,
-			}))
+			// BackupSelf returns the caller's WHOLE store (server-side cursor-paged),
+			// unlike the List RPC which is capped at 10000. Namespace filtering is
+			// done here.
+			resp, err := client().BackupSelf(cmd.Context(), connect.NewRequest(&cortexv1.BackupSelfRequest{}))
 			if err != nil {
 				return err
 			}
-			mems := resp.Msg.GetMemories()
-			recs := make([]exportRecord, 0, len(mems))
-			for _, m := range mems {
-				recs = append(recs, toExportRecord(m))
+			recs, err := exportRecordsFromBackup(resp.Msg.GetData(), namespace)
+			if err != nil {
+				return err
 			}
 			data, err := json.MarshalIndent(recs, "", "  ")
 			if err != nil {
@@ -1480,9 +1549,6 @@ func migrateMTCmd() *cobra.Command {
 	return cmd
 }
 
-// allLimit caps a full-store fetch (export). Matches the server-side cap.
-const allLimit = 10000
-
 func okStr(ok bool) string {
 	if ok {
 		return "OK "
@@ -1490,20 +1556,44 @@ func okStr(ok bool) string {
 	return "DOWN"
 }
 
-func toExportRecord(m *cortexv1.Memory) exportRecord {
-	return exportRecord{
-		ID:             m.GetId(),
-		Text:           m.GetText(),
-		Namespace:      m.GetNamespace(),
-		Tags:           m.GetTags(),
-		Source:         m.GetSource(),
-		CreatedAt:      m.GetCreatedAt().AsTime().UTC().Format(time.RFC3339),
-		Model:          m.GetModel(),
-		Dims:           m.GetDims(),
-		ConversationID: m.GetConversationId(),
-		LinkedIDs:      m.GetLinkedIds(),
-		NotDuplicateOf: m.GetNotDuplicateOf(),
+// exportRecordsFromBackup turns a BackupSelf payload into export records,
+// keeping only memories in namespace ("*" or "" = all). Order is newest first,
+// as the List-based export used to emit.
+func exportRecordsFromBackup(data []byte, namespace string) ([]exportRecord, error) {
+	var env struct {
+		Tenants []struct {
+			Memories []memory.Record `json:"memories"`
+		} `json:"tenants"`
 	}
+	if err := json.Unmarshal(data, &env); err != nil {
+		return nil, fmt.Errorf("parse backup: %w", err)
+	}
+	var all []memory.Record
+	for _, t := range env.Tenants {
+		for _, r := range t.Memories {
+			if namespace == "" || namespace == "*" || r.Namespace == namespace {
+				all = append(all, r)
+			}
+		}
+	}
+	sort.SliceStable(all, func(i, j int) bool { return all[i].CreatedAt.After(all[j].CreatedAt) })
+	recs := make([]exportRecord, 0, len(all))
+	for _, r := range all {
+		recs = append(recs, exportRecord{
+			ID:             r.ID,
+			Text:           r.Text,
+			Namespace:      r.Namespace,
+			Tags:           r.Tags,
+			Source:         r.Source,
+			CreatedAt:      r.CreatedAt.UTC().Format(time.RFC3339),
+			Model:          r.Model,
+			Dims:           int32(r.Dims),
+			ConversationID: r.ConversationID,
+			LinkedIDs:      r.LinkedIDs,
+			NotDuplicateOf: r.NotDuplicateOf,
+		})
+	}
+	return recs, nil
 }
 
 func printSummary(s *cortexv1.ConversationSummary) {

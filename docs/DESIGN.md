@@ -89,8 +89,9 @@ re-embeds). This exists because indexing is much slower than a write: an edge ca
 reference a memory whose index event is still queued. For an `add` where either
 endpoint is missing, the consumer **NAKs and retries** (capped backoff, up to
 `LinkMaxDeliver: 50`) until both land — out-of-order links are no longer silently
-dropped, the failure mode of the old inline link-on-index path. A single worker
-serializes the read-modify-write with a mutex to avoid lost updates. See
+dropped, the failure mode of the old inline link-on-index path. The
+read-modify-write is serialised by the per-memory lock described in
+[Horizontal scaling](#horizontal-scaling-worker-replicas). See
 [WEB_UI.md](WEB_UI.md) for how the graph UI and the MCP tools drive links.
 
 NATS stream `MEMORY`, subjects `memory.>`, file storage. Subject `memory.index`
@@ -141,6 +142,7 @@ automatically without per-call bookkeeping.
 | `CORTEX_UI_USER` | `admin` | server (web UI login) |
 | `CORTEX_UI_PASSWORD` | _(empty = UI login disabled)_ | server |
 | `CORTEX_JWT_SECRET` | derived from `CORTEX_AUTH_TOKEN`, else random | server (signs UI JWTs) |
+| `CORTEX_MAX_REQUEST_BYTES` | `268435456` (256 MiB) | server (max RPC request body; raise for very large restores) |
 
 ## Living memory — decay + reinforcement (opt-in)
 
@@ -184,6 +186,137 @@ re-ordering and zero reinforcement writes, behaviour identical to before. The
 - **Reflection / decay.** Scheduled job to consolidate and age out memories.
 - **AuthZ.** Everything is localhost-bound in v1; exposing it needs NATS auth,
   Weaviate keys, and per-namespace authorization.
+
+## Horizontal scaling (worker replicas)
+
+The worker is safe to run as N replicas (`docker compose up -d --scale worker=3`,
+or `deploy.replicas: 3`; `WORKER_METRICS_ADDR` is per-container so ports do not clash).
+All replicas share the durable `indexer` and `linker` consumers, so JetStream
+spreads messages across them; each process also handles `WORKER_CONCURRENCY`
+(default 4) messages per consumer at once. Messages for one memory can therefore
+be processed concurrently and out of order, and three mechanisms keep that correct:
+
+1. **Per-id distributed lock.** A JetStream KV bucket (`cortex_locks`, 60s
+   TTL, file storage so held locks survive a NATS restart) holds one key per
+   `tenant + memory id` (summaries: `tenant + conversation id`; keys are always
+   `<kind>.<sha256-hex of tenant NUL id>`, so distinct pairs never collide and ids
+   never need sanitising). Acquire is
+   `kv.Create` (fails if present); release deletes only at the revision we
+   created, so a holder whose lock expired cannot delete the next holder's. The
+   index write and the link apply both run under it; a link takes BOTH endpoint
+   locks in sorted order (no deadlock). Embedding happens before the lock, so it is
+   held only for the store round-trips. The critical section's context deadline is
+   3/4 of the TTL measured from the FIRST lease taken (the earliest to expire); if
+   waiting for a second key would exceed that budget, everything is released and
+   acquisition restarts, so a section can never outlive a lease it depends on. The
+   TTL only reclaims a crashed holder's lock (no lease refresh).
+   Lock-infrastructure errors (bucket or stream gone after a NATS wipe, NATS briefly
+   unreachable) are repaired (bucket re-created) and waited out exactly like
+   contention, so they never fail a message.
+2. **Contention does not consume the delivery budget.** A message that finds its
+   id locked polls (jittered) for up to TTL+30s, i.e. past a crashed holder's
+   lease, then proceeds. It is never NAKed for contention (every NAK costs one of
+   the `MaxDeliver` deliveries) and never dead-lettered or terminated for it. The
+   message is kept alive with `InProgress` every 5s for its WHOLE life (lock wait,
+   embedding, store writes), and the consumers set `AckWait` explicitly (30s).
+   Each process runs `WORKER_CONCURRENCY` loops per consumer, each pulling ONE
+   message at a time (`Fetch(1)`), so a replica holds at most that many messages
+   and never hoards a backlog its peers could process. Trade-off, head-of-line
+   blocking: a wedged hot id (crashed holder, up to the 60s lease) occupies
+   the loops of every replica that pulls a message for it until the lease expires;
+   other ids still flow on the remaining loops. On shutdown nothing new is pulled,
+   in-flight handlers get a 10s grace to finish their commit, and a handler that
+   fails only because the worker is stopping hands its message back instead of
+   counting a processing failure (redelivery still costs one delivery; JetStream
+   has no uncounted hand-back).
+3. **Version guard.** Each index/summary message is stamped with its JetStream
+   stream sequence, persisted as `indexedSeq` on the Memory / ConversationSummary
+   object, together with `indexedStream` (the stream's creation time, unix
+   microseconds). Under the lock, a message whose sequence is lower than the stored
+   one is acked and skipped (metric outcome `stale`), so edit v1 finishing after
+   v2 cannot overwrite it. Sequences restart at 1 if the MEMORY stream is
+   recreated, so they are only compared when the stored and current stream
+   identities match; if they differ the message is fresh and applies. Objects
+   written before these properties (no identity) compare sequences as-is: their
+   stream cannot be known, and assuming "same stream" keeps the guard. Reindex,
+   restore, import and dead-letter requeue publish new messages, so they get
+   higher sequences and still apply. Missing properties read as 0. A redelivery of
+   the same sequence re-applies (idempotent). The worker caches the stream identity
+   and refreshes it every 30s, and always refreshes it synchronously before
+   skipping a message as stale, so a recreated stream is noticed immediately.
+   Caveat: a legacy object (`indexedStream` unset) has no identity, so after a
+   stream recreation a low-sequence message can be skipped as stale for it until
+   a message with a higher sequence rewrites it (which stamps the identity), or it
+   is deleted and re-imported.
+   Upgrade: a `cortex_locks` bucket left by a pre-release build with memory
+   storage must be deleted once (`nats kv del cortex_locks`); JetStream cannot
+   change a bucket's storage type.
+
+### Field ownership
+
+Writing the whole object from a queued message would overwrite fields other
+writers own with the message's stale snapshot. So the index path **creates** a
+memory that does not exist (full record, links included: import/restore/migrate
+carry the only copy) but only **merges** (Weaviate PATCH, vector included) the
+fields it owns into an existing one. Weaviate merges per property, so merges of
+disjoint fields from different processes cannot clobber each other (pinned by an
+integration test), which is why server-side merges need no KV lock.
+
+| Field | Owner / writer | Index path on an existing memory |
+|-------|----------------|----------------------------------|
+| `text`, vector, `namespace`, `tags`, `source`, `createdAt`, `conversationId`, `model`, `dims` | index (worker) | writes |
+| `dupCandidates` | index (recomputed; server `DismissDuplicate` may prune) | writes, minus ids in the stored `notDuplicateOf` |
+| `indexedSeq` | index (worker) | writes |
+| chunks (`MemoryChunk`) | index (worker) | replaced under the lock |
+| `linkedIds` | link consumer (`SetLinks`, under both ids' locks) | never writes |
+| `accessCount`, `lastAccessedAt` | server `Reinforce` (merge) | never writes |
+| `notDuplicateOf` | server `DismissDuplicate` (merge) | never writes |
+
+Known limits: `namespace` is also merged by namespace rename (an edit queued
+before a rename can restore the old name); and with several SERVER replicas,
+concurrent reinforcements of one memory can lose increments (the server
+read-modify-writes `accessCount` without the lock; it is a ranking signal only).
+
+### Missing consumer or stream
+
+The `MEMORY` stream has no retention limit, so every message ever published
+stays in it. A durable consumer recreated with the default delivery policy
+therefore replays the ENTIRE history: every memory re-embedded (embedding runs
+before the lock and stale check), every link op re-run, every summary. The worker
+handles the two cases differently:
+
+- **Stream gone or empty** (NATS wiped): nothing to replay, so the pool re-ensures
+  the stream and the consumer with the startup configuration and carries on.
+- **Consumer gone while the stream holds messages**: NOT recreated. The worker logs
+  an Error (throttled), counts `cortex_worker_fetch_errors_total`, and its
+  `/readyz` goes unready after 30s so the operator notices. Recreate the consumer
+  deliberately with the worker's settings (explicit ack, AckWait 30s, MaxDeliver
+  10 for `indexer` / 50 for `linker`, the same filter subjects) and an explicit
+  start: new messages only, or `DeliverByStartSequence` at the first sequence that
+  still needs processing. The worker then resumes without a restart.
+
+## Multi-tenancy trust model and resource guards
+
+Tenants are isolated for **data** (every store call is scoped to the authenticated
+user's Weaviate tenant). They are **not** isolated for resources: there is no
+per-tenant storage quota and no per-tenant rate limit yet, so an authenticated
+tenant can grow its store arbitrarily. Because "fetch everything" paths are cursor
+paged (no row cap), these guards bound what one tenant can do to the shared server:
+
+- **Single-flight per tenant** (`tenantGate`, `internal/rpc/gate.go`): at most one
+  concurrent `BackupSelf`, one `Reindex` and one `RestoreSelf` per tenant (separate
+  gates per operation). A second concurrent call gets `resource_exhausted`. The key is
+  the authenticated `UserID` from the request context, never a request field;
+  single-tenant mode uses a constant key.
+- **One admin bulk operation server-wide**: `BackupAll`, `RestoreAll` and `MigrateMT`
+  share one gate (nothing serialised them before). The scheduled periodic backup is
+  not gated.
+- **Request size limit**: `connect.WithReadMaxBytes` from `CORTEX_MAX_REQUEST_BYTES`
+  (default 256 MiB). `/auth/login` keeps its own much smaller `MaxBytesReader`.
+
+The gates live in process memory: with several server replicas the limits apply
+**per replica**, not cluster-wide. Cross-tenant fairness (quotas, rate limits) is
+deferred.
 
 ## Failure behavior
 

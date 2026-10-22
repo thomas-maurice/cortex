@@ -4,6 +4,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -189,6 +190,14 @@ func memoryProperties() []*models.Property {
 		{Name: "notDuplicateOf", DataType: []string{"text[]"}},
 		{Name: "accessCount", DataType: []string{"int"}},
 		{Name: "lastAccessedAt", DataType: []string{"date"}},
+		// indexedSeq is the JetStream stream sequence of the index message that last
+		// wrote this object: the worker's stale-write guard (an older message must
+		// not overwrite a newer one). Absent on pre-existing objects, read as 0.
+		{Name: "indexedSeq", DataType: []string{"int"}},
+		// indexedStream identifies the JetStream stream indexedSeq belongs to (its
+		// creation time, unix microseconds), so a recreated stream (sequences restart
+		// at 1) is not mistaken for "older than everything stored".
+		{Name: "indexedStream", DataType: []string{"int"}},
 	}
 }
 
@@ -221,6 +230,9 @@ func summaryProperties() []*models.Property {
 		{Name: "updatedAt", DataType: []string{"date"}},
 		{Name: "model", DataType: []string{"text"}},
 		{Name: "dims", DataType: []string{"int"}},
+		// indexedSeq/indexedStream: stale-write guard, see memoryProperties.
+		{Name: "indexedSeq", DataType: []string{"int"}},
+		{Name: "indexedStream", DataType: []string{"int"}},
 	}
 }
 
@@ -407,23 +419,57 @@ func (s *Store) ListAllTenants(ctx context.Context) ([]string, error) {
 	return names, nil
 }
 
+// scanPageSize is the page size of scanAll's cursor iteration. A var (not a
+// const) so tests can shrink it and exercise multi-page iteration cheaply.
+var scanPageSize = 1000
+
+// scanAll visits EVERY object of collection (within tenant when non-empty) by
+// paging with Weaviate's id cursor ("after"), so the result is not capped by
+// QUERY_MAXIMUM_RESULTS (10000) like a single WithLimit(AllLimit) query is.
+// The cursor cannot be combined with where filters or sort: callers needing
+// either must filter/sort the visited rows in Go. Visit order is id order.
+// isTenantNotFound is NOT swallowed here; callers decide what it means.
+func (s *Store) scanAll(ctx context.Context, collection, tenant string, props []string, fn func(graphql.SearchResult)) error {
+	after := ""
+	for {
+		q := s.client.Experimental().Search().
+			WithCollection(collection).
+			WithMetadata(&graphql.Metadata{ID: true}).
+			WithLimit(scanPageSize)
+		if len(props) > 0 {
+			q = q.WithProperties(props...)
+		}
+		if tenant != "" {
+			q = q.WithTenant(tenant)
+		}
+		if after != "" {
+			q = q.WithAfter(after)
+		}
+		res, err := q.Do(ctx)
+		if err != nil {
+			return err
+		}
+		for _, r := range res {
+			fn(r)
+		}
+		if len(res) < scanPageSize {
+			return nil
+		}
+		after = res[len(res)-1].ID
+	}
+}
+
 // ListAllRecords scans the Memory class without any tenant scope — used by the
 // migration snapshot BEFORE the classes are dropped, when the store is still
 // non-MT. It must not be called against an MT-enabled class (which requires a
-// tenant). Returns up to allCount records.
+// tenant). Returns every record (cursor-paged, not capped).
 func (s *Store) ListAllRecords(ctx context.Context) ([]memory.Record, error) {
-	res, err := s.client.Experimental().Search().
-		WithCollection(memory.ClassName).
-		WithProperties(memoryProps...).
-		WithMetadata(&graphql.Metadata{ID: true}).
-		WithLimit(allCount).
-		Do(ctx)
+	recs := make([]memory.Record, 0)
+	err := s.scanAll(ctx, memory.ClassName, "", memoryProps, func(r graphql.SearchResult) {
+		recs = append(recs, resultToRecord(r))
+	})
 	if err != nil {
 		return nil, fmt.Errorf("list all records: %w", err)
-	}
-	recs := make([]memory.Record, 0, len(res))
-	for _, r := range res {
-		recs = append(recs, resultToRecord(r))
 	}
 	return recs, nil
 }
@@ -432,18 +478,12 @@ func (s *Store) ListAllRecords(ctx context.Context) ([]memory.Record, error) {
 // — used by the migration snapshot before the classes are dropped. Same caveat
 // as ListAllRecords: call only on non-MT classes.
 func (s *Store) ListAllSummaries(ctx context.Context) ([]memory.Summary, error) {
-	res, err := s.client.Experimental().Search().
-		WithCollection(memory.SummaryClassName).
-		WithProperties(summaryProps...).
-		WithMetadata(&graphql.Metadata{ID: true}).
-		WithLimit(allCount).
-		Do(ctx)
+	sums := make([]memory.Summary, 0)
+	err := s.scanAll(ctx, memory.SummaryClassName, "", summaryProps, func(r graphql.SearchResult) {
+		sums = append(sums, resultToSummary(r))
+	})
 	if err != nil {
 		return nil, fmt.Errorf("list all summaries: %w", err)
-	}
-	sums := make([]memory.Summary, 0, len(res))
-	for _, r := range res {
-		sums = append(sums, resultToSummary(r))
 	}
 	return sums, nil
 }
@@ -460,10 +500,10 @@ func (s *Store) Ready(ctx context.Context) error {
 	return nil
 }
 
-// AllLimit is the maximum number of records a single full-store fetch may
-// return. Weaviate's default QUERY_MAXIMUM_RESULTS is 10000; a personal store
-// stays well under it. Exported so RPC handlers can share the cap without
-// duplicating the magic number.
+// AllLimit is the cap for a single LIMIT-based query (user-facing list/search
+// caps). Weaviate's default QUERY_MAXIMUM_RESULTS is 10000. Paths that need
+// EVERY row (backup, reindex, migrate, Count) must NOT rely on it: they use the
+// cursor-paged scanAll / TenantStore.ListAll instead.
 const AllLimit = 10000
 
 // allCount is the internal alias used throughout this file.
@@ -507,22 +547,41 @@ func (ts *TenantStore) upsertObject(ctx context.Context, className, id string, p
 	return nil
 }
 
-// Upsert writes a record with its precomputed vector into the Memory class.
-func (ts *TenantStore) Upsert(ctx context.Context, rec memory.Record, vector []float32) error {
-	props := map[string]interface{}{
+// indexOwnedProps is the property set the INDEX path owns (see UpdateIndexFields):
+// the single source for both the create (Upsert) and the update (merge) paths.
+// nil slices become [] so a merge clears them rather than sending null.
+func indexOwnedProps(rec memory.Record) map[string]interface{} {
+	tags, dups := rec.Tags, rec.DupCandidates
+	if tags == nil {
+		tags = []string{}
+	}
+	if dups == nil {
+		dups = []string{}
+	}
+	return map[string]interface{}{
 		"text":           rec.Text,
 		"namespace":      rec.Namespace,
-		"tags":           rec.Tags,
+		"tags":           tags,
 		"source":         rec.Source,
 		"createdAt":      rec.CreatedAt.UTC().Format(time.RFC3339),
 		"model":          rec.Model,
 		"dims":           rec.Dims,
 		"conversationId": rec.ConversationID,
-		"linkedIds":      rec.LinkedIDs,
-		"dupCandidates":  rec.DupCandidates,
-		"notDuplicateOf": rec.NotDuplicateOf,
-		"accessCount":    rec.AccessCount,
+		"dupCandidates":  dups,
+		"indexedSeq":     rec.IndexedSeq,
+		"indexedStream":  rec.IndexedStream,
 	}
+}
+
+// Upsert writes a record with its precomputed vector into the Memory class,
+// creating the object with EVERY field (the index-owned ones plus the fields other
+// writers own, which a new memory such as an import carries). For an existing
+// memory use UpdateIndexFields.
+func (ts *TenantStore) Upsert(ctx context.Context, rec memory.Record, vector []float32) error {
+	props := indexOwnedProps(rec)
+	props["linkedIds"] = rec.LinkedIDs
+	props["notDuplicateOf"] = rec.NotDuplicateOf
+	props["accessCount"] = rec.AccessCount
 	// A Weaviate `date` property rejects an empty string — it must be a valid
 	// RFC3339 date or absent. A never-reinforced memory has a zero lastAccessedAt,
 	// so omit the key entirely (the property stays null) rather than send "".
@@ -530,6 +589,35 @@ func (ts *TenantStore) Upsert(ctx context.Context, rec memory.Record, vector []f
 		props["lastAccessedAt"] = formatDate(rec.LastAccessedAt)
 	}
 	return ts.upsertObject(ctx, memory.ClassName, rec.ID, props, vector)
+}
+
+// UpdateIndexFields rewrites an EXISTING memory's index-owned fields and vector
+// via a Weaviate merge (PATCH) and nothing else. Index-owned: text, vector,
+// namespace, tags, source, createdAt, conversationId, model, dims, dupCandidates,
+// indexedSeq. Deliberately NOT written, because other writers own them and a
+// queued index message only carries a stale snapshot:
+//
+//	linkedIds                    link consumer (SetLinks)
+//	accessCount, lastAccessedAt  server Reinforce
+//	notDuplicateOf               server DismissDuplicate (SetNotDuplicateOf)
+//
+// Weaviate applies a merge per property under the object's lock, so disjoint-field
+// merges from different processes cannot clobber each other (pinned by the
+// integration test). Use Upsert to create a memory that does not exist yet.
+func (ts *TenantStore) UpdateIndexFields(ctx context.Context, rec memory.Record, vector []float32) error {
+	updater := ts.s.client.Data().Updater().
+		WithMerge().
+		WithClassName(memory.ClassName).
+		WithID(rec.ID).
+		WithVector(vector).
+		WithProperties(indexOwnedProps(rec))
+	if ts.t != "" {
+		updater = updater.WithTenant(ts.t)
+	}
+	if err := updater.Do(ctx); err != nil {
+		return fmt.Errorf("update index fields %s: %w", rec.ID, err)
+	}
+	return nil
 }
 
 // formatDate renders a time for a Weaviate date property, returning "" for the
@@ -555,6 +643,8 @@ func (ts *TenantStore) UpsertSummary(ctx context.Context, sum memory.Summary, ve
 		"updatedAt":      sum.UpdatedAt.UTC().Format(time.RFC3339),
 		"model":          sum.Model,
 		"dims":           sum.Dims,
+		"indexedSeq":     sum.IndexedSeq,
+		"indexedStream":  sum.IndexedStream,
 	}, vector)
 }
 
@@ -584,37 +674,77 @@ func (ts *TenantStore) Delete(ctx context.Context, id string) error {
 // Get fetches a single memory by ID over REST. found is false if it does not
 // exist. Used by Link/Unlink to read the current link set before updating it.
 func (ts *TenantStore) Get(ctx context.Context, id string) (memory.Record, bool, error) {
+	props, ok, err := ts.getProps(ctx, memory.ClassName, id)
+	if err != nil || !ok {
+		return memory.Record{}, false, err
+	}
+	return objectToRecord(id, props), true, nil
+}
+
+// GetSummarySeq returns the indexedSeq and indexedStream of a conversation's
+// stored summary. A missing summary, or one that predates the properties, reads as
+// 0, 0 (nil error), which the stale guard treats as "nothing newer stored".
+func (ts *TenantStore) GetSummarySeq(ctx context.Context, conversationID string) (seq uint64, stream int64, err error) {
+	props, ok, err := ts.getProps(ctx, memory.SummaryClassName, memory.SummaryID(conversationID))
+	if err != nil || !ok {
+		return 0, 0, err
+	}
+	if p, isMap := props.(map[string]interface{}); isMap {
+		return restSeq(p, "indexedSeq"), restInt64(p, "indexedStream"), nil
+	}
+	return 0, 0, nil
+}
+
+// getProps fetches one object's raw REST properties from className, with the
+// strict tenant handling documented below.
+func (ts *TenantStore) getProps(ctx context.Context, className, id string) (models.PropertySchema, bool, error) {
 	checker := ts.s.client.Data().Checker().
-		WithClassName(memory.ClassName).WithID(id)
+		WithClassName(className).WithID(id)
 	if ts.t != "" {
 		checker = checker.WithTenant(ts.t)
 	}
 	exists, err := checker.Do(ctx)
 	if err != nil {
+		// The existence check is a HEAD request, so Weaviate's "tenant not found"
+		// 422 arrives with an empty body and isTenantNotFound can't see the message.
+		// A bare 422 is ambiguous (absent tenant, inactive/offloaded tenant, bad
+		// input), so ask the schema API whether the tenant really is absent.
 		if isTenantNotFound(err) {
-			return memory.Record{}, false, nil
+			return nil, false, nil
 		}
-		return memory.Record{}, false, fmt.Errorf("check object: %w", err)
+		if ts.t != "" && isStatus422(err) {
+			absent, cerr := tenantAbsent(ctx, func(ctx context.Context) (bool, error) {
+				return ts.s.client.Schema().TenantsExists().
+					WithClassName(className).WithTenant(ts.t).Do(ctx)
+			})
+			if cerr == nil && absent {
+				return nil, false, nil
+			}
+			if cerr != nil {
+				err = errors.Join(err, fmt.Errorf("tenant existence check: %w", cerr))
+			}
+		}
+		return nil, false, fmt.Errorf("check object: %w", err)
 	}
 	if !exists {
-		return memory.Record{}, false, nil
+		return nil, false, nil
 	}
 	getter := ts.s.client.Data().ObjectsGetter().
-		WithClassName(memory.ClassName).WithID(id)
+		WithClassName(className).WithID(id)
 	if ts.t != "" {
 		getter = getter.WithTenant(ts.t)
 	}
 	objs, err := getter.Do(ctx)
 	if err != nil {
 		if isTenantNotFound(err) {
-			return memory.Record{}, false, nil
+			return nil, false, nil
 		}
-		return memory.Record{}, false, fmt.Errorf("get object: %w", err)
+		return nil, false, fmt.Errorf("get object: %w", err)
 	}
 	if len(objs) == 0 {
-		return memory.Record{}, false, nil
+		return nil, false, nil
 	}
-	return objectToRecord(id, objs[0].Properties), true, nil
+	return objs[0].Properties, true, nil
 }
 
 // SetLinks replaces a memory's linkedIds via a Weaviate merge (PATCH), leaving
@@ -708,28 +838,63 @@ func (ts *TenantStore) Reinforce(ctx context.Context, id string, count int, at t
 }
 
 // Count returns the number of stored memories for this tenant, optionally scoped
-// to a namespace ("" counts all). It runs an id-only gRPC query and counts the
-// rows — there is no gRPC Aggregate in the stable client, and a personal store is
-// small enough that scanning ids is cheap.
+// to a namespace ("" counts all). There is no gRPC Aggregate in the stable
+// client, so it cursor-scans the class and counts the rows (correct beyond the
+// 10000-result query cap). The cursor cannot be combined with a where filter, so
+// the namespace is matched in Go.
 func (ts *TenantStore) Count(ctx context.Context, namespace string) (int, error) {
-	q := ts.s.client.Experimental().Search().
-		WithCollection(memory.ClassName).
-		WithLimit(allCount).
-		WithMetadata(&graphql.Metadata{ID: true})
-	if ts.t != "" {
-		q = q.WithTenant(ts.t)
+	var props []string
+	if namespace != "" {
+		props = []string{"namespace"}
 	}
-	if where := buildWhere(namespace, "", nil, nil); where != nil {
-		q = q.WithWhere(where)
-	}
-	res, err := q.Do(ctx)
+	n := 0
+	err := ts.s.scanAll(ctx, memory.ClassName, ts.t, props, func(r graphql.SearchResult) {
+		if namespace == "" || propString(r.Properties, "namespace") == namespace {
+			n++
+		}
+	})
 	if err != nil {
 		if isTenantNotFound(err) {
 			return 0, nil
 		}
 		return 0, fmt.Errorf("count query: %w", err)
 	}
-	return len(res), nil
+	return n, nil
+}
+
+// ListAll returns EVERY memory of this tenant (optionally only those in
+// namespace; "" = all), unsorted. Unlike List it is not capped: it cursor-pages
+// and filters the namespace in Go. For backup/reindex-style "need all rows" paths.
+func (ts *TenantStore) ListAll(ctx context.Context, namespace string) ([]memory.Record, error) {
+	recs := make([]memory.Record, 0)
+	err := ts.s.scanAll(ctx, memory.ClassName, ts.t, memoryProps, func(r graphql.SearchResult) {
+		if namespace == "" || propString(r.Properties, "namespace") == namespace {
+			recs = append(recs, resultToRecord(r))
+		}
+	})
+	if err != nil {
+		if isTenantNotFound(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("list all query: %w", err)
+	}
+	return recs, nil
+}
+
+// ListAllSummaries returns EVERY conversation summary of this tenant, unsorted
+// and uncapped (cursor-paged). Counterpart of ListAll.
+func (ts *TenantStore) ListAllSummaries(ctx context.Context) ([]memory.Summary, error) {
+	sums := make([]memory.Summary, 0)
+	err := ts.s.scanAll(ctx, memory.SummaryClassName, ts.t, summaryProps, func(r graphql.SearchResult) {
+		sums = append(sums, resultToSummary(r))
+	})
+	if err != nil {
+		if isTenantNotFound(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("list all summaries query: %w", err)
+	}
+	return sums, nil
 }
 
 // memoryProps is the property set fetched for both search and list.
@@ -1117,30 +1282,28 @@ func (ts *TenantStore) List(ctx context.Context, opts ListOpts) ([]memory.Record
 // duplicate candidate, newest-first. It is the read side of the heuristic dedup:
 // the review tool / UI surface these so a human or the agent can adjudicate.
 //
-// It scans the namespace and filters for a non-empty dupCandidates in Go rather
-// than with a Weaviate IsNull filter, which would require the class to be created
-// with indexNullState=true (not the case for existing deployments). A personal
-// store is small enough that scanning is cheap — the same assumption Count and
-// reindex already rely on. No vector query, so results carry no distance.
+// It cursor-scans the whole class and filters (namespace, non-empty
+// dupCandidates) in Go, then sorts by createdAt desc and applies limit LAST — so
+// candidates beyond the 10000-result query cap are not dropped. Go-side filtering
+// also avoids a Weaviate IsNull filter, which would require the class to be
+// created with indexNullState=true (not the case for existing deployments). No
+// vector query, so results carry no distance.
 func (ts *TenantStore) ListWithCandidates(ctx context.Context, namespace string, limit int) ([]memory.Record, error) {
 	if limit <= 0 {
 		limit = 50
 	}
 
-	query := ts.s.client.Experimental().Search().
-		WithCollection(memory.ClassName).
-		WithProperties(memoryProps...).
-		WithMetadata(&graphql.Metadata{ID: true}).
-		WithSort(graphql.Sort{Path: []string{"createdAt"}, Order: graphql.Desc}).
-		WithLimit(allCount)
-	if ts.t != "" {
-		query = query.WithTenant(ts.t)
-	}
-	if where := buildWhere(namespace, "", nil, nil); where != nil {
-		query = query.WithWhere(where)
-	}
-
-	res, err := query.Do(ctx)
+	recs := make([]memory.Record, 0)
+	err := ts.s.scanAll(ctx, memory.ClassName, ts.t, memoryProps, func(r graphql.SearchResult) {
+		if namespace != "" && propString(r.Properties, "namespace") != namespace {
+			return
+		}
+		rec := resultToRecord(r)
+		if len(rec.DupCandidates) == 0 {
+			return
+		}
+		recs = append(recs, rec)
+	})
 	if err != nil {
 		if isTenantNotFound(err) {
 			return nil, nil
@@ -1148,16 +1311,9 @@ func (ts *TenantStore) ListWithCandidates(ctx context.Context, namespace string,
 		return nil, fmt.Errorf("list candidates query: %w", err)
 	}
 
-	recs := make([]memory.Record, 0)
-	for _, r := range res {
-		rec := resultToRecord(r)
-		if len(rec.DupCandidates) == 0 {
-			continue
-		}
-		recs = append(recs, rec)
-		if len(recs) >= limit {
-			break
-		}
+	sort.SliceStable(recs, func(i, j int) bool { return recs[i].CreatedAt.After(recs[j].CreatedAt) })
+	if len(recs) > limit {
+		recs = recs[:limit]
 	}
 	return recs, nil
 }
@@ -1325,6 +1481,8 @@ func objectToRecord(id string, raw models.PropertySchema) memory.Record {
 		DupCandidates:  restStrings(p, "dupCandidates"),
 		NotDuplicateOf: restStrings(p, "notDuplicateOf"),
 		AccessCount:    restInt(p, "accessCount"),
+		IndexedSeq:     restSeq(p, "indexedSeq"),
+		IndexedStream:  restInt64(p, "indexedStream"),
 	}
 	if ca := restString(p, "createdAt"); ca != "" {
 		rec.CreatedAt, _ = time.Parse(time.RFC3339, ca)
@@ -1341,6 +1499,23 @@ func objectToRecord(id string, raw models.PropertySchema) memory.Record {
 func restString(p map[string]interface{}, key string) string {
 	s, _ := p[key].(string)
 	return s
+}
+
+// restSeq decodes an int property as a uint64 sequence; absent or negative is 0.
+func restSeq(p map[string]interface{}, key string) uint64 {
+	if f, ok := p[key].(float64); ok && f > 0 {
+		return uint64(f)
+	}
+	return 0
+}
+
+// restInt64 decodes an int property as int64 (float64 on the REST path is exact
+// below 2^53, which covers unix-microsecond identities).
+func restInt64(p map[string]interface{}, key string) int64 {
+	if f, ok := p[key].(float64); ok {
+		return int64(f)
+	}
+	return 0
 }
 
 func restInt(p map[string]interface{}, key string) int {

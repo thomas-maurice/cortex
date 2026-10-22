@@ -52,10 +52,13 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-  # Indexing worker: NATS -> Ollama embed -> Weaviate. The only writer.
+  # Indexing worker: NATS -> Ollama embed -> Weaviate. The only writer process type;
+  # safe to scale out: `docker compose up -d --scale worker=3` (per-id locks in NATS KV).
   worker:
     image: ${CORTEX_IMAGE:-ghcr.io/thomas-maurice/cortex:latest}
     entrypoint: ["/usr/local/bin/cortex-worker"]
+    # Shutdown needs the 10s in-flight grace + NAK + lock releases before SIGKILL.
+    stop_grace_period: 30s
     environment:
       NATS_URL: nats://nats:4222
       OLLAMA_URL: http://ollama:11434
@@ -81,6 +84,9 @@ services:
       # single-user mode. Must match the server. An EXISTING (pre-MT) store needs a
       # one-time `cortex migrate-mt` after first enabling it.
       CORTEX_MULTI_TENANT: ${CORTEX_MULTI_TENANT:-true}
+      # Ops listener (/metrics, /healthz, /readyz; unauthenticated) inside the
+      # container, per replica, not published to the host. Empty disables it.
+      WORKER_METRICS_ADDR: ${WORKER_METRICS_ADDR:-:9090}
     depends_on:
       - nats
       - weaviate
@@ -146,6 +152,17 @@ services:
       # files are retained in CORTEX_BACKUP_DIR after each backup (default 7).
       # BACKUP_INTERVAL: ${BACKUP_INTERVAL:-}
       # BACKUP_KEEP: ${BACKUP_KEEP:-7}
+      # Dedicated metrics listener (/metrics, /healthz, /readyz; unauthenticated)
+      # inside the container. /metrics is never served on the API port (8080).
+      # Not published to the host. Empty disables it (default is :9090).
+      API_METRICS_ADDR: ${API_METRICS_ADDR:-:9090}
+    healthcheck:
+      # The distroless image has no wget/curl, so the server probes its own /readyz.
+      test: ["CMD", "/usr/local/bin/cortex-server", "healthcheck"]
+      interval: 15s
+      timeout: 8s
+      retries: 5
+      start_period: 30s
     depends_on:
       - nats
       - weaviate

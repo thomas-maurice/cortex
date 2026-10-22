@@ -45,6 +45,8 @@ const (
 	MemoryServiceSearchSimilarProcedure = "/cortex.v1.MemoryService/SearchSimilar"
 	// MemoryServiceListProcedure is the fully-qualified name of the MemoryService's List RPC.
 	MemoryServiceListProcedure = "/cortex.v1.MemoryService/List"
+	// MemoryServiceGetMemoryProcedure is the fully-qualified name of the MemoryService's GetMemory RPC.
+	MemoryServiceGetMemoryProcedure = "/cortex.v1.MemoryService/GetMemory"
 	// MemoryServiceDeleteProcedure is the fully-qualified name of the MemoryService's Delete RPC.
 	MemoryServiceDeleteProcedure = "/cortex.v1.MemoryService/Delete"
 	// MemoryServiceStatusProcedure is the fully-qualified name of the MemoryService's Status RPC.
@@ -173,6 +175,11 @@ type MemoryServiceClient interface {
 	SearchSimilar(context.Context, *connect.Request[v1.SearchSimilarRequest]) (*connect.Response[v1.SearchSimilarResponse], error)
 	// List returns stored memories newest-first, without a vector query.
 	List(context.Context, *connect.Request[v1.ListRequest]) (*connect.Response[v1.ListResponse], error)
+	// GetMemory fetches ONE memory by id (full record, tenant-scoped). Use it to
+	// follow `linked_ids` from search results or ids from dedup candidates and
+	// consolidate manifests. It is a plain read: unlike Search it never
+	// reinforces the memory. NotFound for an unknown id or another tenant's id.
+	GetMemory(context.Context, *connect.Request[v1.GetMemoryRequest]) (*connect.Response[v1.GetMemoryResponse], error)
 	// Delete removes a memory by ID.
 	Delete(context.Context, *connect.Request[v1.DeleteRequest]) (*connect.Response[v1.DeleteResponse], error)
 	// Status is a fast health/connectivity probe of the backing services.
@@ -361,6 +368,12 @@ func NewMemoryServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			httpClient,
 			baseURL+MemoryServiceListProcedure,
 			connect.WithSchema(memoryServiceMethods.ByName("List")),
+			connect.WithClientOptions(opts...),
+		),
+		getMemory: connect.NewClient[v1.GetMemoryRequest, v1.GetMemoryResponse](
+			httpClient,
+			baseURL+MemoryServiceGetMemoryProcedure,
+			connect.WithSchema(memoryServiceMethods.ByName("GetMemory")),
 			connect.WithClientOptions(opts...),
 		),
 		delete: connect.NewClient[v1.DeleteRequest, v1.DeleteResponse](
@@ -613,6 +626,7 @@ type memoryServiceClient struct {
 	search                  *connect.Client[v1.SearchRequest, v1.SearchResponse]
 	searchSimilar           *connect.Client[v1.SearchSimilarRequest, v1.SearchSimilarResponse]
 	list                    *connect.Client[v1.ListRequest, v1.ListResponse]
+	getMemory               *connect.Client[v1.GetMemoryRequest, v1.GetMemoryResponse]
 	delete                  *connect.Client[v1.DeleteRequest, v1.DeleteResponse]
 	status                  *connect.Client[v1.StatusRequest, v1.StatusResponse]
 	getVersion              *connect.Client[v1.GetVersionRequest, v1.GetVersionResponse]
@@ -678,6 +692,11 @@ func (c *memoryServiceClient) SearchSimilar(ctx context.Context, req *connect.Re
 // List calls cortex.v1.MemoryService.List.
 func (c *memoryServiceClient) List(ctx context.Context, req *connect.Request[v1.ListRequest]) (*connect.Response[v1.ListResponse], error) {
 	return c.list.CallUnary(ctx, req)
+}
+
+// GetMemory calls cortex.v1.MemoryService.GetMemory.
+func (c *memoryServiceClient) GetMemory(ctx context.Context, req *connect.Request[v1.GetMemoryRequest]) (*connect.Response[v1.GetMemoryResponse], error) {
+	return c.getMemory.CallUnary(ctx, req)
 }
 
 // Delete calls cortex.v1.MemoryService.Delete.
@@ -897,6 +916,11 @@ type MemoryServiceHandler interface {
 	SearchSimilar(context.Context, *connect.Request[v1.SearchSimilarRequest]) (*connect.Response[v1.SearchSimilarResponse], error)
 	// List returns stored memories newest-first, without a vector query.
 	List(context.Context, *connect.Request[v1.ListRequest]) (*connect.Response[v1.ListResponse], error)
+	// GetMemory fetches ONE memory by id (full record, tenant-scoped). Use it to
+	// follow `linked_ids` from search results or ids from dedup candidates and
+	// consolidate manifests. It is a plain read: unlike Search it never
+	// reinforces the memory. NotFound for an unknown id or another tenant's id.
+	GetMemory(context.Context, *connect.Request[v1.GetMemoryRequest]) (*connect.Response[v1.GetMemoryResponse], error)
 	// Delete removes a memory by ID.
 	Delete(context.Context, *connect.Request[v1.DeleteRequest]) (*connect.Response[v1.DeleteResponse], error)
 	// Status is a fast health/connectivity probe of the backing services.
@@ -1081,6 +1105,12 @@ func NewMemoryServiceHandler(svc MemoryServiceHandler, opts ...connect.HandlerOp
 		MemoryServiceListProcedure,
 		svc.List,
 		connect.WithSchema(memoryServiceMethods.ByName("List")),
+		connect.WithHandlerOptions(opts...),
+	)
+	memoryServiceGetMemoryHandler := connect.NewUnaryHandler(
+		MemoryServiceGetMemoryProcedure,
+		svc.GetMemory,
+		connect.WithSchema(memoryServiceMethods.ByName("GetMemory")),
 		connect.WithHandlerOptions(opts...),
 	)
 	memoryServiceDeleteHandler := connect.NewUnaryHandler(
@@ -1335,6 +1365,8 @@ func NewMemoryServiceHandler(svc MemoryServiceHandler, opts ...connect.HandlerOp
 			memoryServiceSearchSimilarHandler.ServeHTTP(w, r)
 		case MemoryServiceListProcedure:
 			memoryServiceListHandler.ServeHTTP(w, r)
+		case MemoryServiceGetMemoryProcedure:
+			memoryServiceGetMemoryHandler.ServeHTTP(w, r)
 		case MemoryServiceDeleteProcedure:
 			memoryServiceDeleteHandler.ServeHTTP(w, r)
 		case MemoryServiceStatusProcedure:
@@ -1442,6 +1474,10 @@ func (UnimplementedMemoryServiceHandler) SearchSimilar(context.Context, *connect
 
 func (UnimplementedMemoryServiceHandler) List(context.Context, *connect.Request[v1.ListRequest]) (*connect.Response[v1.ListResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cortex.v1.MemoryService.List is not implemented"))
+}
+
+func (UnimplementedMemoryServiceHandler) GetMemory(context.Context, *connect.Request[v1.GetMemoryRequest]) (*connect.Response[v1.GetMemoryResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cortex.v1.MemoryService.GetMemory is not implemented"))
 }
 
 func (UnimplementedMemoryServiceHandler) Delete(context.Context, *connect.Request[v1.DeleteRequest]) (*connect.Response[v1.DeleteResponse], error) {

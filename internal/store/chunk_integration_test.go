@@ -70,9 +70,10 @@ func TestChunkSearchGroupingAndCascade(t *testing.T) {
 		{Index: 0, Text: "beta chunk zero", Vector: []float32{0, 1, 0, 0}},
 	}))
 
-	require.Eventually(t, func() bool {
+	require.EventuallyWithT(t, func(c *assert.CollectT) {
 		hits, err := ts.Search(ctx, query, SearchOpts{Namespace: ns, Limit: 10})
-		return err == nil && len(hits) == 2
+		require.NoError(c, err)
+		assert.Len(c, hits, 2)
 	}, 10*time.Second, 200*time.Millisecond, "both parents should become searchable via their chunks")
 
 	t.Run("two matching chunks of one parent yield ONE deduped hit, best-distance first", func(t *testing.T) {
@@ -85,28 +86,33 @@ func TestChunkSearchGroupingAndCascade(t *testing.T) {
 
 	t.Run("deleting a memory cascades to its chunks", func(t *testing.T) {
 		require.NoError(t, ts.Delete(ctx, idA))
-		require.Eventually(t, func() bool {
+		require.EventuallyWithT(t, func(c *assert.CollectT) {
 			hits, err := ts.Search(ctx, query, SearchOpts{Namespace: ns, Limit: 10})
-			return err == nil && countID(hits, idA) == 0
+			require.NoError(c, err)
+			assert.Equal(c, 0, countID(hits, idA))
 		}, 10*time.Second, 200*time.Millisecond, "a deleted memory's chunks must stop surfacing it")
 	})
 
 	t.Run("renaming a namespace moves the chunks too", func(t *testing.T) {
 		_, _, err := ts.RenameNamespace(ctx, ns, "chunk-test-2")
 		require.NoError(t, err)
-		require.Eventually(t, func() bool {
-			inNew, err1 := ts.Search(ctx, []float32{0, 1, 0, 0}, SearchOpts{Namespace: "chunk-test-2", Limit: 10})
-			inOld, err2 := ts.Search(ctx, []float32{0, 1, 0, 0}, SearchOpts{Namespace: ns, Limit: 10})
-			return err1 == nil && err2 == nil && countID(inNew, idB) == 1 && len(inOld) == 0
+		require.EventuallyWithT(t, func(c *assert.CollectT) {
+			inNew, err := ts.Search(ctx, []float32{0, 1, 0, 0}, SearchOpts{Namespace: "chunk-test-2", Limit: 10})
+			require.NoError(c, err)
+			inOld, err := ts.Search(ctx, []float32{0, 1, 0, 0}, SearchOpts{Namespace: ns, Limit: 10})
+			require.NoError(c, err)
+			assert.Equal(c, 1, countID(inNew, idB))
+			assert.Empty(c, inOld)
 		}, 10*time.Second, 200*time.Millisecond, "chunks must be findable under the new namespace and gone from the old")
 	})
 
 	t.Run("deleting a namespace removes the chunks too", func(t *testing.T) {
 		_, _, err := ts.DeleteNamespace(ctx, "chunk-test-2")
 		require.NoError(t, err)
-		require.Eventually(t, func() bool {
+		require.EventuallyWithT(t, func(c *assert.CollectT) {
 			hits, err := ts.Search(ctx, []float32{0, 1, 0, 0}, SearchOpts{Namespace: "chunk-test-2", Limit: 10})
-			return err == nil && len(hits) == 0
+			require.NoError(c, err)
+			assert.Empty(c, hits)
 		}, 10*time.Second, 200*time.Millisecond, "a deleted namespace's chunks must be gone")
 	})
 }
@@ -146,9 +152,10 @@ func TestSearchFallbackForUnchunkedMemories(t *testing.T) {
 	require.NoError(t, ts.ReplaceChunks(ctx, recNew, []ChunkVec{{Index: 0, Text: "freshly chunked memory", Vector: []float32{0, 1, 0, 0}}}))
 
 	t.Run("an un-chunked memory is still found via the whole-memory fallback", func(t *testing.T) {
-		require.Eventually(t, func() bool {
+		require.EventuallyWithT(t, func(c *assert.CollectT) {
 			hits, err := ts.Search(ctx, []float32{1, 0, 0, 0}, SearchOpts{Namespace: ns, Limit: 5})
-			return err == nil && countID(hits, idOld) == 1
+			require.NoError(c, err)
+			assert.Equal(c, 1, countID(hits, idOld))
 		}, 10*time.Second, 200*time.Millisecond, "the chunkless legacy memory must surface via fallback")
 	})
 
@@ -193,9 +200,10 @@ func TestReimportReplacesChunks(t *testing.T) {
 		{Index: 2, Text: "v1 c", Vector: []float32{0, 0, 1, 0}},
 	}))
 	probe := []float32{0, 1, 0, 0}
-	require.Eventually(t, func() bool {
+	require.EventuallyWithT(t, func(c *assert.CollectT) {
 		hits, err := ts.Search(ctx, probe, SearchOpts{Namespace: ns, Limit: 5, MaxDistance: 0.1})
-		return err == nil && countID(hits, id) == 1
+		require.NoError(c, err)
+		assert.Equal(c, 1, countID(hits, id))
 	}, 10*time.Second, 200*time.Millisecond, "v1 chunk at the probe direction should be found")
 
 	// Re-import with changed, shorter text: a single chunk, NOT at the probe.
@@ -204,9 +212,10 @@ func TestReimportReplacesChunks(t *testing.T) {
 	}))
 
 	t.Run("the old chunk is gone after re-import", func(t *testing.T) {
-		require.Eventually(t, func() bool {
+		require.EventuallyWithT(t, func(c *assert.CollectT) {
 			hits, err := ts.Search(ctx, probe, SearchOpts{Namespace: ns, Limit: 5, MaxDistance: 0.1})
-			return err == nil && len(hits) == 0
+			require.NoError(c, err)
+			assert.Empty(c, hits)
 		}, 10*time.Second, 200*time.Millisecond, "the v1 chunk must be dropped — re-import replaces the whole chunk set")
 	})
 }

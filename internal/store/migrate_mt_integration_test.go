@@ -104,9 +104,10 @@ func TestMigrateMTFlow(t *testing.T) {
 	}
 
 	// Wait for all objects to be queryable.
-	require.Eventually(t, func() bool {
-		c, err := ts.Count(ctx, "")
-		return err == nil && c == numMemories
+	require.EventuallyWithT(t, func(c *assert.CollectT) {
+		n, err := ts.Count(ctx, "")
+		require.NoError(c, err)
+		assert.Equal(c, numMemories, n)
 	}, 15*time.Second, 200*time.Millisecond, "seeded memories must be queryable")
 
 	// --- Phase 1: snapshot (simulate the MigrateMT handler's snapshot step). ---
@@ -168,9 +169,10 @@ func TestMigrateMTFlow(t *testing.T) {
 	}
 
 	// Wait for all re-imported memories to be queryable in the bootstrap tenant.
-	require.Eventually(t, func() bool {
-		c, err := btsTenant.Count(ctx, "")
-		return err == nil && c == numMemories
+	require.EventuallyWithT(t, func(c *assert.CollectT) {
+		n, err := btsTenant.Count(ctx, "")
+		require.NoError(c, err)
+		assert.Equal(c, numMemories, n)
 	}, 15*time.Second, 200*time.Millisecond, "re-imported memories must be queryable in bootstrap tenant")
 
 	// --- Assertions ---

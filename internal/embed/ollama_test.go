@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -14,10 +15,18 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// writeEmbedding writes a well-formed /api/embeddings response.
-func writeEmbedding(t *testing.T, w http.ResponseWriter, vec []float32) {
+// writeEmbedding writes a well-formed /api/embed response holding the given vectors.
+func writeEmbedding(t *testing.T, w http.ResponseWriter, vecs ...[]float32) {
 	t.Helper()
-	require.NoError(t, json.NewEncoder(w).Encode(embedResp{Embedding: vec}))
+	require.NoError(t, json.NewEncoder(w).Encode(embedResp{Embeddings: vecs}))
+}
+
+// readInputs decodes the request body's inputs.
+func readInputs(t *testing.T, r *http.Request) []string {
+	t.Helper()
+	var req embedReq
+	require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+	return req.Input
 }
 
 func TestEmbedSuccess(t *testing.T) {
@@ -25,7 +34,7 @@ func TestEmbedSuccess(t *testing.T) {
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
-		assert.Equal(t, "/api/embeddings", r.URL.Path)
+		assert.Equal(t, "/api/embed", r.URL.Path)
 		writeEmbedding(t, w, want)
 	}))
 	defer srv.Close()
@@ -78,7 +87,7 @@ func TestEmbedNoRetryOnEmptyVector(t *testing.T) {
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		calls.Add(1)
-		writeEmbedding(t, w, nil)
+		writeEmbedding(t, w, []float32{})
 	}))
 	defer srv.Close()
 
@@ -86,6 +95,121 @@ func TestEmbedNoRetryOnEmptyVector(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "empty vector")
 	assert.Equal(t, int32(1), calls.Load())
+}
+
+// TestEmbedBatchOrder: vectors must map to inputs by position — the worker pairs
+// chunk i with vector i, so any reorder silently corrupts the index.
+func TestEmbedBatchOrder(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/api/embed", r.URL.Path)
+		in := readInputs(t, r)
+		assert.Equal(t, []string{"a", "bb", "ccc"}, in)
+		vecs := make([][]float32, len(in))
+		for i, s := range in {
+			vecs[i] = []float32{float32(len(s))}
+		}
+		writeEmbedding(t, w, vecs...)
+	}))
+	defer srv.Close()
+
+	got, err := New(srv.URL, "m").EmbedBatch(context.Background(), []string{"a", "bb", "ccc"})
+	require.NoError(t, err)
+	assert.Equal(t, [][]float32{{1}, {2}, {3}}, got)
+}
+
+// TestEmbedBatchSplitsAtCap: oversized batches become several sequential requests,
+// reassembled in order.
+func TestEmbedBatchSplitsAtCap(t *testing.T) {
+	n := embedMaxBatch*2 + 5
+	texts := make([]string, n)
+	for i := range texts {
+		texts[i] = strconv.Itoa(i)
+	}
+	var sizes []int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		in := readInputs(t, r)
+		sizes = append(sizes, len(in)) // sequential requests: no race
+		vecs := make([][]float32, len(in))
+		for i, s := range in {
+			v, err := strconv.Atoi(s)
+			require.NoError(t, err)
+			vecs[i] = []float32{float32(v)}
+		}
+		writeEmbedding(t, w, vecs...)
+	}))
+	defer srv.Close()
+
+	var observed int
+	c := New(srv.URL, "m")
+	c.SetObserver(func(time.Duration, error) { observed++ })
+	got, err := c.EmbedBatch(context.Background(), texts)
+	require.NoError(t, err)
+	assert.Equal(t, []int{embedMaxBatch, embedMaxBatch, 5}, sizes)
+	assert.Equal(t, 3, observed, "observer fires once per HTTP request")
+	require.Len(t, got, n)
+	for i := range got {
+		assert.Equal(t, []float32{float32(i)}, got[i], "vector %d out of order", i)
+	}
+}
+
+// TestEmbedBatchCountMismatch protects chunk/vector alignment: a short response
+// must fail loudly (and not be retried), never yield misaligned vectors.
+func TestEmbedBatchCountMismatch(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		writeEmbedding(t, w, []float32{1})
+	}))
+	defer srv.Close()
+
+	_, err := New(srv.URL, "m").EmbedBatch(context.Background(), []string{"a", "b"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "1 embeddings for 2 inputs")
+	assert.Equal(t, int32(1), calls.Load())
+}
+
+// TestEmbedBatchEmptyVectorInBatch: one empty vector among good ones is still an error.
+func TestEmbedBatchEmptyVectorInBatch(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeEmbedding(t, w, []float32{1}, []float32{})
+	}))
+	defer srv.Close()
+
+	_, err := New(srv.URL, "m").EmbedBatch(context.Background(), []string{"a", "b"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "empty vector at index 1")
+}
+
+// TestEmbedBatchEmptyInput: nothing to embed means no request at all.
+func TestEmbedBatchEmptyInput(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Error("no request expected for empty input")
+	}))
+	defer srv.Close()
+
+	got, err := New(srv.URL, "m").EmbedBatch(context.Background(), nil)
+	require.NoError(t, err)
+	assert.Empty(t, got)
+}
+
+// TestEmbedObserver: the metrics hook still sees success and failure.
+func TestEmbedObserver(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeEmbedding(t, w, []float32{1})
+	}))
+	defer srv.Close()
+
+	var errs []error
+	c := New(srv.URL, "m")
+	c.SetObserver(func(_ time.Duration, err error) { errs = append(errs, err) })
+	_, err := c.Embed(context.Background(), "x")
+	require.NoError(t, err)
+	srv.Close()
+	_, err = c.Embed(context.Background(), "x")
+	require.Error(t, err)
+	require.Len(t, errs, 2)
+	assert.NoError(t, errs[0])
+	assert.Error(t, errs[1])
 }
 
 func TestEmbedExhaustsRetries(t *testing.T) {

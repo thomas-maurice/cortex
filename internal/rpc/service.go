@@ -27,8 +27,10 @@ import (
 	"github.com/thomas-maurice/cortex/internal/store"
 )
 
-// allLimit caps a full-store fetch (export/reindex). Canonical value is
-// store.AllLimit; this alias keeps call sites readable without a long prefix.
+// allLimit is the upper bound for user-facing List/Search limits (see
+// clampLimit). Canonical value is store.AllLimit; this alias keeps call sites
+// readable. It is NOT used for "need every row" paths (backup, reindex, export),
+// which cursor-page via store.TenantStore.ListAll instead.
 const allLimit = store.AllLimit
 
 const (
@@ -119,6 +121,34 @@ type Service struct {
 	// search hits are reinforced, so two concurrent searches reinforcing the same
 	// memory cannot both read the old count and lose an increment.
 	reinforceMu sync.Mutex
+
+	// Single-flight guards (see tenantGate): one in-flight backup / reindex /
+	// restore per tenant, and one admin bulk operation server-wide, so no tenant
+	// can multiply the memory/Ollama cost of "fetch everything" RPCs.
+	backupGate, reindexGate, restoreGate, adminGate tenantGate
+	// afterGate, when non-nil, runs right after a gate is acquired; a non-nil
+	// return aborts the call. Test seam only (lets a test hold a call in flight).
+	afterGate func() error
+}
+
+// gated acquires g for the caller's tenant (or the server-wide admin key when
+// admin is true) and runs the test seam. The returned release must be deferred.
+func (s *Service) gated(ctx context.Context, g *tenantGate, admin bool, busyMsg string) (func(), error) {
+	key := gateKey(ctx)
+	if admin {
+		key = adminGateKey
+	}
+	release, err := acquire(g, key, busyMsg)
+	if err != nil {
+		return nil, err
+	}
+	if s.afterGate != nil {
+		if err := s.afterGate(); err != nil {
+			release()
+			return nil, err
+		}
+	}
+	return release, nil
 }
 
 // NewService wires the handler with its backing clients.
@@ -150,6 +180,44 @@ func (s *Service) tenantStore(ctx context.Context) (*store.TenantStore, error) {
 	return s.store.Tenant(id.UserID), nil
 }
 
+// maxEchoedID caps how much of a caller-supplied id is echoed back in an error.
+const maxEchoedID = 64
+
+// normalizeMemoryID rejects ids that are not UUIDs and returns the canonical
+// (lowercase, hyphenated) form. Weaviate object ids are UUIDs, so a malformed one
+// can never resolve: it would surface as a backend 422 (reads) or be silently
+// dropped by the worker (links/supersedes). uuid.Parse also accepts {..},
+// urn:uuid: and dashless spellings; callers must use the returned value
+// downstream so every spelling of one id compares and stores identically.
+func normalizeMemoryID(field, id string) (string, error) {
+	u, err := uuid.Parse(id)
+	if err != nil {
+		shown := id
+		if r := []rune(shown); len(r) > maxEchoedID {
+			shown = string(r[:maxEchoedID]) + "…"
+		}
+		return "", connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("%s %q is not a valid UUID", field, shown))
+	}
+	return u.String(), nil
+}
+
+// normalizeMemoryIDs normalizes every non-empty (trimmed) entry, naming
+// <field>[i] on failure and dropping empties.
+func normalizeMemoryIDs(field string, ids []string) ([]string, error) {
+	var out []string
+	for i, id := range ids {
+		if id = strings.TrimSpace(id); id == "" {
+			continue
+		}
+		n, err := normalizeMemoryID(fmt.Sprintf("%s[%d]", field, i), id)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, n)
+	}
+	return out, nil
+}
+
 func (s *Service) Save(ctx context.Context, req *connect.Request[cortexv1.SaveRequest]) (*connect.Response[cortexv1.SaveResponse], error) {
 	text := strings.TrimSpace(req.Msg.GetText())
 	if text == "" {
@@ -164,6 +232,17 @@ func (s *Service) Save(ctx context.Context, req *connect.Request[cortexv1.SaveRe
 		src = s.cfg.Source
 	}
 
+	// Validate every referenced id before publishing anything, so a bad id fails
+	// the whole save instead of being dropped asynchronously after "queued".
+	supersedes, err := normalizeMemoryIDs("supersedes", req.Msg.GetSupersedes())
+	if err != nil {
+		return nil, err
+	}
+	linkTo, err := normalizeMemoryIDs("link_to", req.Msg.GetLinkTo())
+	if err != nil {
+		return nil, err
+	}
+
 	rec := memory.Record{
 		ID:             uuid.NewString(),
 		Text:           text,
@@ -172,7 +251,7 @@ func (s *Service) Save(ctx context.Context, req *connect.Request[cortexv1.SaveRe
 		Source:         src,
 		CreatedAt:      time.Now().UTC(),
 		ConversationID: req.Msg.GetConversationId(),
-		Supersedes:     req.Msg.GetSupersedes(),
+		Supersedes:     supersedes,
 	}
 	// UserID is stamped by PublishIndex from context; not read from req.Msg.
 	if err := bus.PublishIndex(ctx, s.js, rec); err != nil {
@@ -184,9 +263,8 @@ func (s *Service) Save(ctx context.Context, req *connect.Request[cortexv1.SaveRe
 	// loses links. Best-effort per target — the record is already queued, so a
 	// link publish failure must not fail the save (and re-saving would mint a new
 	// id), it is logged loudly instead.
-	for _, target := range req.Msg.GetLinkTo() {
-		target = strings.TrimSpace(target)
-		if target == "" || target == rec.ID {
+	for _, target := range linkTo {
+		if target == rec.ID {
 			continue
 		}
 		// PublishLink stamps tenant from context.
@@ -206,6 +284,10 @@ func (s *Service) UpdateMemory(ctx context.Context, req *connect.Request[cortexv
 	id := strings.TrimSpace(req.Msg.GetId())
 	if id == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New(errIDEmpty))
+	}
+	id, err := normalizeMemoryID("id", id)
+	if err != nil {
+		return nil, err
 	}
 	text := strings.TrimSpace(req.Msg.GetText())
 	if text == "" {
@@ -359,6 +441,10 @@ func (s *Service) SearchSimilar(ctx context.Context, req *connect.Request[cortex
 	if id == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New(errIDEmpty))
 	}
+	id, err := normalizeMemoryID("id", id)
+	if err != nil {
+		return nil, err
+	}
 
 	ts, err := s.tenantStore(ctx)
 	if err != nil {
@@ -405,10 +491,41 @@ func (s *Service) List(ctx context.Context, req *connect.Request[cortexv1.ListRe
 	return connect.NewResponse(out), nil
 }
 
+// GetMemory returns one memory by id from the caller's tenant. The lookup is
+// tenant-scoped, so another tenant's id is indistinguishable from an unknown one
+// (both NotFound). It deliberately does NOT reinforce: reading a known id is not
+// a search hit and must not inflate the usage signal ranking depends on.
+func (s *Service) GetMemory(ctx context.Context, req *connect.Request[cortexv1.GetMemoryRequest]) (*connect.Response[cortexv1.GetMemoryResponse], error) {
+	id := strings.TrimSpace(req.Msg.GetId())
+	if id == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New(errIDEmpty))
+	}
+	id, err := normalizeMemoryID("id", id)
+	if err != nil {
+		return nil, err
+	}
+	ts, err := s.tenantStore(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rec, ok, err := ts.Get(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("memory %s not found", id))
+	}
+	return connect.NewResponse(&cortexv1.GetMemoryResponse{Memory: recordToProto(rec)}), nil
+}
+
 func (s *Service) Delete(ctx context.Context, req *connect.Request[cortexv1.DeleteRequest]) (*connect.Response[cortexv1.DeleteResponse], error) {
 	id := strings.TrimSpace(req.Msg.GetId())
 	if id == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New(errIDEmpty))
+	}
+	id, err := normalizeMemoryID("id", id)
+	if err != nil {
+		return nil, err
 	}
 	ts, err := s.tenantStore(ctx)
 	if err != nil {
@@ -511,13 +628,18 @@ func (s *Service) Doctor(ctx context.Context, _ *connect.Request[cortexv1.Doctor
 }
 
 func (s *Service) Reindex(ctx context.Context, req *connect.Request[cortexv1.ReindexRequest]) (*connect.Response[cortexv1.ReindexResponse], error) {
+	release, err := s.gated(ctx, &s.reindexGate, false, "a reindex is already running for this account; try again when it finishes")
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	ns := resolveNamespace(req.Msg.GetNamespace(), s.cfg.DefaultNamespace)
 
 	ts, err := s.tenantStore(ctx)
 	if err != nil {
 		return nil, err
 	}
-	recs, err := ts.List(ctx, store.ListOpts{Namespace: ns, Limit: allLimit})
+	recs, err := ts.ListAll(ctx, ns)
 	if err != nil {
 		return nil, err
 	}
@@ -651,23 +773,16 @@ func (s *Service) IndexQueue(ctx context.Context, _ *connect.Request[cortexv1.In
 	}
 	out := &cortexv1.IndexQueueResponse{}
 
-	cons, err := s.js.Consumer(ctx, memory.StreamName, memory.ConsumerName)
-	if err != nil {
-		// No consumer yet means the worker has never started; report an empty
-		// queue rather than failing the probe.
-		if errors.Is(err, jetstream.ErrConsumerNotFound) {
-			return connect.NewResponse(out), nil
-		}
-		return nil, err
-	}
-	out.ConsumerPresent = true
-
-	info, err := cons.Info(ctx)
+	present, pending, inFlight, err := s.queueStats(ctx)
 	if err != nil {
 		return nil, err
 	}
-	out.Pending = int64(info.NumPending)
-	out.InFlight = int64(info.NumAckPending)
+	out.ConsumerPresent = present
+	if !present {
+		return connect.NewResponse(out), nil
+	}
+	out.Pending = pending
+	out.InFlight = inFlight
 
 	dls, err := bus.FetchDead(ctx, s.js)
 	if err != nil {
@@ -807,7 +922,7 @@ func (s *Service) Unlink(ctx context.Context, req *connect.Request[cortexv1.Unli
 }
 
 // publishEdge validates the two endpoint ids and publishes the edge mutation to
-// the link subject. It validates shape only (non-empty, distinct); endpoint
+// the link subject. It validates shape only (non-empty, distinct, UUID); endpoint
 // existence is intentionally not checked here, because the whole point of the
 // async path is to allow linking a memory that is not indexed yet.
 // PublishLink stamps the tenant from context.
@@ -816,6 +931,14 @@ func (s *Service) publishEdge(ctx context.Context, op memory.LinkOp, idA, idB st
 	idB = strings.TrimSpace(idB)
 	if idA == "" || idB == "" {
 		return connect.NewError(connect.CodeInvalidArgument, errors.New("id and target_id must not be empty"))
+	}
+	idA, err := normalizeMemoryID("id", idA)
+	if err != nil {
+		return err
+	}
+	idB, err = normalizeMemoryID("target_id", idB)
+	if err != nil {
+		return err
 	}
 	if idA == idB {
 		return connect.NewError(connect.CodeInvalidArgument, errors.New("cannot link a memory to itself"))
@@ -1078,15 +1201,31 @@ func assembleCluster(seeds []memory.Hit, limit int, get func(string) (memory.Rec
 // tenant from context — no req.Msg field can override it. A user importing a
 // backup can only import into their own tenant.
 func (s *Service) RestoreMemories(ctx context.Context, req *connect.Request[cortexv1.RestoreMemoriesRequest]) (*connect.Response[cortexv1.RestoreMemoriesResponse], error) {
-	queued := 0
-	for _, m := range req.Msg.GetMemories() {
+	// Validate and normalize every id first so a bad one fails the whole request
+	// with nothing queued (a partially restored dump is hard to reason about).
+	var recs []memory.Record
+	for i, m := range req.Msg.GetMemories() {
 		rec := protoToRecord(m)
 		rec.Text = strings.TrimSpace(rec.Text)
 		if rec.Text == "" {
 			continue // can't embed an empty memory
 		}
-		if rec.ID == "" {
+		var err error
+		if rec.ID = strings.TrimSpace(rec.ID); rec.ID == "" {
 			rec.ID = uuid.NewString()
+		} else if rec.ID, err = normalizeMemoryID(fmt.Sprintf("memories[%d].id", i), rec.ID); err != nil {
+			return nil, err
+		}
+		if rec.LinkedIDs, err = normalizeMemoryIDs(fmt.Sprintf("memories[%d].linked_ids", i), rec.LinkedIDs); err != nil {
+			return nil, err
+		}
+		// protoToRecord drops dup_candidates (the worker recomputes them), so
+		// validate the proto field directly; the value is not carried over.
+		if _, err = normalizeMemoryIDs(fmt.Sprintf("memories[%d].dup_candidates", i), m.GetDupCandidates()); err != nil {
+			return nil, err
+		}
+		if rec.NotDuplicateOf, err = normalizeMemoryIDs(fmt.Sprintf("memories[%d].not_duplicate_of", i), rec.NotDuplicateOf); err != nil {
+			return nil, err
 		}
 		if rec.Namespace == "" {
 			rec.Namespace = s.cfg.DefaultNamespace
@@ -1097,6 +1236,10 @@ func (s *Service) RestoreMemories(ctx context.Context, req *connect.Request[cort
 		if rec.CreatedAt.IsZero() {
 			rec.CreatedAt = time.Now().UTC()
 		}
+		recs = append(recs, rec)
+	}
+	queued := 0
+	for _, rec := range recs {
 		// PublishIndex stamps rec.UserID from context — the caller's tenant.
 		if err := bus.PublishIndex(ctx, s.js, rec); err != nil {
 			return nil, fmt.Errorf("restore publish %s: %w", rec.ID, err)
@@ -1182,6 +1325,14 @@ func (s *Service) linkEndpoints(ctx context.Context, ts *store.TenantStore, idA,
 	if idA == "" || idB == "" {
 		return memory.Record{}, memory.Record{}, connect.NewError(connect.CodeInvalidArgument, errors.New("id and target_id must not be empty"))
 	}
+	idA, err := normalizeMemoryID("id", idA)
+	if err != nil {
+		return memory.Record{}, memory.Record{}, err
+	}
+	idB, err = normalizeMemoryID("target_id", idB)
+	if err != nil {
+		return memory.Record{}, memory.Record{}, err
+	}
 	if idA == idB {
 		return memory.Record{}, memory.Record{}, connect.NewError(connect.CodeInvalidArgument, errors.New("cannot link a memory to itself"))
 	}
@@ -1251,6 +1402,11 @@ func (s *Service) MigrateMT(ctx context.Context, _ *connect.Request[cortexv1.Mig
 	// tenant their own JWT/api-key resolves to, so they actually see the data).
 	// Using the caller's id, not a fixed sentinel, is what makes the migrated
 	// memories visible to the admin afterwards.
+	release, err := s.gated(ctx, &s.adminGate, true, "another admin bulk operation (backup/restore/migrate) is already running; try again when it finishes")
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	caller, _ := identity.From(ctx)
 	targetTenant := caller.UserID
 

@@ -35,7 +35,8 @@ Full rationale in [`docs/DESIGN.md`](docs/DESIGN.md); background research in
   stack, so there's nothing to install separately, but Cortex **cannot save or
   search without it**, and you must pull an embedding model into it before use
   (`make model`, or `make bootstrap` which does it for you). Default model:
-  `qwen3-embedding:0.6b`. See [Embedding model](#embedding-model) to choose another.
+  `qwen3-embedding:0.6b`. Needs **Ollama >= 0.3.4** (batched `/api/embed`; the
+  bundled image is newer). See [Embedding model](#embedding-model) to choose another.
 
 > If you already run Ollama natively on the host (port 11434), remove the
 > `ollama` service from `docker-compose.yml` and point `OLLAMA_URL` at your host
@@ -154,7 +155,7 @@ The MCP client also stamps each save with the Claude Code session ID (read from
 > `http://localhost:8088`.
 
 Verify it's connected with `/mcp` inside Claude — you should see `cortex` with
-its tools: `cortex_memory_save`, `cortex_memory_search`, `cortex_memory_delete`,
+its tools: `cortex_memory_save`, `cortex_memory_search`, `cortex_memory_get`, `cortex_memory_delete`,
 `cortex_memory_link`, `cortex_memory_unlink`, `cortex_consolidate`,
 `cortex_review_candidates`, `cortex_dismiss_duplicate`, `cortex_session_summarize`,
 and `cortex_recall_session`.
@@ -449,6 +450,7 @@ The MCP server exposes these tools to Claude:
 |------|--------------|
 | `cortex_memory_save` | Queue a memory for indexing. Args: `text`, `namespace?`, `tags?`, `linkTo?` (ids to bidirectionally link this memory to — queued and applied once both ends are indexed, so targets need not exist yet), `supersedes?` (ids this memory replaces — the worker deletes them once this one is indexed). Returns its `id`. |
 | `cortex_memory_search` | **Hybrid** search (BM25 keyword + vector, blended by `SEARCH_ALPHA`, default 0.5) so exact tokens/codenames resolve, not just semantic matches. Args: `query`, `namespace?` (`*` = all namespaces), `limit?`, `tags?` (must have all), `excludeTags?`, `maxDistance?` (relevance cutoff). Each hit includes its `id`, any `linkedIds`, and any `dupCandidates` (flagged likely-duplicates — the output hints when consolidation would help). When **living memory** is enabled (`RERANK_WEIGHT`>0, off by default), search also re-orders results by recency-decayed usage and reinforces its top hit(s) — frequently-recalled memories float up over time. See [`docs/DESIGN.md`](docs/DESIGN.md#living-memory--decay--reinforcement-opt-in). |
+| `cortex_memory_get` | Fetch ONE memory by `id`, full text (follow `linkedIds` from search hits, or ids from `cortex_consolidate` / `cortex_review_candidates`). Same shape as a search hit; counts as delivered for session dedup so later searches stub it; does not reinforce. |
 | `cortex_memory_delete` | Delete a memory by `id` (get the `id` from a `cortex_memory_search` result first). |
 | `cortex_memory_link` | Explicitly link two related memories (bidirectional) so they connect in the graph. Args: `id`, `targetId` — from a prior search/recall, or an id just returned by `cortex_memory_save`. The edge is queued on the `memory.link` subject and applied once both endpoints are indexed (it waits for them), so out-of-order/just-saved ids link correctly. Claude is told to do this proactively when two memories are meaningfully related. |
 | `cortex_memory_unlink` | Remove the link between two memories (queued, applied asynchronously). Args: `id`, `targetId`. |
@@ -628,6 +630,7 @@ authenticate with `--token` / `CORTEX_AUTH_TOKEN`.
 |---------|--------------|
 | `cortex save "<text>" -n <ns> -t tag [-S <id>]` | Queue a memory (server publishes to NATS). `-S/--supersedes` lists ids this memory replaces (deleted after indexing). |
 | `cortex list -n '*' [-t tag] [-x tag]` | List memories newest-first; filter by namespace/tags. |
+| `cortex get <id> [--json]` | Show one memory by id (incl. linked ids); `--json` uses the `export` record shape. |
 | `cortex search "<q>" [-d 0.6] [-t tag] [-x tag]` | Semantic search with a relevance cutoff and tag filters. |
 | `cortex consolidate "<topic>" [-n '*'] [-l N] [-t tag] [-x tag]` | Print the cluster of memories about a topic + their manifest (read-only gather; the LLM does the merge). No tag flag = no tag filter (whole cluster). |
 | `cortex delete <id>` | Delete a memory by ID. |
@@ -725,6 +728,105 @@ cortex --server http://localhost:8088 migrate-mt --yes
   half-migrated store safely (re-import is upsert-by-id).
 - All migrated data lands in the bootstrap admin's tenant. Redistributing data
   across multiple users is out of scope; this is a single-tenant-to-MT bootstrap.
+
+## Request size limit
+
+The RPC handler rejects any request larger than `CORTEX_MAX_REQUEST_BYTES`
+(default `268435456` = 256 MiB) with `resource_exhausted`. Restore uploads carry
+a whole backup (bytes travel base64-encoded in the JSON the web UI sends, ~+33%),
+so if a restore of a very large store fails with that error, raise it on the
+server, e.g. `CORTEX_MAX_REQUEST_BYTES=1073741824`. Self-restore additionally caps
+the backup payload at 100 MiB. See the trust model in `docs/DESIGN.md`.
+
+## Observability (metrics + health)
+
+All of these endpoints are **unauthenticated**; keep them off the public internet. `/metrics` is served only on a dedicated port, never on the API port.
+
+| port | process | serves |
+|------|---------|--------|
+| 8080 (`CORTEX_LISTEN`) | server | the API + UI, plus `/healthz` and `/readyz` |
+| 9090 (`API_METRICS_ADDR`) | server | `/metrics`, `/healthz`, `/readyz` |
+| 9090 (`WORKER_METRICS_ADDR`) | worker | `/metrics`, `/healthz`, `/readyz` |
+
+| endpoint | purpose |
+|----------|---------|
+| `GET /healthz` | Liveness: `200 ok` while the process serves HTTP. Checks no dependencies. |
+| `GET /readyz` | Readiness: probes NATS, Weaviate and Ollama; `200` if all up, else `503`. Body is `{"nats":"ok","weaviate":"ok","ollama":"fail"}` (no error text). The result is cached ~1s and concurrent probes are shared, so request floods do not fan out to the backends. The worker adds its JetStream pull health. |
+| `GET /metrics` | Prometheus exposition (dedicated registry + Go/process collectors). |
+
+Env vars: `API_METRICS_ADDR` (server) and `WORKER_METRICS_ADDR` (worker), both defaulting to `:9090`; set to an empty string to disable the listener (no metrics are collected then). The ports are not published to the host in `docker-compose.yml`. A failure to bind is logged and never stops the service.
+
+### Traefik / Prometheus
+
+Traefik needs no change: the example router targets only port 8080 (`loadbalancer.server.port: '8080'`), so `/metrics` on `:9090` is never publicly routed. Scrape over the compose network instead. A plain compose DNS name resolves to all replicas of a scaled `worker` only through `dns_sd_configs` (type `A`), so use that for the worker:
+
+```yaml
+scrape_configs:
+  - job_name: cortex-server
+    static_configs:
+      - targets: ['server:9090']
+  - job_name: cortex-worker
+    dns_sd_configs:
+      - names: ['worker']   # one target per replica (--scale worker=N)
+        type: A
+        port: 9090
+```
+
+The runtime image is distroless (no wget/curl), so the compose healthcheck runs `cortex-server healthcheck`, which GETs the server's own `/readyz` (exit 0 = ready).
+
+| metric | where | notes |
+|--------|-------|-------|
+| `cortex_rpc_requests_total{procedure,code}` | server | `code` is `ok` or a Connect code |
+| `cortex_rpc_duration_seconds{procedure}` | server | histogram |
+| `cortex_index_queue_pending` | server | JetStream index consumer backlog, read at scrape time |
+| `cortex_dead_letters` | server | dead-lettered messages held in the stream |
+| `cortex_worker_messages_total{subject_kind,outcome}` | worker | kind `index\|summary\|link`; outcome `ack\|retry\|dead\|term\|stale` (`stale` = acked and skipped because a newer version of that memory was already stored) |
+| `cortex_embed_duration_seconds` / `cortex_embed_errors_total` | worker | Ollama embed latency (retries included) / failures |
+| `cortex_index_duration_seconds` | worker | full index-message handling |
+| `cortex_lock_infra_errors_total` / `cortex_lock_wait_seconds` | worker | lock-bucket (NATS KV) errors other than contention (each is repaired and retried) / time to acquire one per-id lock |
+| `cortex_worker_fetch_errors_total` | worker | failed JetStream pulls. Worker `/readyz` fails once pulls have failed continuously for 30s. A wiped stream is re-ensured (with its consumers) automatically; a consumer deleted while the stream still holds messages is NOT recreated (see "Scaling the worker") |
+| `cortex_worker_hold_timeouts_total` | worker | critical sections cut off by the lock hold deadline (the message is retried) |
+
+## Scaling the worker
+
+Workers scale horizontally: run as many replicas as the embedding backend can feed.
+
+```bash
+docker compose up -d --scale worker=3     # or `deploy: {replicas: 3}` in the compose file
+```
+
+`WORKER_METRICS_ADDR` is per container, so replicas do not clash (the port is not
+published). `WORKER_CONCURRENCY` (default `4`) bounds in-flight messages per
+consumer within one process. Correctness does not depend on a single worker: each
+memory's read-modify-write runs under a per-id lock in a NATS KV bucket
+(`cortex_locks`, 60s TTL), index messages carry their stream sequence so an
+older edit can never overwrite a newer one (even across a recreated stream), and the index path only writes the
+fields it owns (never links, reinforcement counters or not-duplicate decisions).
+Details and the field-ownership table: [docs/DESIGN.md](docs/DESIGN.md#horizontal-scaling-worker-replicas).
+
+Deleted consumer: the `MEMORY` stream keeps every message ever published, so a
+recreated durable consumer with the default delivery policy would replay the whole
+history (re-embedding every memory, re-running every link). If the `indexer` or
+`linker` consumer is deleted while the stream still holds messages, the worker does
+NOT recreate it: it logs an error, counts `cortex_worker_fetch_errors_total` and goes
+unready on `/readyz`. Recreate it deliberately with the worker's settings (explicit
+ack, AckWait 30s, `MaxDeliver` 10 for `indexer` / 50 for `linker`, filter subjects
+`memory.index`+`memory.summary` / `memory.link`) and an explicit start, either
+new-only or from the first unprocessed stream sequence; then the worker resumes
+(a wiped stream, with nothing to replay, is recovered automatically).
+
+Upgrade notes: a `cortex_locks` bucket created by a pre-release build with memory
+storage must be deleted once (`nats kv del cortex_locks`), because JetStream cannot
+change a bucket's storage type and the worker would fail to start. Objects written
+before `indexedStream` existed carry no stream identity; if the `MEMORY` stream is
+recreated before they are next edited, a message with a low sequence can be skipped
+as stale for such an object (the guard then compares sequences as before); editing
+the memory (or re-importing it) once the stream has caught up past the stored
+sequence, or deleting it first, stamps the identity and clears it.
+
+Caveat: multiple **server** replicas can lose reinforcement increments
+(`accessCount`, a ranking signal only) because the server read-modify-writes it
+without a lock.
 
 ## Embedding model
 

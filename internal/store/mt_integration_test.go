@@ -90,10 +90,13 @@ func TestMultiTenantIsolation(t *testing.T) {
 	require.NoError(t, tsB.ReplaceChunks(ctx, recB, []ChunkVec{{Index: 0, Text: recB.Text, Vector: vec}}), "chunk B")
 
 	// Allow Weaviate to index.
-	require.Eventually(t, func() bool {
-		cA, errA := tsA.Count(ctx, "")
-		cB, errB := tsB.Count(ctx, "")
-		return errA == nil && errB == nil && cA == 1 && cB == 1
+	require.EventuallyWithT(t, func(c *assert.CollectT) {
+		cA, err := tsA.Count(ctx, "")
+		require.NoError(c, err)
+		cB, err := tsB.Count(ctx, "")
+		require.NoError(c, err)
+		assert.Equal(c, 1, cA)
+		assert.Equal(c, 1, cB)
 	}, 15*time.Second, 200*time.Millisecond, "both tenants' memories must become queryable")
 
 	t.Run("A's memory is invisible to B's Search (chunk path)", func(t *testing.T) {
@@ -158,17 +161,19 @@ func TestMultiTenantIsolation(t *testing.T) {
 		assert.Equal(t, 1, mem, "B's DeleteNamespace must delete exactly B's 1 memory")
 
 		// A's memory must still be reachable after B's delete.
-		require.Eventually(t, func() bool {
+		require.EventuallyWithT(t, func(c *assert.CollectT) {
 			cA, err := tsA.Count(ctx, "")
-			return err == nil && cA == 1
+			require.NoError(c, err)
+			assert.Equal(c, 1, cA)
 		}, 10*time.Second, 200*time.Millisecond, "A's memory must survive B's DeleteNamespace")
 
 		// Restore B for subsequent subtests.
 		require.NoError(t, tsB.Upsert(ctx, recB, vec), "restore B")
 		require.NoError(t, tsB.ReplaceChunks(ctx, recB, []ChunkVec{{Index: 0, Text: recB.Text, Vector: vec}}), "restore B chunk")
-		require.Eventually(t, func() bool {
-			c, err := tsB.Count(ctx, "")
-			return err == nil && c == 1
+		require.EventuallyWithT(t, func(c *assert.CollectT) {
+			n, err := tsB.Count(ctx, "")
+			require.NoError(c, err)
+			assert.Equal(c, 1, n)
 		}, 10*time.Second, 200*time.Millisecond, "B restore must settle")
 	})
 
@@ -246,9 +251,10 @@ func TestMultiTenantFlagOff(t *testing.T) {
 	require.NoError(t, ts.Upsert(ctx, memory.Record{ID: id1, Text: "first memory", Namespace: "ns", CreatedAt: now}, vec))
 	require.NoError(t, tsNamed.Upsert(ctx, memory.Record{ID: id2, Text: "second memory", Namespace: "ns", CreatedAt: now}, vec))
 
-	require.Eventually(t, func() bool {
-		c, err := ts.Count(ctx, "")
-		return err == nil && c == 2
+	require.EventuallyWithT(t, func(c *assert.CollectT) {
+		n, err := ts.Count(ctx, "")
+		require.NoError(c, err)
+		assert.Equal(c, 2, n)
 	}, 10*time.Second, 200*time.Millisecond, "both memories must become queryable in MT-off mode")
 
 	t.Run("MT off: both memories are visible from any Tenant handle", func(t *testing.T) {

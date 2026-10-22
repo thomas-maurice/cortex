@@ -9,7 +9,9 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -19,11 +21,13 @@ import (
 
 	"connectrpc.com/connect"
 	"connectrpc.com/grpcreflect"
+	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/thomas-maurice/cortex/gen/cortex/v1/cortexv1connect"
 	"github.com/thomas-maurice/cortex/internal/bus"
 	"github.com/thomas-maurice/cortex/internal/embed"
 	"github.com/thomas-maurice/cortex/internal/identity"
+	"github.com/thomas-maurice/cortex/internal/obs"
 	"github.com/thomas-maurice/cortex/internal/rpc"
 	"github.com/thomas-maurice/cortex/internal/store"
 	"github.com/thomas-maurice/cortex/ui"
@@ -102,6 +106,38 @@ func envBool(key string, def bool) bool {
 	return b
 }
 
+// metricsAddrFromEnv is the dedicated metrics listener address:
+// API_METRICS_ADDR, default :9090, an explicitly empty value disables it.
+// /metrics is unauthenticated and is never served on the API port.
+func metricsAddrFromEnv() string {
+	if v, ok := os.LookupEnv("API_METRICS_ADDR"); ok {
+		return v
+	}
+	return ":9090"
+}
+
+// defaultMaxRequestBytes bounds one RPC request body. Restore uploads carry a
+// whole backup, so it is generous; it exists to stop unbounded payloads.
+const defaultMaxRequestBytes = 256 << 20
+
+// maxRequestBytesFromEnv returns CORTEX_MAX_REQUEST_BYTES (a positive byte
+// count), falling back to the 256 MiB default when unset or invalid.
+func maxRequestBytesFromEnv() int {
+	if n := envInt("CORTEX_MAX_REQUEST_BYTES", defaultMaxRequestBytes); n > 0 {
+		return n
+	}
+	return defaultMaxRequestBytes
+}
+
+// rpcHandlerOptions are the Connect handler options: the interceptor chain plus
+// the server-wide request size cap.
+func rpcHandlerOptions(maxBytes int, interceptors []connect.Interceptor) []connect.HandlerOption {
+	return []connect.HandlerOption{
+		connect.WithInterceptors(interceptors...),
+		connect.WithReadMaxBytes(maxBytes),
+	}
+}
+
 // envDuration reads a Go duration env var (e.g. "24h", "30m"), returning def
 // when unset or unparseable. An empty string or "0" effectively disables a
 // feature guarded by duration > 0.
@@ -117,7 +153,37 @@ func envDuration(key string, def time.Duration) time.Duration {
 	return d
 }
 
+// healthcheck probes this server's own /readyz and returns nil when it answers
+// 200. The runtime image is distroless (no wget/curl), so the compose healthcheck
+// runs `cortex-server healthcheck` instead.
+func healthcheck(listen string) error {
+	host, port, err := net.SplitHostPort(listen)
+	if err != nil {
+		return fmt.Errorf("parse CORTEX_LISTEN %q: %w", listen, err)
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = "127.0.0.1"
+	}
+	client := &http.Client{Timeout: obs.ReadyTimeout + 2*time.Second}
+	resp, err := client.Get("http://" + net.JoinHostPort(host, port) + "/readyz")
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("readyz: status %d", resp.StatusCode)
+	}
+	return nil
+}
+
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
+		if err := healthcheck(env("CORTEX_LISTEN", ":8080")); err != nil {
+			fmt.Fprintln(os.Stderr, "unhealthy:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
 	var (
@@ -160,6 +226,9 @@ func main() {
 		// goroutine; backupKeep == 0 disables pruning after each backup.
 		backupInterval = envDuration("BACKUP_INTERVAL", 0)
 		backupKeep     = envInt("BACKUP_KEEP", 7)
+		// metricsAddr is the dedicated listener for /metrics (+ /healthz, /readyz).
+		// Empty disables metrics entirely.
+		metricsAddr = metricsAddrFromEnv()
 	)
 
 	// Login brute-force / DoS protection for /auth/login. Defaults are conservative
@@ -233,7 +302,8 @@ func main() {
 		bootstrapMultiTenant(ctx, log, st, bootstrapUser, bootstrapPass, bootstrapKey)
 	}
 
-	svc := rpc.NewService(nc, js, st, embed.New(ollamaURL, ollamaModel), rpc.Config{
+	embedder := embed.New(ollamaURL, ollamaModel)
+	svc := rpc.NewService(nc, js, st, embedder, rpc.Config{
 		DefaultNamespace:   defaultNS,
 		Source:             source,
 		Version:            version,
@@ -301,10 +371,22 @@ func main() {
 		log.Warn("CORTEX_UI_PASSWORD is not set — the web UI login is disabled")
 	}
 
+	// Metrics interceptor goes outermost so auth-rejected calls are counted too.
+	interceptors := []connect.Interceptor{rpc.ServerLogInterceptor(log), rpc.ServerAuthInterceptor(auth)}
+	var reg *prometheus.Registry
+	if metricsAddr != "" {
+		reg = obs.NewRegistry()
+		reg.MustRegister(svc.QueueCollector())
+		interceptors = append([]connect.Interceptor{rpc.MetricsInterceptor(reg)}, interceptors...)
+	}
+
 	mux := http.NewServeMux()
-	path, handler := cortexv1connect.NewMemoryServiceHandler(svc,
-		connect.WithInterceptors(rpc.ServerLogInterceptor(log), rpc.ServerAuthInterceptor(auth)))
+	path, handler := cortexv1connect.NewMemoryServiceHandler(svc, rpcHandlerOptions(maxRequestBytesFromEnv(), interceptors)...)
 	mux.Handle(path, handler)
+	// Unauthenticated ops endpoints (the Connect auth interceptor above only wraps
+	// the RPC handler). Mounted before the "/" UI catch-all.
+	checks := obs.DependencyChecks(nc, st, embedder)
+	obs.Mount(mux, nil, checks) // never /metrics on the API port
 	// gRPC server reflection so tools like grpcurl, Bruno, and Postman can
 	// introspect and call the API without a local .proto. Reflection exposes only
 	// the schema (method + message names, already public in proto/); actual RPC
@@ -338,6 +420,15 @@ func main() {
 			log.Error("http server shutdown", "err", err)
 		}
 	}()
+
+	if reg != nil {
+		mmux := http.NewServeMux()
+		obs.Mount(mmux, reg, checks)
+		// Not fatal: metrics must never take the API down.
+		if _, err := obs.Serve(ctx, log, "metrics", metricsAddr, mmux); err != nil {
+			log.Error("metrics http listen", "addr", metricsAddr, "err", err)
+		}
+	}
 
 	log.Info("cortex server listening", "addr", listen, "namespace", defaultNS, "model", ollamaModel, "auth", enabled)
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {

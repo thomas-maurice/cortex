@@ -88,6 +88,11 @@ func (s *Service) BackupAll(ctx context.Context, _ *connect.Request[cortexv1.Bac
 	if err := requireAdmin(ctx); err != nil {
 		return nil, err
 	}
+	release, err := s.gated(ctx, &s.adminGate, true, "another admin bulk operation (backup/restore/migrate) is already running; try again when it finishes")
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	resp, err := s.runFullBackup(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("backup: %w", err)
@@ -223,6 +228,12 @@ func (s *Service) RestoreAll(ctx context.Context, req *connect.Request[cortexv1.
 		return nil, err
 	}
 
+	release, err := s.gated(ctx, &s.adminGate, true, "another admin bulk operation (backup/restore/migrate) is already running; try again when it finishes")
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
 	// Exactly one source of name/data/s3_key must be set.
 	name := req.Msg.GetName()
 	inData := req.Msg.GetData()
@@ -354,6 +365,11 @@ func (s *Service) RestoreAll(ctx context.Context, req *connect.Request[cortexv1.
 // disk write). It is NOT admin-gated — any authenticated user may export their
 // own data. In non-MT mode the single pseudo-tenant "" is backed up.
 func (s *Service) BackupSelf(ctx context.Context, _ *connect.Request[cortexv1.BackupSelfRequest]) (*connect.Response[cortexv1.BackupSelfResponse], error) {
+	release, err := s.gated(ctx, &s.backupGate, false, "a backup is already running for this account; try again when it finishes")
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	ts, err := s.tenantStore(ctx)
 	if err != nil {
 		return nil, err
@@ -364,11 +380,11 @@ func (s *Service) BackupSelf(ctx context.Context, _ *connect.Request[cortexv1.Ba
 	callerID, _ := identity.From(ctx)
 	tenant := callerID.UserID
 
-	recs, err := ts.List(ctx, store.ListOpts{Limit: allLimit})
+	recs, err := ts.ListAll(ctx, "")
 	if err != nil {
 		return nil, fmt.Errorf("list memories: %w", err)
 	}
-	sums, err := ts.ListSummaries(ctx, store.SummaryListOpts{Limit: allLimit})
+	sums, err := ts.ListAllSummaries(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list summaries: %w", err)
 	}
@@ -406,6 +422,11 @@ func (s *Service) BackupSelf(ctx context.Context, _ *connect.Request[cortexv1.Ba
 // using the caller's own context, so bus.PublishIndex/PublishSummary stamp the
 // caller's UserID. A user can never write into another tenant's store.
 func (s *Service) RestoreSelf(ctx context.Context, req *connect.Request[cortexv1.RestoreSelfRequest]) (*connect.Response[cortexv1.RestoreSelfResponse], error) {
+	release, err := s.gated(ctx, &s.restoreGate, false, "a restore is already running for this account; try again when it finishes")
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	data := req.Msg.GetData()
 	if len(data) == 0 {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("data must not be empty"))
@@ -574,11 +595,11 @@ func (s *Service) runFullBackup(ctx context.Context) (*cortexv1.BackupAllRespons
 	totalSummaries := 0
 	for _, tenant := range tenants {
 		ts := s.store.Tenant(tenant)
-		recs, err := ts.List(ctx, store.ListOpts{Limit: allLimit})
+		recs, err := ts.ListAll(ctx, "")
 		if err != nil {
 			return nil, fmt.Errorf("list memories for tenant %q: %w", tenant, err)
 		}
-		sums, err := ts.ListSummaries(ctx, store.SummaryListOpts{Limit: allLimit})
+		sums, err := ts.ListAllSummaries(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("list summaries for tenant %q: %w", tenant, err)
 		}
