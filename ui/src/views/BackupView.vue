@@ -288,10 +288,10 @@
 </template>
 
 <script setup>
+import { timestampDate, timestampFromDate } from '@bufbuild/protobuf/wkt'
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { toast } from 'vue-sonner'
-import { Timestamp } from '@bufbuild/protobuf'
 import { Code, ConnectError } from '@connectrpc/connect'
 import { memoryClient } from '@/utils/connect'
 import { useAuthStore } from '@/stores/auth'
@@ -381,7 +381,7 @@ function handleError(e) {
 function rfc3339(ts) {
   if (!ts) return ''
   try {
-    return ts.toDate().toISOString().replace(/\.\d{3}Z$/, 'Z')
+    return timestampDate(ts).toISOString().replace(/\.\d{3}Z$/, 'Z')
   } catch {
     return ''
   }
@@ -670,7 +670,7 @@ async function doImport() {
       }
       if (r.createdAt) {
         const d = new Date(r.createdAt)
-        if (!isNaN(d.getTime())) m.createdAt = Timestamp.fromDate(d)
+        if (!isNaN(d.getTime())) m.createdAt = timestampFromDate(d)
       }
       mems.push(m)
     }

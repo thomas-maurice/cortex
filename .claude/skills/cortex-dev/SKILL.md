@@ -101,8 +101,12 @@ make proto-ui      # = buf generate --template buf.gen.ui.yaml → regenerate UI
 
 Both `make proto` and `make proto-ui` must be run **from the repo root** (the
 `buf.gen.*.yaml` files live there; `make proto-ui` needs `ui/node_modules`, i.e.
-`cd ui && npm install` once). New RPCs land in both
-`gen/cortex/v1/cortexv1connect/` (Go) and `ui/src/gen/cortex/v1/` (TS).
+`cd ui && npm ci` once). New RPCs land in both
+`gen/cortex/v1/cortexv1connect/` (Go) and `ui/src/gen/cortex/v1/cortex_pb.ts` (TS;
+protobuf-es v2 emits messages AND the service descriptor from `protoc-gen-es` — no
+`protoc-gen-connect-es`/`*_connect.ts`; the client is `createClient` in `ui/src/utils/connect.js`).
+UI gotcha: v2 Timestamps are plain objects — use `timestampDate`/`timestampFromDate` from
+`@bufbuild/protobuf/wkt`, not `.toDate()`. Type-check TS/gen with `cd ui && npx tsc --noEmit -p .`.
 
 UI only: `cd ui && npm run build` (prod build) or `npm run dev` (hot reload on
 :5173, proxying RPC to :8080 — point that at a running `go run ./cmd/server`).

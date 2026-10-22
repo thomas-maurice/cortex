@@ -82,6 +82,7 @@
 </template>
 
 <script setup>
+import { timestampDate } from '@bufbuild/protobuf/wkt'
 import { ref, reactive, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { toast } from 'vue-sonner'
@@ -118,7 +119,7 @@ let polling = false
 
 function formatDate(ts) {
   try {
-    return ts.toDate().toLocaleString()
+    return timestampDate(ts).toLocaleString()
   } catch {
     return ''
   }

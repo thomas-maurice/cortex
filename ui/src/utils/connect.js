@@ -1,6 +1,6 @@
-import { createPromiseClient, ConnectError, Code } from '@connectrpc/connect'
+import { createClient, ConnectError, Code } from '@connectrpc/connect'
 import { createConnectTransport } from '@connectrpc/connect-web'
-import { MemoryService } from '@/gen/cortex/v1/cortex_connect'
+import { MemoryService } from '@/gen/cortex/v1/cortex_pb'
 import { useAuthStore } from '@/stores/auth'
 import router from '@/router'
 
@@ -42,4 +42,4 @@ const transport = createConnectTransport({
   ],
 })
 
-export const memoryClient = createPromiseClient(MemoryService, transport)
+export const memoryClient = createClient(MemoryService, transport)

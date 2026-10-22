@@ -112,6 +112,7 @@
 </template>
 
 <script setup>
+import { timestampDate } from '@bufbuild/protobuf/wkt'
 import { ref, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { Code, ConnectError } from '@connectrpc/connect'
@@ -161,7 +162,7 @@ const draft = ref({ text: '', namespace: '', tags: '' })
 
 function formatDate(ts) {
   try {
-    return ts.toDate().toLocaleString()
+    return timestampDate(ts).toLocaleString()
   } catch {
     return ''
   }

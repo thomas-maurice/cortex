@@ -73,6 +73,7 @@
 </template>
 
 <script setup>
+import { timestampDate } from '@bufbuild/protobuf/wkt'
 import { computed, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { Code, ConnectError } from '@connectrpc/connect'
@@ -112,7 +113,7 @@ watch(inspectorMemory, () => { editing.value = false })
 
 function fmtDate(ts) {
   try {
-    return ts.toDate().toLocaleString()
+    return timestampDate(ts).toLocaleString()
   } catch {
     return ''
   }

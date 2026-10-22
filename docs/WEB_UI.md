@@ -18,13 +18,14 @@ browser ──HTTP/JSON──▶ cortex-server (:8080)
   and falls back to `index.html` for unknown paths so vue-router history-mode
   deep links (e.g. `/graph`) resolve.
 - The browser talks to the **same** Connect API the MCP server and CLI use, via
-  typed Connect-Web clients generated from the proto (`ui/src/utils/connect.js`).
+  typed Connect-Web clients (`createClient` from `@connectrpc/connect` v2) driven by the
+  service descriptor `protoc-gen-es` generates from the proto (`ui/src/utils/connect.js`).
 - One origin, no CORS: in production the SPA is served by the server; in dev the
   vite dev server proxies `/cortex.v1` and `/auth` to `:8080`.
 
 ### Stack
 
-Vue 3 + vue-router + pinia (+ persistedstate) + Tailwind CSS v4 + shadcn-vue
+Vue 3 + vue-router 5 + pinia 4 (+ persistedstate 4, `pick` option) + vite 8 + Tailwind CSS v4 + shadcn-vue
 (reka-ui primitives, generated into `ui/src/components/ui/`) + lucide icons +
 `@connectrpc/connect-web` + vis-network (graph/explore). Light/dark theme
 toggle in the navbar (persisted, defaults to the OS preference).
@@ -33,14 +34,14 @@ toggle in the navbar (persisted, defaults to the OS preference).
 
 | Step | Command | What it does |
 |------|---------|--------------|
-| TS clients | `make proto-ui` | `buf generate --template buf.gen.ui.yaml` → `ui/src/gen` |
+| TS types + service descriptor | `make proto-ui` | `buf generate --template buf.gen.ui.yaml` → `ui/src/gen/cortex/v1/cortex_pb.ts` (protobuf-es v2 `protoc-gen-es` only; v2 has no separate `protoc-gen-connect-es` plugin and no `*_connect.ts`) |
 | UI build | `make ui` | `npm install && vite build` → `ui/dist` |
 | Server | `make build` (deps on `ui`) / `make image` | `go build` embeds `ui/dist` |
 
 - `ui/dist` is git-ignored except a committed `.gitkeep`, so `go build` always
   compiles even on a fresh checkout (it just serves "web UI not built" until you
   build the assets).
-- The Dockerfile has a `node:22` stage that builds `ui/dist` and overlays it into
+- The Dockerfile has a `node` stage that builds `ui/dist` and overlays it into
   the Go build stage, so `make image` is self-contained.
 - CI (`.github/workflows/test.yml`) builds the UI before `go test` because the
   embed test needs a real `index.html`.
@@ -162,7 +163,13 @@ go run ./cmd/server          # listens on :8080
 cd ui && npm run dev         # http://localhost:5173, proxies to :8080
 ```
 
-After changing the proto: `make proto` (Go) and `make proto-ui` (TS clients).
+After changing the proto: `make proto` (Go) and `make proto-ui` (TS types + service
+descriptor). Needs `ui/node_modules` (`cd ui && npm ci`). Node >= 22.12 is required (vite 8).
+
+protobuf-es v2 notes: messages are plain objects (no classes) — pass object literals to
+RPCs; build with `create(Schema, ...)` only if you need a full message. Timestamps are
+plain `{seconds, nanos}`: use `timestampDate` / `timestampFromDate` from
+`@bufbuild/protobuf/wkt` (there is no `ts.toDate()`). `int64` fields are `bigint`.
 
 ## File map
 
@@ -170,7 +177,7 @@ After changing the proto: `make proto` (Go) and `make proto-ui` (TS clients).
 ui/
   embed.go                 go:embed of dist + SPA handler
   vite.config.js           build + dev proxy
-  buf.gen.ui.yaml          (repo root) TS Connect client generation
+  buf.gen.ui.yaml          (repo root) protoc-gen-es (v2) TS generation
   src/
     main.js                pinia, router, Tailwind/theme css
     lib/theme.js           light/dark toggle (persisted)
@@ -179,7 +186,8 @@ ui/
     App.vue                navbar + router-view
     router/index.js        routes + auth guard
     stores/auth.js         JWT store (persisted, expiry-checked)
-    utils/connect.js       typed Connect client (attaches the JWT)
+    gen/cortex/v1/cortex_pb.ts  GENERATED messages + MemoryService descriptor
+    utils/connect.js       typed Connect client (createClient; attaches the JWT)
     utils/api.js           /auth/login client
     views/                 LoginView, MemoriesView, GraphView, ExploreView,
                            SessionsView, NamespacesView, PreferencesView,

@@ -1,3 +1,5 @@
+import { timestampDate } from '@bufbuild/protobuf/wkt'
+
 // Shared helpers for rendering memory text in compact UI surfaces.
 
 export function truncate(s, n = 40) {
@@ -8,7 +10,7 @@ export function truncate(s, n = 40) {
 
 export function formatTimestamp(ts) {
   try {
-    return ts.toDate().toLocaleString()
+    return timestampDate(ts).toLocaleString()
   } catch {
     return ''
   }

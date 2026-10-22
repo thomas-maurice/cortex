@@ -63,6 +63,6 @@ export const useAuthStore = defineStore('auth', {
 
   persist: {
     storage: localStorage,
-    paths: ['token', 'username', 'role', 'isAdmin', 'loggedIn', 'multiTenant'],
+    pick: ['token', 'username', 'role', 'isAdmin', 'loggedIn', 'multiTenant'],
   },
 })
