@@ -256,7 +256,7 @@ func (s *Service) Save(ctx context.Context, req *connect.Request[cortexv1.SaveRe
 		ID:             uuid.NewString(),
 		Text:           text,
 		Namespace:      ns,
-		Tags:           req.Msg.GetTags(),
+		Tags:           memory.NormalizeTags(req.Msg.GetTags()),
 		Source:         src,
 		CreatedAt:      time.Now().UTC(),
 		ConversationID: req.Msg.GetConversationId(),
@@ -317,7 +317,11 @@ func (s *Service) UpdateMemory(ctx context.Context, req *connect.Request[cortexv
 
 	rec.Text = text
 	if req.Msg.GetReplaceTags() {
-		rec.Tags = req.Msg.GetTags()
+		rec.Tags = memory.NormalizeTags(req.Msg.GetTags())
+	} else {
+		// Text/namespace-only edit: the worker keeps whatever tags are stored when
+		// it commits, so a tag rename that lands while this is queued is not undone.
+		rec.KeepTags = true
 	}
 	if ns := strings.TrimSpace(req.Msg.GetNamespace()); ns != "" {
 		rec.Namespace = ns
@@ -700,6 +704,7 @@ func (s *Service) Reindex(ctx context.Context, req *connect.Request[cortexv1.Rei
 	// re-stamps provenance. PublishIndex stamps the tenant from context so the
 	// worker's store ops land in the same tenant.
 	for _, r := range recs {
+		r.KeepTags = true // a rename/delete landing mid-reindex must not be undone by this snapshot
 		if err := bus.PublishIndex(ctx, s.js, r); err != nil {
 			return nil, fmt.Errorf("republish %s: %w", r.ID, err)
 		}
@@ -1388,9 +1393,21 @@ func guardPreferenceTag(confirm bool, tags ...string) error {
 		return nil
 	}
 	for _, t := range tags {
-		if strings.EqualFold(t, preferenceTag) {
+		if strings.EqualFold(strings.TrimSpace(t), preferenceTag) {
 			return connect.NewError(connect.CodeFailedPrecondition, errors.New(`the "preference" tag drives the cortex-prefs session hook; set confirm_preference (CLI: --yes / UI: confirm) to change it`))
 		}
+	}
+	return nil
+}
+
+// rejectDuringBulkRewrite refuses a tag rename/delete while a reindex or restore
+// is republishing this tenant's memories (or an admin restore/migrate is running
+// server-wide): those queue point-in-time snapshots of every memory, the widest
+// window in which a queued message could carry pre-rename tags.
+func (s *Service) rejectDuringBulkRewrite(ctx context.Context) error {
+	key := gateKey(ctx)
+	if s.reindexGate.Held(key) || s.restoreGate.Held(key) || s.adminGate.Held(adminGateKey) {
+		return connect.NewError(connect.CodeFailedPrecondition, errors.New("a reindex or restore is in progress; its queued snapshots would undo the tag change. Wait for it to finish (watch the Indexing queue) and retry"))
 	}
 	return nil
 }
@@ -1412,7 +1429,9 @@ func partialErr(op string, changed int, err error) error {
 // merges. Each memory is rewritten under its per-memory lock so a concurrent
 // index commit cannot lose either change.
 func (s *Service) RenameTag(ctx context.Context, req *connect.Request[cortexv1.RenameTagRequest]) (*connect.Response[cortexv1.RenameTagResponse], error) {
-	from := strings.TrimSpace(req.Msg.GetFrom())
+	// from is matched EXACTLY (tags are stored as written, so "k8s " is not
+	// "k8s"); only the new name is trimmed, like every tag write.
+	from := req.Msg.GetFrom()
 	to := strings.TrimSpace(req.Msg.GetTo())
 	ns := strings.TrimSpace(req.Msg.GetNamespace())
 	if from == "" || to == "" {
@@ -1425,6 +1444,9 @@ func (s *Service) RenameTag(ctx context.Context, req *connect.Request[cortexv1.R
 		return connect.NewResponse(&cortexv1.RenameTagResponse{}), nil
 	}
 	if err := guardPreferenceTag(req.Msg.GetConfirmPreference(), from, to); err != nil {
+		return nil, err
+	}
+	if err := s.rejectDuringBulkRewrite(ctx); err != nil {
 		return nil, err
 	}
 	release, err := s.gated(ctx, &s.tagGate, false, "a tag rename/delete is already running for this account; try again when it finishes")
@@ -1450,12 +1472,15 @@ func (s *Service) RenameTag(ctx context.Context, req *connect.Request[cortexv1.R
 // DeleteTag removes a tag from the caller's memories (and chunks); the memories
 // are kept. Same locking and gating as RenameTag.
 func (s *Service) DeleteTag(ctx context.Context, req *connect.Request[cortexv1.DeleteTagRequest]) (*connect.Response[cortexv1.DeleteTagResponse], error) {
-	tag := strings.TrimSpace(req.Msg.GetTag())
+	tag := req.Msg.GetTag() // exact match, see RenameTag
 	ns := strings.TrimSpace(req.Msg.GetNamespace())
 	if tag == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("tag must not be empty"))
 	}
 	if err := guardPreferenceTag(req.Msg.GetConfirmPreference(), tag); err != nil {
+		return nil, err
+	}
+	if err := s.rejectDuringBulkRewrite(ctx); err != nil {
 		return nil, err
 	}
 	release, err := s.gated(ctx, &s.tagGate, false, "a tag rename/delete is already running for this account; try again when it finishes")

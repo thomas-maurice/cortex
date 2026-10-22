@@ -197,6 +197,11 @@ port as the Connect API; open the server's address in a browser. Views:
   (removes the tag, never the memories). Click a tag to open Memories filtered by
   it. Metadata-only: memories and their search chunks are re-tagged in place, no
   re-embed. The reserved `preference` tag needs an explicit confirmation.
+  Tags are matched exactly (case- and whitespace-sensitive) and canonicalised on
+  write (trimmed, deduplicated). Tags applied automatically on save
+  (`host:<hostname>`, the static `save.tags` from the config) are not special: after
+  a rename or delete they come back on every NEW save, so rename them in the config
+  too. A rename/delete is refused while a reindex or restore is running.
 - **Preferences** — standing, cross-project preferences: the memories in the
   `global` namespace tagged `preference`. Add / edit / delete them here without
   touching namespace or tags (both are managed for you). These are what the
@@ -467,6 +472,7 @@ The MCP server exposes these tools to Claude:
 |------|--------------|
 | `cortex_memory_save` | Queue a memory for indexing. Args: `text`, `namespace?`, `tags?`, `linkTo?` (ids to bidirectionally link this memory to — queued and applied once both ends are indexed, so targets need not exist yet), `supersedes?` (ids this memory replaces — the worker deletes them once this one is indexed). Returns its `id`. |
 | `cortex_memory_search` | **Hybrid** search (BM25 keyword + vector, blended by `SEARCH_ALPHA`, default 0.5) so exact tokens/codenames resolve, not just semantic matches. Args: `query`, `namespace?` (`*` = all namespaces), `limit?`, `tags?` (must have all), `excludeTags?`, `maxDistance?` (relevance cutoff). Each hit includes its `id`, any `linkedIds`, and any `dupCandidates` (flagged likely-duplicates — the output hints when consolidation would help). When **living memory** is enabled (`RERANK_WEIGHT`>0, off by default), search also re-orders results by recency-decayed usage and reinforces its top hit(s) — frequently-recalled memories float up over time. See [`docs/DESIGN.md`](docs/DESIGN.md#living-memory--decay--reinforcement-opt-in). |
+| `cortex_tags_list` | **Read-only** tag listing (`namespace?`): each tag in use with its memory count, most used first. Call it before saving to REUSE an existing tag instead of inventing `k8s`/`kubernetes` variants. Rename/delete are intentionally not exposed over MCP (use the CLI/UI). |
 | `cortex_memory_get` | Fetch ONE memory by `id`, full text (follow `linkedIds` from search hits, or ids from `cortex_consolidate` / `cortex_review_candidates`). Same shape as a search hit; counts as delivered for session dedup so later searches stub it; does not reinforce. |
 | `cortex_memory_delete` | Delete a memory by `id` (get the `id` from a `cortex_memory_search` result first). |
 | `cortex_memory_link` | Explicitly link two related memories (bidirectional) so they connect in the graph. Args: `id`, `targetId` — from a prior search/recall, or an id just returned by `cortex_memory_save`. The edge is queued on the `memory.link` subject and applied once both endpoints are indexed (it waits for them), so out-of-order/just-saved ids link correctly. Claude is told to do this proactively when two memories are meaningfully related. |

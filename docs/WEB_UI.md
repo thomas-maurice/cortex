@@ -108,7 +108,7 @@ a typed confirmation (you must type the namespace name).
 ### Tags (`ui/src/views/TagsView.vue`)
 
 A table of every tag (exact, case-sensitive: `k8s` and `K8s` are separate rows)
-with its memory count and last activity (newest memory), a filter box and an
+with its memory count and "Newest memory" (createdAt of the newest memory carrying it), a filter box and an
 optional namespace scope. **Rename** is inline; when the target already exists the
 view says so and the button becomes **Merge** (memories carrying both end up with
 the tag once). **Delete** removes the tag from every memory but keeps the
@@ -116,7 +116,13 @@ memories. Both are metadata-only (memories *and* their search chunks are patched
 nothing is re-embedded). The reserved `preference` tag (it drives the
 standing-preferences hook) is refused by the server unless `confirm_preference`
 is set; the UI asks for explicit confirmation first. Clicking a tag opens
-Memories with that tag pre-selected (`?tag=` / `?namespace=` query params).
+Memories with that tag pre-selected (`?tag=` / `?namespace=` query params); because
+the server filter is fuzzy, that view re-filters to exact tags, doubling the query
+limit (up to 10 rounds / 10000 rows) until a page fills, and notes when fuzzy
+matches were hidden. Rename/delete use the namespace the counts were loaded with
+(Refresh to change it), never the live input box. Editing a memory in the inspector
+or Preferences view only sends tags when the tag field was actually changed, so a
+stale loaded list cannot undo a rename.
 
 ### Indexing (`ui/src/views/QueueView.vue`)
 

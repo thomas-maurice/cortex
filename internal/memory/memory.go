@@ -125,6 +125,16 @@ type Record struct {
 	CreatedAt time.Time `json:"createdAt"`
 	Model     string    `json:"model,omitempty"`
 	Dims      int       `json:"dims,omitempty"`
+	// KeepTags (NATS payload only, never persisted) means "this message does not
+	// intend to change the tags": for an EXISTING memory the worker keeps the
+	// STORED tags (memory and chunks) instead of writing the message's snapshot.
+	// Without it an edit/reindex queued before a tag rename/delete would restore
+	// the old tags (tags are written by the index path AND by tag rename; see
+	// docs/DESIGN.md). Producers that carry a genuine point-in-time tag set
+	// (Save, replace_tags edits, import/restore, dead-letter retry of those) leave
+	// it false.
+	KeepTags bool `json:"keepTags,omitempty"`
+
 	// UserID is the tenant this record belongs to (NATS payload only; not a Weaviate property).
 	UserID string `json:"userId,omitempty"`
 

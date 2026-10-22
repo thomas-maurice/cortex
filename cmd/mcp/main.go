@@ -286,12 +286,15 @@ func main() {
 			"as Markdown: use headings, bullet lists, code fences, and links where they make the note " +
 			"clearer, since the UI renders it as formatted Markdown. Summarising a discussion or a " +
 			"conclusion into one rich memory is encouraged. Scope it with a namespace (e.g. the " +
-			"project or topic) and tags. To connect this memory to related ones in the same call, pass " +
+			"project or topic) and tags. REUSE existing tags instead of inventing variants (k8s vs kubernetes): " +
+			"check cortex_tags_list first when unsure which spelling is in use. To connect this memory to related ones in the same call, pass " +
 			"their IDs in the linkTo field — links are bidirectional and queued, applied once both this " +
 			"memory and each target are indexed, so you do not need a separate cortex_memory_link call and " +
 			"the targets need not be indexed yet. Indexing is asynchronous and durable; saving is cheap, so " +
 			"err on the side of saving more.",
 	}, withTimeout(callTimeout, d.save))
+
+	addTagsTool(server, d, callTimeout)
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "cortex_memory_search",
@@ -659,6 +662,50 @@ func (d *deps) get(ctx context.Context, _ *mcp.CallToolRequest, in GetIn) (*mcp.
 		text += "\n   linked: " + strings.Join(links, ", ")
 	}
 	return text2result(text), hit, nil
+}
+
+// ---- tags_list ----
+
+// addTagsTool registers the read-only tag listing. Tag rename/delete are
+// deliberately NOT exposed over MCP (destructive, bulk): the CLI and UI own them.
+func addTagsTool(server *mcp.Server, d *deps, callTimeout time.Duration) {
+	mcp.AddTool(server, &mcp.Tool{
+		Name: "cortex_tags_list",
+		Description: "List the tags in use across the user's memories with how many memories carry each " +
+			"(most used first), optionally within one namespace. Call it before cortex_memory_save when you " +
+			"are unsure which spelling of a tag exists, and REUSE an existing tag rather than creating a " +
+			"near-duplicate (k8s / kubernetes / K8s). Read-only.",
+	}, withTimeout(callTimeout, d.tagsList))
+}
+
+type TagsListIn struct {
+	Namespace string `json:"namespace,omitempty" jsonschema:"optional namespace to count within; omit or use * for all namespaces"`
+}
+
+type TagCount struct {
+	Tag   string `json:"tag"`
+	Count int64  `json:"count" jsonschema:"number of memories carrying the tag"`
+}
+
+type TagsListOut struct {
+	Tags []TagCount `json:"tags"`
+}
+
+func (d *deps) tagsList(ctx context.Context, _ *mcp.CallToolRequest, in TagsListIn) (*mcp.CallToolResult, TagsListOut, error) {
+	resp, err := d.client.ListTags(ctx, connect.NewRequest(&cortexv1.ListTagsRequest{Namespace: strings.TrimSpace(in.Namespace)}))
+	if err != nil {
+		return nil, TagsListOut{}, err
+	}
+	out := TagsListOut{Tags: make([]TagCount, 0, len(resp.Msg.GetTags()))}
+	var b strings.Builder
+	for _, t := range resp.Msg.GetTags() {
+		out.Tags = append(out.Tags, TagCount{Tag: t.GetName(), Count: t.GetMemoryCount()})
+		fmt.Fprintf(&b, "%q: %d\n", t.GetName(), t.GetMemoryCount())
+	}
+	if len(out.Tags) == 0 {
+		return text2result("no tags yet"), out, nil
+	}
+	return text2result(strings.TrimSpace(b.String())), out, nil
 }
 
 // ---- memory_delete ----

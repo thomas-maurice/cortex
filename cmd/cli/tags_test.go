@@ -42,3 +42,9 @@ func TestConfirmTagChange(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, c)
 }
+
+func TestDisplayTagQuotesWhitespace(t *testing.T) {
+	assert.Equal(t, "k8s", displayTag("k8s"))
+	assert.Equal(t, `"k8s "`, displayTag("k8s "), "a look-alike must be distinguishable from k8s")
+	assert.Equal(t, `" k8s"`, displayTag(" k8s"))
+}

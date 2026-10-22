@@ -19,7 +19,7 @@ func tagsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "tags",
 		Short: "List tags with memory counts; rename/merge or delete them",
-		Long: "Lists every tag in use with its memory count and last activity (newest memory).\n" +
+		Long: "Lists every tag in use with its memory count and the date of its newest memory.\n" +
 			"Use `tags rename` to fix drifted spellings (k8s / kubernetes / K8s): renaming into\n" +
 			"an existing tag merges the two. Tags are matched exactly (case-sensitive).",
 		Args: cobra.NoArgs,
@@ -34,13 +34,13 @@ func tagsCmd() *cobra.Command {
 				return nil
 			}
 			w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-			_, _ = fmt.Fprintln(w, "TAG\tMEMORIES\tLAST ACTIVITY")
+			_, _ = fmt.Fprintln(w, "TAG\tMEMORIES\tNEWEST MEMORY")
 			for _, t := range tags {
 				last := "-"
 				if t.GetLastActivity() != nil {
 					last = t.GetLastActivity().AsTime().Format("2006-01-02 15:04")
 				}
-				_, _ = fmt.Fprintf(w, "%s\t%d\t%s\n", t.GetName(), t.GetMemoryCount(), last)
+				_, _ = fmt.Fprintf(w, "%s\t%d\t%s\n", displayTag(t.GetName()), t.GetMemoryCount(), last)
 			}
 			return w.Flush()
 		},
@@ -70,7 +70,7 @@ func tagsRenameCmd(namespace *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Printf("renamed %q -> %q on %d memories\n", strings.TrimSpace(args[0]), strings.TrimSpace(args[1]), resp.Msg.GetMemoriesUpdated())
+			fmt.Printf("renamed %q -> %q on %d memories\n", args[0], strings.TrimSpace(args[1]), resp.Msg.GetMemoriesUpdated())
 			return nil
 		},
 	}
@@ -95,7 +95,7 @@ func tagsDeleteCmd(namespace *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Printf("removed %q from %d memories\n", strings.TrimSpace(args[0]), resp.Msg.GetMemoriesUpdated())
+			fmt.Printf("removed %q from %d memories\n", args[0], resp.Msg.GetMemoriesUpdated())
 			return nil
 		},
 	}
@@ -139,4 +139,13 @@ func confirmTagChange(in io.Reader, out io.Writer, yes, promptGeneric bool, tags
 		}
 	}
 	return false, nil
+}
+
+// displayTag quotes tags with leading/trailing whitespace so look-alikes
+// ("k8s" vs "k8s ") can be told apart; plain tags print as-is.
+func displayTag(t string) string {
+	if strings.TrimSpace(t) != t || t == "" {
+		return fmt.Sprintf("%q", t)
+	}
+	return t
 }

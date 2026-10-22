@@ -14,6 +14,12 @@
       </Button>
     </div>
 
+    <p class="text-xs text-muted-foreground">
+      <template v-if="scope">Showing and changing tags in namespace "{{ scope }}" only (applied when you pressed Refresh).</template>
+      <template v-else>Rename and delete apply to every namespace.</template>
+      Tags added automatically on save (<code>host:&lt;hostname&gt;</code>, the configured <code>save.tags</code>) come back on new memories after a rename or delete.
+    </p>
+
     <div v-if="loading" class="py-16 text-center text-muted-foreground" role="status" aria-live="polite" aria-label="Loading tags">
       <Loader2 class="mx-auto size-8 animate-spin" />
     </div>
@@ -29,7 +35,7 @@
           <TableRow>
             <TableHead>Tag</TableHead>
             <TableHead class="text-right">Memories</TableHead>
-            <TableHead>Last activity</TableHead>
+            <TableHead title="createdAt of the newest memory carrying the tag">Newest memory</TableHead>
             <TableHead class="text-right" style="width: 1%">Actions</TableHead>
           </TableRow>
         </TableHeader>
@@ -100,6 +106,10 @@ const busy = ref(false)
 const error = ref('')
 const filter = ref('')
 const namespace = ref('')
+// The namespace the listed counts were loaded with. Rename/delete use THIS, not the
+// live input box: editing the box without refreshing must never widen (or change)
+// the scope of a destructive action relative to the counts on screen.
+const scope = ref('')
 
 const renameOf = ref(null)
 const renameTo = ref('')
@@ -130,7 +140,7 @@ function handleError(e) {
 
 function openMemories(t) {
   const query = { tag: t.name }
-  if (namespace.value.trim()) query.namespace = namespace.value.trim()
+  if (scope.value) query.namespace = scope.value
   router.push({ name: 'memories', query })
 }
 
@@ -163,7 +173,7 @@ async function confirmRename(t) {
     const res = await memoryClient.renameTag({
       from: t.name,
       to,
-      namespace: namespace.value.trim(),
+      namespace: scope.value,
       confirmPreference: touchesPref,
     })
     toast.success(`Renamed "${t.name}" → "${to}" on ${Number(res.memoriesUpdated)} memories.`)
@@ -187,7 +197,7 @@ async function remove(t) {
   busy.value = true
   error.value = ''
   try {
-    const res = await memoryClient.deleteTag({ tag: t.name, namespace: namespace.value.trim(), confirmPreference: isPref })
+    const res = await memoryClient.deleteTag({ tag: t.name, namespace: scope.value, confirmPreference: isPref })
     toast.success(`Removed "${t.name}" from ${Number(res.memoriesUpdated)} memories.`)
     await reload()
   } catch (e) {
@@ -201,8 +211,10 @@ async function reload() {
   loading.value = true
   error.value = ''
   try {
-    const res = await memoryClient.listTags({ namespace: namespace.value.trim() })
+    const ns = namespace.value.trim()
+    const res = await memoryClient.listTags({ namespace: ns })
     tags.value = res.tags
+    scope.value = ns
   } catch (e) {
     if (handleError(e)) return
   } finally {

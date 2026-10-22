@@ -302,6 +302,23 @@ The reserved `preference` tag (drives the cortex-prefs hook) is rejected by
 `RenameTag`/`DeleteTag` unless `confirm_preference` is set, so no caller can
 silently empty the standing preferences.
 
+**Stale snapshots.** The index message carries a tag snapshot taken at publish
+time, so a rename that lands while it is queued would be undone. `memory.Record.KeepTags`
+(NATS payload only) solves this the field-ownership way: `UpdateMemory` without
+`replace_tags` and `Reindex` set it, and `commitIndex`, for an EXISTING memory,
+then writes the STORED tags (memory and chunks) instead of the message's. Producers
+with a genuine point-in-time tag set (`Save`, `replace_tags` edits, import/restore,
+and dead-letter retries, which replay the original message) do not set it and
+remain point-in-time: a restore/import after a rename brings the old tags back.
+The UI also sends `replaceTags` only when the tag field changed. `RenameTag`/`DeleteTag`
+are additionally refused (FailedPrecondition) while this tenant's reindex/restore
+gate (or the server-wide admin gate) is held. Known limit: those gates are released
+once the restore/import has *published*, not once the worker has drained it, so a
+rename made right after a restore can still be undone by restore messages that are
+still queued — wait for the Indexing queue to empty before renaming. Tags are canonicalised
+(`memory.NormalizeTags`: trim, drop empties, dedup) in Save/UpdateMemory and again
+in the worker; rename/delete match `from`/`tag` exactly, only `to` is trimmed.
+
 Chunks are patched BEFORE the memory: the memory's tags are what a retry uses to
 find work, so a failed chunk merge leaves the memory un-renamed and a re-run
 repairs both (the ops are idempotent); a failed call reports how many memories

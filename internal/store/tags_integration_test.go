@@ -328,3 +328,29 @@ func TestRenameTagChunkFailureIsRepairable(t *testing.T) {
 		assert.Equal(t, [][]string{{"new"}}, chunkTags(t, ts, id), "chunk tags consistent after the retry")
 	}
 }
+
+// TestTagOpsMatchExactly: tags are compared as stored. Deleting "k8s " (trailing
+// space, e.g. a legacy write) must not delete "k8s" — silently widening the match
+// would destroy tags the user never selected.
+func TestTagOpsMatchExactly(t *testing.T) {
+	st := tagsTestStore(t)
+	ctx := context.Background()
+	ts := st.Tenant("user-exact")
+	vec := []float32{1, 0, 0, 0}
+	plain := putTagged(t, ts, "n", []string{"k8s"}, vec)
+	spaced := putTagged(t, ts, "n", []string{"k8s "}, vec)
+
+	m := statMap(t, ts, "")
+	assert.Equal(t, 1, m["k8s"].MemoryCount)
+	assert.Equal(t, 1, m["k8s "].MemoryCount, "look-alike is a separate row")
+
+	n, err := ts.DeleteTag(ctx, "k8s ", "", nil)
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+	assert.Equal(t, []string{"k8s"}, sortedTags(t, ts, plain))
+	assert.Empty(t, sortedTags(t, ts, spaced))
+
+	n, err = ts.RenameTag(ctx, "k8s", "kubernetes", "", nil)
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+}

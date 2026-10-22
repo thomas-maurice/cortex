@@ -945,10 +945,17 @@ func commitIndex(ctx context.Context, log *slog.Logger, locker *dlock.Locker, ts
 		return false, nil
 	}
 	rec.IndexedSeq, rec.IndexedStream = seq, stream
+	rec.Tags = memory.NormalizeTags(rec.Tags) // backstop for producers that skip it (import/restore)
 	if exists {
 		// Dedup candidates were computed before the lock from the message's
 		// snapshot of notDuplicateOf; honour dismissals made since.
 		rec.DupCandidates = withoutIDs(rec.DupCandidates, stored.NotDuplicateOf)
+		// The message does not intend to change tags: keep the stored ones (a tag
+		// rename/delete may have landed since it was published). Chunks below use
+		// rec.Tags, so they follow.
+		if rec.KeepTags {
+			rec.Tags = stored.Tags
+		}
 		err = ts.UpdateIndexFields(hctx, rec, vec)
 	} else {
 		err = ts.Upsert(hctx, rec, vec)
