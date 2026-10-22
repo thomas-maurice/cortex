@@ -87,6 +87,8 @@ const (
 	// MemoryServiceDismissDuplicateProcedure is the fully-qualified name of the MemoryService's
 	// DismissDuplicate RPC.
 	MemoryServiceDismissDuplicateProcedure = "/cortex.v1.MemoryService/DismissDuplicate"
+	// MemoryServiceMergeIntoProcedure is the fully-qualified name of the MemoryService's MergeInto RPC.
+	MemoryServiceMergeIntoProcedure = "/cortex.v1.MemoryService/MergeInto"
 	// MemoryServiceConsolidateProcedure is the fully-qualified name of the MemoryService's Consolidate
 	// RPC.
 	MemoryServiceConsolidateProcedure = "/cortex.v1.MemoryService/Consolidate"
@@ -241,6 +243,11 @@ type MemoryServiceClient interface {
 	// DismissDuplicate records that two memories are confirmed NOT duplicates, so
 	// the worker stops re-flagging the pair on future re-indexing.
 	DismissDuplicate(context.Context, *connect.Request[v1.DismissDuplicateRequest]) (*connect.Response[v1.DismissDuplicateResponse], error)
+	// MergeInto folds remove_ids into keep_id: their links, access stats,
+	// not-a-duplicate dismissals and provenance are carried onto keep_id (same
+	// carry-over as Save.supersedes), then they are moved to the trash with reason
+	// "merged-into:<keep_id>" (restorable). Synchronous: the keep memory is live.
+	MergeInto(context.Context, *connect.Request[v1.MergeIntoRequest]) (*connect.Response[v1.MergeIntoResponse], error)
 	// Consolidate gathers the cluster of memories about a topic — the vector
 	// matches plus their linked and duplicate-candidate neighbours — so a client
 	// (the LLM) can merge them into fewer, richer memories. It is READ-ONLY: it
@@ -517,6 +524,12 @@ func NewMemoryServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(memoryServiceMethods.ByName("DismissDuplicate")),
 			connect.WithClientOptions(opts...),
 		),
+		mergeInto: connect.NewClient[v1.MergeIntoRequest, v1.MergeIntoResponse](
+			httpClient,
+			baseURL+MemoryServiceMergeIntoProcedure,
+			connect.WithSchema(memoryServiceMethods.ByName("MergeInto")),
+			connect.WithClientOptions(opts...),
+		),
 		consolidate: connect.NewClient[v1.ConsolidateRequest, v1.ConsolidateResponse](
 			httpClient,
 			baseURL+MemoryServiceConsolidateProcedure,
@@ -730,6 +743,7 @@ type memoryServiceClient struct {
 	unlink                  *connect.Client[v1.UnlinkRequest, v1.UnlinkResponse]
 	listDuplicateCandidates *connect.Client[v1.ListDuplicateCandidatesRequest, v1.ListDuplicateCandidatesResponse]
 	dismissDuplicate        *connect.Client[v1.DismissDuplicateRequest, v1.DismissDuplicateResponse]
+	mergeInto               *connect.Client[v1.MergeIntoRequest, v1.MergeIntoResponse]
 	consolidate             *connect.Client[v1.ConsolidateRequest, v1.ConsolidateResponse]
 	restoreMemories         *connect.Client[v1.RestoreMemoriesRequest, v1.RestoreMemoriesResponse]
 	listNamespaces          *connect.Client[v1.ListNamespacesRequest, v1.ListNamespacesResponse]
@@ -871,6 +885,11 @@ func (c *memoryServiceClient) ListDuplicateCandidates(ctx context.Context, req *
 // DismissDuplicate calls cortex.v1.MemoryService.DismissDuplicate.
 func (c *memoryServiceClient) DismissDuplicate(ctx context.Context, req *connect.Request[v1.DismissDuplicateRequest]) (*connect.Response[v1.DismissDuplicateResponse], error) {
 	return c.dismissDuplicate.CallUnary(ctx, req)
+}
+
+// MergeInto calls cortex.v1.MemoryService.MergeInto.
+func (c *memoryServiceClient) MergeInto(ctx context.Context, req *connect.Request[v1.MergeIntoRequest]) (*connect.Response[v1.MergeIntoResponse], error) {
+	return c.mergeInto.CallUnary(ctx, req)
 }
 
 // Consolidate calls cortex.v1.MemoryService.Consolidate.
@@ -1094,6 +1113,11 @@ type MemoryServiceHandler interface {
 	// DismissDuplicate records that two memories are confirmed NOT duplicates, so
 	// the worker stops re-flagging the pair on future re-indexing.
 	DismissDuplicate(context.Context, *connect.Request[v1.DismissDuplicateRequest]) (*connect.Response[v1.DismissDuplicateResponse], error)
+	// MergeInto folds remove_ids into keep_id: their links, access stats,
+	// not-a-duplicate dismissals and provenance are carried onto keep_id (same
+	// carry-over as Save.supersedes), then they are moved to the trash with reason
+	// "merged-into:<keep_id>" (restorable). Synchronous: the keep memory is live.
+	MergeInto(context.Context, *connect.Request[v1.MergeIntoRequest]) (*connect.Response[v1.MergeIntoResponse], error)
 	// Consolidate gathers the cluster of memories about a topic — the vector
 	// matches plus their linked and duplicate-candidate neighbours — so a client
 	// (the LLM) can merge them into fewer, richer memories. It is READ-ONLY: it
@@ -1366,6 +1390,12 @@ func NewMemoryServiceHandler(svc MemoryServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(memoryServiceMethods.ByName("DismissDuplicate")),
 		connect.WithHandlerOptions(opts...),
 	)
+	memoryServiceMergeIntoHandler := connect.NewUnaryHandler(
+		MemoryServiceMergeIntoProcedure,
+		svc.MergeInto,
+		connect.WithSchema(memoryServiceMethods.ByName("MergeInto")),
+		connect.WithHandlerOptions(opts...),
+	)
 	memoryServiceConsolidateHandler := connect.NewUnaryHandler(
 		MemoryServiceConsolidateProcedure,
 		svc.Consolidate,
@@ -1598,6 +1628,8 @@ func NewMemoryServiceHandler(svc MemoryServiceHandler, opts ...connect.HandlerOp
 			memoryServiceListDuplicateCandidatesHandler.ServeHTTP(w, r)
 		case MemoryServiceDismissDuplicateProcedure:
 			memoryServiceDismissDuplicateHandler.ServeHTTP(w, r)
+		case MemoryServiceMergeIntoProcedure:
+			memoryServiceMergeIntoHandler.ServeHTTP(w, r)
 		case MemoryServiceConsolidateProcedure:
 			memoryServiceConsolidateHandler.ServeHTTP(w, r)
 		case MemoryServiceRestoreMemoriesProcedure:
@@ -1755,6 +1787,10 @@ func (UnimplementedMemoryServiceHandler) ListDuplicateCandidates(context.Context
 
 func (UnimplementedMemoryServiceHandler) DismissDuplicate(context.Context, *connect.Request[v1.DismissDuplicateRequest]) (*connect.Response[v1.DismissDuplicateResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cortex.v1.MemoryService.DismissDuplicate is not implemented"))
+}
+
+func (UnimplementedMemoryServiceHandler) MergeInto(context.Context, *connect.Request[v1.MergeIntoRequest]) (*connect.Response[v1.MergeIntoResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cortex.v1.MemoryService.MergeInto is not implemented"))
 }
 
 func (UnimplementedMemoryServiceHandler) Consolidate(context.Context, *connect.Request[v1.ConsolidateRequest]) (*connect.Response[v1.ConsolidateResponse], error) {

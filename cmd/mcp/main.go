@@ -444,7 +444,8 @@ func main() {
 			"capture everything important (lossless on facts, lossy on redundancy), and save each with " +
 			"cortex_memory_save passing the `supersedes` field set to the ids (from this response's `manifest`) that " +
 			"the new memory replaces. The server deletes those superseded sources automatically once the new memory " +
-			"is durably indexed, so do NOT call cortex_memory_delete on them yourself — that would risk losing " +
+			"is durably indexed and the merged memory INHERITS their links (no need to pass linkTo for them), so do " +
+			"NOT call cortex_memory_delete on them yourself — that would risk losing " +
 			"content if indexing hasn't finished. Only supersede ids that appear in the manifest. " +
 			"TIME-BOUND SOURCES: cluster memories may carry an expiry (shown as \"(expires …)\"). When the merged " +
 			"memory is made only of time-bound facts, save it with expiresIn so it does not outlive them — if EVERY " +
@@ -481,7 +482,7 @@ type SaveIn struct {
 	Namespace  string   `json:"namespace,omitempty" jsonschema:"optional namespace to scope the memory (e.g. a project name); defaults to the current project's namespace (the MCP-derived default)"`
 	Tags       []string `json:"tags,omitempty" jsonschema:"optional free-form tags for later filtering"`
 	LinkTo     []string `json:"linkTo,omitempty" jsonschema:"optional IDs of related memories to bidirectionally link this new memory to (e.g. from a prior memory_search). Linking is queued and applied once both memories are indexed, so the targets do not need to be indexed yet — they just need to be real memory IDs that exist or are being saved"`
-	Supersedes []string `json:"supersedes,omitempty" jsonschema:"optional IDs of EXISTING memories this new memory replaces (e.g. the sources from a cortex_consolidate manifest that this merged memory absorbs); the server deletes them automatically once this memory is durably indexed, so do not also call cortex_memory_delete on them. Only pass IDs you actually merged into this text"`
+	Supersedes []string `json:"supersedes,omitempty" jsonschema:"optional IDs of EXISTING memories this new memory replaces (e.g. the sources from a cortex_consolidate manifest that this merged memory absorbs); the server deletes them automatically once this memory is durably indexed and this memory inherits their links (no need to pass linkTo for them), so do not also call cortex_memory_delete on them. Only pass IDs you actually merged into this text"`
 	ExpiresIn  string   `json:"expiresIn,omitempty" jsonschema:"set for TIME-BOUND facts that stop being true after a while (a freeze until Friday, this week's focus): how long the memory stays valid, e.g. \"7d\" or \"36h\" (days or Go durations; max 10 years). After that it is no longer returned by search or recall. Omit for durable facts"`
 }
 

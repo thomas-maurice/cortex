@@ -25,7 +25,9 @@ import (
 	"github.com/thomas-maurice/cortex/internal/chunk"
 	"github.com/thomas-maurice/cortex/internal/dlock"
 	"github.com/thomas-maurice/cortex/internal/embed"
+	"github.com/thomas-maurice/cortex/internal/identity"
 	"github.com/thomas-maurice/cortex/internal/memory"
+	"github.com/thomas-maurice/cortex/internal/merge"
 	"github.com/thomas-maurice/cortex/internal/obs"
 	"github.com/thomas-maurice/cortex/internal/store"
 )
@@ -128,6 +130,14 @@ func main() {
 		// further by adding worker replicas.
 		concurrency = envInt("WORKER_CONCURRENCY", 4)
 	)
+	// WORKER_MAX_PROCESSING caps one message's processing time (default 10m, 0 = off).
+	if v := os.Getenv("WORKER_MAX_PROCESSING"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d >= 0 {
+			maxProcessing = d
+		} else {
+			log.Warn("ignoring invalid WORKER_MAX_PROCESSING", "value", v)
+		}
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -506,7 +516,9 @@ func noteHoldExpiry(ctx context.Context, log *slog.Logger, m *metrics, kind, id 
 // must not be settled as a processing failure (that would count toward dead-letter
 // for perfectly valid work); the message is simply handed back for redelivery.
 func abortForShutdown(ctx context.Context, log *slog.Logger, msg jetstream.Msg) bool {
-	if ctx.Err() == nil {
+	if ctx.Err() == nil || errors.Is(context.Cause(ctx), errMaxProcessing) {
+		// Not cancelled, or cancelled by the per-message time limit: that is a
+		// processing failure to settle (and count), not a shutdown.
 		return false
 	}
 	log.Info("shutting down, returning message for redelivery")
@@ -609,6 +621,10 @@ type tenantStore interface {
 	UpdateIndexFields(ctx context.Context, rec memory.Record, vector []float32) error
 	ReplaceChunks(ctx context.Context, rec memory.Record, chunks []store.ChunkVec) error
 	DeleteWithReason(ctx context.Context, id, reason string) error
+	// Reinforce and SetNotDuplicateOf are server-owned fields; the worker only
+	// touches them to carry a superseded memory's stats/dismissals (internal/merge).
+	Reinforce(ctx context.Context, id string, count int, at time.Time) error
+	SetNotDuplicateOf(ctx context.Context, id string, ids []string) error
 	GetSummarySeq(ctx context.Context, conversationID string) (seq uint64, stream int64, err error)
 	UpsertSummary(ctx context.Context, sum memory.Summary, vector []float32) error
 	SearchMemoryVectors(ctx context.Context, vec []float32, opts store.SearchOpts) ([]memory.Hit, error)
@@ -828,19 +844,33 @@ func planSupersedes(recID string, supersedes []string) []string {
 // durably upserted by the caller. This ordering is the safety property of
 // consolidation: the merged memory is persisted before any source is removed, so
 // a failure here leaves stale sources behind (the pre-merge state) rather than
-// losing the merged content. Best-effort and non-fatal: a missing/already-gone
-// source is logged and skipped, so a redelivery that re-runs this (sources
-// already deleted) is harmless. Sources go to the Trash (reason supersedes:<id>),
-// so a bad consolidation is recoverable. ts is scoped to the record's tenant so the
-// deletes only affect the correct tenant's data in multi-tenant mode.
-func applySupersedes(ctx context.Context, log *slog.Logger, ts tenantStore, rec memory.Record) {
-	for _, id := range planSupersedes(rec.ID, rec.Supersedes) {
+// losing the merged content. A missing/already-gone source is skipped, so a
+// redelivery that re-runs this is harmless. Sources go to the Trash (reason
+// supersedes:<id>), so a bad consolidation is recoverable. ts is scoped to the
+// record's tenant so the deletes only affect the correct tenant's data.
+//
+// A merge must not drop what the sources carried, so BEFORE any delete
+// merge.Carry moves each one's links (via the link queue), dismissals and
+// access stats onto rec (see internal/merge); the caller holds the locks of rec,
+// the sources and the dismissal counterparts. A carry failure is
+// returned (the index message retries and the sources stay live); a delete
+// failure stays best-effort. createdAt/conversationId are handled earlier, in
+// commitIndex, because the index path owns those fields.
+func applySupersedes(ctx context.Context, log *slog.Logger, ts tenantStore, rec memory.Record, pub merge.LinkPublisher, locked []string) error {
+	sources := planSupersedes(rec.ID, rec.Supersedes)
+	for _, id := range sources {
+		// Per source: carry, then delete. A failure leaves earlier sources fully
+		// done and a retry only re-processes what is still live.
+		if err := merge.Carry(ctx, ts, rec.ID, id, sources, pub, locked); err != nil {
+			return err
+		}
 		if err := ts.DeleteWithReason(ctx, id, memory.TrashReasonSupersedes+rec.ID); err != nil {
 			log.Warn("supersede delete failed, skipping", "id", rec.ID, "superseded", id, "err", err)
 			continue
 		}
 		log.Info("superseded", "id", rec.ID, "deleted", id)
 	}
+	return nil
 }
 
 // candidateLimit caps how many duplicate candidates one memory records. A handful
@@ -877,6 +907,11 @@ func findCandidates(ctx context.Context, log *slog.Logger, ts tenantStore, rec m
 	// re-flagged. The list is bidirectional, so checking rec's own copy is enough.
 	dismissed := make(map[string]bool, len(rec.NotDuplicateOf))
 	for _, id := range rec.NotDuplicateOf {
+		dismissed[id] = true
+	}
+	// A merge's own sources are about to be trashed: never flag the merged memory
+	// as a duplicate of them.
+	for _, id := range rec.Supersedes {
 		dismissed[id] = true
 	}
 	var out []string
@@ -929,9 +964,22 @@ func embedChunks(ctx context.Context, embedder *embed.Client, chunker *chunk.Chu
 //
 // With no chunker, ReplaceChunks(nil) purges chunks left from when chunking was
 // enabled.
-func commitIndex(ctx context.Context, log *slog.Logger, locker *dlock.Locker, ts tenantStore, rec memory.Record, vec []float32, cvs []store.ChunkVec, seq uint64, sid streamIdentity) (applied bool, err error) {
+func commitIndex(ctx context.Context, log *slog.Logger, js jetstream.JetStream, locker *dlock.Locker, ts tenantStore, rec memory.Record, vec []float32, cvs []store.ChunkVec, seq uint64, sid streamIdentity) (applied bool, err error) {
 	// hctx is bounded inside the first lease; see Locker.AcquireAll.
-	hctx, release, err := locker.AcquireAll(ctx, []string{dlock.Key("mem", rec.UserID, rec.ID)}, locker.Wait())
+	// A merge (supersedes) read-modify-writes the sources and the counterparts of
+	// their dismissals too, so it holds all of their locks (sorted, one AcquireAll).
+	lockIDs := []string{rec.ID}
+	if srcIDs := planSupersedes(rec.ID, rec.Supersedes); len(srcIDs) > 0 {
+		var lerr error
+		if lockIDs, lerr = merge.LockIDs(ctx, ts, rec.ID, srcIDs); lerr != nil {
+			return false, fmt.Errorf("lock set: %w", lerr)
+		}
+	}
+	keys := make([]string, len(lockIDs))
+	for i, id := range lockIDs {
+		keys[i] = dlock.Key("mem", rec.UserID, id)
+	}
+	hctx, release, err := locker.AcquireAll(ctx, keys, locker.Wait())
 	if err != nil {
 		return false, fmt.Errorf("lock: %w", err)
 	}
@@ -950,6 +998,31 @@ func commitIndex(ctx context.Context, log *slog.Logger, locker *dlock.Locker, ts
 	}
 	rec.IndexedSeq, rec.IndexedStream = seq, stream
 	rec.Tags = memory.NormalizeTags(rec.Tags) // backstop for producers that skip it (import/restore)
+	if exists {
+		// createdAt only ever moves earlier and an existing conversationId is never
+		// blanked: a merge (supersedes / MergeInto) lowers createdAt and fills the
+		// conversation from its sources via other writers, and a later or redelivered
+		// index message carrying the pre-merge values must not revert them.
+		if !stored.CreatedAt.IsZero() && (rec.CreatedAt.IsZero() || stored.CreatedAt.Before(rec.CreatedAt)) {
+			rec.CreatedAt = stored.CreatedAt
+		}
+		if rec.ConversationID == "" {
+			rec.ConversationID = stored.ConversationID
+		}
+	}
+	if srcIDs := planSupersedes(rec.ID, rec.Supersedes); len(srcIDs) > 0 {
+		var srcs []memory.Record
+		for _, id := range srcIDs {
+			src, found, err := ts.Get(hctx, id)
+			if err != nil {
+				return false, fmt.Errorf("read superseded %s: %w", id, err)
+			}
+			if found {
+				srcs = append(srcs, src)
+			}
+		}
+		rec.CreatedAt, rec.ConversationID = merge.Provenance(rec, srcs)
+	}
 	if exists {
 		// Dedup candidates were computed before the lock from the message's
 		// snapshot of notDuplicateOf; honour dismissals made since.
@@ -979,7 +1052,11 @@ func commitIndex(ctx context.Context, log *slog.Logger, locker *dlock.Locker, ts
 	// Supersedes still runs inline: now that the merged memory AND its chunks are
 	// durable, delete the sources it replaces. Ordering matters: post-upsert means
 	// a crash here can't lose content.
-	applySupersedes(hctx, log, ts, rec)
+	lctx := identity.Into(hctx, identity.Identity{UserID: rec.UserID})
+	pub := func(op memory.LinkOp, a, b string) error { return bus.PublishLink(lctx, js, op, a, b) }
+	if err := applySupersedes(hctx, log, ts, rec, pub, lockIDs); err != nil {
+		return false, fmt.Errorf("supersedes: %w", err)
+	}
 	return true, nil
 }
 
@@ -1037,7 +1114,7 @@ func handleIndex(ctx context.Context, log *slog.Logger, m *metrics, js jetstream
 		if procErr == nil {
 			embedDur = time.Since(embedStart)
 			storeStart := time.Now()
-			applied, procErr = commitIndex(ctx, log, locker, ts, rec, vec, cvs, streamSeq(msg), stream)
+			applied, procErr = commitIndex(ctx, log, js, locker, ts, rec, vec, cvs, streamSeq(msg), stream)
 			noteHoldExpiry(ctx, log, m, kindIndex, rec.ID, procErr)
 			nChunks = len(cvs)
 			storeDur = time.Since(storeStart)
@@ -1064,7 +1141,13 @@ func handleIndex(ctx context.Context, log *slog.Logger, m *metrics, js jetstream
 	if abortForShutdown(ctx, log, msg) {
 		return
 	}
-	pub := func(dl memory.DeadLetter) error { return bus.PublishDead(ctx, js, dl) }
+	// The handler ctx may already be cancelled (max processing time): the
+	// dead-letter publish must not inherit that.
+	pub := func(dl memory.DeadLetter) error {
+		pctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer cancel()
+		return bus.PublishDead(pctx, js, dl)
+	}
 	settleIndexFailure(log, m, pub, msg, rec, procErr)
 }
 

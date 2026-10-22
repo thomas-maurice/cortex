@@ -339,6 +339,7 @@ func (s *Service) RestoreAll(ctx context.Context, req *connect.Request[cortexv1.
 			if strings.TrimSpace(r.Text) == "" {
 				continue // worker cannot embed an empty record
 			}
+			r.Supersedes = nil // a backup is data, never a delete instruction
 			if err := bus.PublishIndex(tenantCtx, s.js, r); err != nil {
 				return nil, fmt.Errorf("re-queue memory %s: %w", r.ID, err)
 			}
@@ -477,6 +478,7 @@ func (s *Service) RestoreSelf(ctx context.Context, req *connect.Request[cortexv1
 			if strings.TrimSpace(r.Text) == "" {
 				continue
 			}
+			r.Supersedes = nil // a backup is data, never a delete instruction
 			if err := bus.PublishIndex(ctx, s.js, r); err != nil {
 				return nil, fmt.Errorf("re-queue memory %s: %w", r.ID, err)
 			}

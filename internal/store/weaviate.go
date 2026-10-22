@@ -924,6 +924,29 @@ func (ts *TenantStore) SetDupCandidates(ctx context.Context, id string, ids []st
 	return nil
 }
 
+// SetProvenance overwrites createdAt and conversationId via a Weaviate merge
+// (PATCH). Used by MergeInto to carry the oldest capture time / conversation of
+// the folded-in memories onto the surviving one. These are index-owned fields; the
+// worker's commitIndex never moves createdAt later or blanks a conversationId, so
+// a queued index message cannot revert this.
+func (ts *TenantStore) SetProvenance(ctx context.Context, id string, createdAt time.Time, conversationID string) error {
+	updater := ts.s.client.Data().Updater().
+		WithMerge().
+		WithClassName(memory.ClassName).
+		WithID(id).
+		WithProperties(map[string]interface{}{
+			"createdAt":      createdAt.UTC().Format(time.RFC3339),
+			"conversationId": conversationID,
+		})
+	if ts.t != "" {
+		updater = updater.WithTenant(ts.t)
+	}
+	if err := updater.Do(ctx); err != nil {
+		return fmt.Errorf("set provenance: %w", err)
+	}
+	return nil
+}
+
 // Reinforce records that a memory surfaced as a top search hit: it bumps
 // accessCount and stamps lastAccessedAt via a Weaviate merge (PATCH), leaving the
 // vector and every other property untouched — reinforcement never re-embeds. This
@@ -1451,12 +1474,9 @@ func (ts *TenantStore) List(ctx context.Context, opts ListOpts) ([]memory.Record
 // candidates beyond the 10000-result query cap are not dropped. Go-side filtering
 // also avoids a Weaviate IsNull filter, which would require the class to be
 // created with indexNullState=true (not the case for existing deployments). No
-// vector query, so results carry no distance.
+// vector query, so results carry no distance. limit <= 0 means no cap (the RPC
+// caps AFTER dropping candidates that no longer exist).
 func (ts *TenantStore) ListWithCandidates(ctx context.Context, namespace string, limit int) ([]memory.Record, error) {
-	if limit <= 0 {
-		limit = 50
-	}
-
 	recs := make([]memory.Record, 0)
 	err := ts.s.scanAll(ctx, memory.ClassName, ts.t, memoryProps, func(r graphql.SearchResult) {
 		if namespace != "" && propString(r.Properties, "namespace") != namespace {
@@ -1476,7 +1496,7 @@ func (ts *TenantStore) ListWithCandidates(ctx context.Context, namespace string,
 	}
 
 	sort.SliceStable(recs, func(i, j int) bool { return recs[i].CreatedAt.After(recs[j].CreatedAt) })
-	if len(recs) > limit {
+	if limit > 0 && len(recs) > limit {
 		recs = recs[:limit]
 	}
 	return recs, nil

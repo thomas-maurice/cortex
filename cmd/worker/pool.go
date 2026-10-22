@@ -167,7 +167,17 @@ var (
 	fetchWait         = 2 * time.Second
 	errBackoff        = time.Second
 	fetchWarnEvery    = 30 * time.Second
+	// maxProcessing bounds ONE message's total processing time (WORKER_MAX_PROCESSING,
+	// 0 = unbounded). The keepalive would otherwise hold a wedged message (e.g. a lock
+	// set that can never be acquired) forever, starving a worker slot and never letting
+	// JetStream redeliver it. Past it the handler's context is cancelled and keepalives
+	// stop; the handler then settles the message as an ordinary failure (counts toward
+	// MaxDeliver, then dead-letter) -- NOT as a shutdown hand-back.
+	maxProcessing = 10 * time.Minute
 )
+
+// errMaxProcessing is the cancel cause of a handler context that outlived maxProcessing.
+var errMaxProcessing = errors.New("message exceeded the maximum processing time")
 
 // run starts the consumer loops; they stop when ctx is cancelled (after finishing
 // their in-flight message, within the grace) and wait() returns once all have.
@@ -229,8 +239,15 @@ func process(ctx context.Context, msg jetstream.Msg, fn func(ctx context.Context
 	defer close(done)
 	interval, grace := keepaliveInterval, shutdownGrace
 
-	wctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
-	defer cancel()
+	wctx, cancelCause := context.WithCancelCause(context.WithoutCancel(ctx))
+	defer cancelCause(nil)
+	cancel := func() { cancelCause(context.Canceled) }
+	var limitC <-chan time.Time
+	if maxProcessing > 0 {
+		lt := time.NewTimer(maxProcessing)
+		defer lt.Stop()
+		limitC = lt.C
+	}
 	// One goroutine: keepalive ticks for the message's whole life, and cancellation
 	// of the handler's context `grace` after the worker context ends.
 	go func() {
@@ -238,11 +255,16 @@ func process(ctx context.Context, msg jetstream.Msg, fn func(ctx context.Context
 		defer tick.Stop()
 		ctxDone := ctx.Done()
 		var graceC <-chan time.Time
+		tickC := tick.C
 		for {
 			select {
 			case <-done:
 				return
-			case <-tick.C:
+			case <-limitC:
+				// Stop the keepalive and cancel: the message is no longer ours to hold.
+				limitC, tickC = nil, nil
+				cancelCause(errMaxProcessing)
+			case <-tickC:
 				_ = msg.InProgress()
 			case <-ctxDone:
 				ctxDone = nil

@@ -46,3 +46,10 @@ export function mergeDraft(pair) {
     supersedes: [pair.left.id, pair.right.id],
   }
 }
+
+// A global-namespace memory tagged `preference` is injected into every session by
+// the cortex-prefs hook; merging it into another namespace (or dropping the tag)
+// would silently remove the standing rule from the hook.
+export function isGlobalPreference(m) {
+  return !!m && m.namespace === 'global' && (m.tags || []).includes('preference')
+}

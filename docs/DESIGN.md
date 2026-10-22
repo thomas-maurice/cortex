@@ -144,7 +144,60 @@ outliving a long gap; `LinkMaxDeliver` only covers minutes). Purge and the reten
 link REMOVEs to live neighbours (the worker tolerates a missing endpoint, as `Unlink` does) unless
 the purged id is live again. `Delete` takes an optional `reason` from a bounded set
 (`delete`, `stale-review`, `duplicate-review`). `Status.trash_count` and the MCP
-`cortex_trash_list` tool expose the trash. The server sweeps entries older than
+`cortex_trash_list` tool expose the trash. 
+
+**Supersedes and links.** When a record with `supersedes` is indexed, the worker's
+`applySupersedes` (under the locks of the new memory, the sources AND the counterparts of the sources' dismissals, taken in one sorted `AcquireAll`) reads each source BEFORE trashing
+it and, through the link queue (`bus.PublishLink`, tenant-stamped; the link consumer owns
+ordering/retries/locks), publishes ADD new<->N for every live neighbour N that is neither
+the new memory nor another source, and REMOVE source<->N for every neighbour (trashing
+does not touch neighbours' `linkedIds`, so without the REMOVE they would keep a dangling
+id). Links first, delete last: a crash in between re-reads the still-live source on
+redelivery and republishes the same idempotent set ops; once a source is gone its links
+were already queued. A read/publish failure fails the index message (it retries); a
+delete failure stays best-effort. Links between two sources are dropped. Restoring a
+source later re-applies ITS trashed links to still-existing endpoints (so it is linked
+back to its old neighbours), while the merged memory keeps the links it inherited.
+
+**What else a merge carries** (`internal/merge`, shared by the worker and the
+`MergeInto` RPC): `accessCount` = sum and `lastAccessedAt` = max (server-owned; written
+via `Reinforce`; summed, so a crash between carry and delete can over-count once);
+`notDuplicateOf` = union of the sources' dismissals, with each counterpart C rewritten
+source -> merged so reviewed pairs stay dismissed; `createdAt` = oldest of the merged
+memory and sources; `conversationId` = the merged memory's if set, else the oldest
+source's (the shared value when they agree). `createdAt`/`conversationId` are
+index-owned, so for `supersedes` they are folded into the record before the upsert
+(`commitIndex`), and `commitIndex` never moves an existing memory's `createdAt` later nor
+blanks its `conversationId`, so a stale or redelivered index message cannot revert a
+merge. The worker also never flags a record as a duplicate of its own `supersedes` ids.
+`MergeInto(keep_id, remove_ids)` (Duplicates "Keep left/right") runs the same carry
+synchronously on a live memory, then trashes the removed ones with reason
+`merged-into:<keep>` (one in-flight per tenant, max 50 ids, validated before any write).
+**Locking of merges.** The server shares the worker's per-memory lock scheme (same KV
+bucket `dlock.DefaultBucket`, `dlock.Key("mem", tenant, id)`, `Service.lockMemories`):
+`MergeInto` locks keep + removed + dismissal counterparts for the whole
+provenance -> carry -> trash sequence, and `DismissDuplicate` locks both ids, so these
+read-modify-writes exclude worker commits and other replicas (the old `linkMu` is only a
+process-local extra). The carry is per source (carry, then trash), the one
+non-idempotent write (`accessCount`) comes last, and the critical section runs under the
+lease-bounded context: an overlong carry (one Get per distinct neighbour/counterpart)
+fails with a deadline error and is retried, never half-applied silently. If the
+counterpart set changed between computing the lock set and carrying, the attempt is
+released and retried (`merge.ErrLockSetChanged`). A `MergeInto` retry treats ids already
+in the trash as `merged-into:<keep>` as done (not NotFound, not re-summed). The
+search-path `Reinforce` takes no dlock, so `accessCount` stays a best-effort heuristic.
+Bounds: a Save's `supersedes` and `MergeInto.remove_ids` are capped at 50
+(InvalidArgument), the lock set (sources + dismissal counterparts, deduplicated) at 200
+(`merge.ErrTooLarge`: FailedPrecondition from `MergeInto`, a dead-lettered index message
+with a clear error from the worker). `dlock.AcquireAll` gives up with `ErrTimeout` at its
+overall wait even if the lease budget keeps expiring, and the worker pool cancels a
+message after `WORKER_MAX_PROCESSING` (default 10m, 0 = off): keepalives stop and it
+settles as a normal failure that counts toward dead-lettering. A backup's records never
+carry `supersedes` (stripped on restore). Backup/restore over an existing memory goes through the index path: the earliest
+`createdAt` wins and a `conversationId` is never blanked.
+
+`ListDuplicateCandidates` drops dead candidates BEFORE applying `limit` and returns an
+exact `truncated` flag. The server sweeps entries older than
 `TRASH_RETENTION` hourly. Not covered: conversation summaries (permanently deleted by a
 namespace delete), and backups (trash is excluded). `DeleteClass` (reindex rebuild)
 drops only Memory/MemoryChunk/ConversationSummary and leaves the trash alone (no

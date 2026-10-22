@@ -75,6 +75,11 @@ service MemoryService {
   // DismissDuplicate records that two memories are confirmed NOT duplicates, so
   // the worker stops re-flagging the pair on future re-indexing.
   rpc DismissDuplicate(DismissDuplicateRequest) returns (DismissDuplicateResponse) {}
+  // MergeInto folds remove_ids into keep_id: their links, access stats,
+  // not-a-duplicate dismissals and provenance are carried onto keep_id (same
+  // carry-over as Save.supersedes), then they are moved to the trash with reason
+  // "merged-into:<keep_id>" (restorable). Synchronous: the keep memory is live.
+  rpc MergeInto(MergeIntoRequest) returns (MergeIntoResponse) {}
   // Consolidate gathers the cluster of memories about a topic — the vector
   // matches plus their linked and duplicate-candidate neighbours — so a client
   // (the LLM) can merge them into fewer, richer memories. It is READ-ONLY: it
@@ -730,6 +735,18 @@ message DuplicateGroup {
 
 message ListDuplicateCandidatesResponse {
   repeated DuplicateGroup groups = 1;
+  // truncated is true when more live groups exist than the requested limit
+  // (dead candidates are filtered BEFORE the cap, so it is exact).
+  bool truncated = 20;
+}
+
+message MergeIntoRequest {
+  string keep_id = 1;
+  repeated string remove_ids = 2;
+}
+
+message MergeIntoResponse {
+  int32 merged = 1; // how many of remove_ids were folded in and trashed
 }
 
 message DismissDuplicateRequest {

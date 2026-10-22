@@ -180,12 +180,12 @@ func (ft *fakeTenant) SetLinks(_ context.Context, id string, links []string) err
 	return ft.mergeField(id, "set-links", func(o *memory.Record) { o.LinkedIDs = slices.Clone(links) })
 }
 
-// Server-side merge writers (not part of tenantStore; the worker never calls them).
-func (ft *fakeTenant) Reinforce(id string, count int) error {
-	return ft.mergeField(id, "reinforce", func(o *memory.Record) { o.AccessCount = count; o.LastAccessedAt = time.Now() })
+// Server-owned merge writers (the worker only calls them to carry a superseded memory's stats/dismissals).
+func (ft *fakeTenant) Reinforce(_ context.Context, id string, count int, at time.Time) error {
+	return ft.mergeField(id, "reinforce", func(o *memory.Record) { o.AccessCount = count; o.LastAccessedAt = at })
 }
 
-func (ft *fakeTenant) SetNotDuplicateOf(id string, ids []string) error {
+func (ft *fakeTenant) SetNotDuplicateOf(_ context.Context, id string, ids []string) error {
 	return ft.mergeField(id, "set-notdup", func(o *memory.Record) { o.NotDuplicateOf = slices.Clone(ids) })
 }
 

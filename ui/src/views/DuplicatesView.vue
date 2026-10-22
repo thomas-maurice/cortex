@@ -24,7 +24,7 @@
     </div>
 
     <Alert v-if="truncated">
-      <AlertDescription>Showing the first {{ LIMIT }} flagged memories — resolve some and refresh to see more.</AlertDescription>
+      <AlertDescription>More flagged memories exist than are shown (first {{ LIMIT }}) — resolve some and refresh to see more.</AlertDescription>
     </Alert>
 
     <div v-if="loading" class="py-16 text-center text-muted-foreground" role="status" aria-live="polite" aria-label="Loading duplicates">
@@ -44,6 +44,7 @@
             <ClampedMarkdown :html="renderMarkdown(m.text)" />
             <div class="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
               <Badge variant="secondary"><Layers class="size-3" />{{ m.namespace }}</Badge>
+              <Badge v-if="isGlobalPreference(m)" variant="destructive" title="Injected into every session by the prefs hook">global preference</Badge>
               <Badge v-for="t in m.tags" :key="t" variant="outline"><Tag class="size-3" />{{ t }}</Badge>
               <span v-if="m.createdAt">{{ formatTimestamp(m.createdAt) }}</span>
               <span class="inline-flex items-center gap-1" title="explicit links"><Link2 class="size-3" />{{ (m.linkedIds || []).length }}</span>
@@ -73,10 +74,15 @@
           <DialogTitle>Merge into a new memory</DialogTitle>
           <DialogDescription>
             Edit the merged text, then save. Once the new memory is indexed, <strong>both originals are
-            moved to the Trash</strong> (restorable until the retention period ends).
+            moved to the Trash</strong> (restorable until the retention period ends). Their links are carried
+            over to the merged memory.
           </DialogDescription>
         </DialogHeader>
         <div v-if="draft" class="space-y-2">
+          <p v-if="prefWarning" class="text-sm font-medium text-destructive">
+            One of these is a global <code>preference</code> (injected into every session). Keep the namespace
+            <code>global</code> and the tag <code>preference</code> on the merged memory, or the preference stops being applied.
+          </p>
           <p v-if="crossNamespace" class="text-sm text-amber-600 dark:text-amber-400">
             The two memories are in different namespaces ({{ mergePair.left.namespace }} / {{ mergePair.right.namespace }}).
             The merged memory is saved into the namespace set below; both originals are still replaced.
@@ -106,7 +112,7 @@ import { renderMarkdown } from '@/utils/markdown'
 import { confirmDialog } from '@/lib/confirm'
 import { useAuthStore } from '@/stores/auth'
 import { formatTimestamp } from '@/utils/text'
-import { buildPairs, mergeDraft } from '@/utils/duplicates'
+import { buildPairs, isGlobalPreference, mergeDraft } from '@/utils/duplicates'
 import ClampedMarkdown from '@/components/ClampedMarkdown.vue'
 import { Check, Copy, Layers, Link2, Loader2, Merge, RotateCw, Tag, X } from 'lucide-vue-next'
 import { Alert, AlertDescription } from '@/components/ui/alert'
@@ -133,6 +139,12 @@ const error = ref('')
 const mergeOpen = ref(false)
 const draft = ref(null)
 const mergePair = ref(null)
+const prefWarning = computed(() => {
+  const p = mergePair.value
+  if (!p || !draft.value || !(isGlobalPreference(p.left) || isGlobalPreference(p.right))) return false
+  const tags = draft.value.tags.split(',').map((t) => t.trim())
+  return !(draft.value.namespace === 'global' && tags.includes('preference'))
+})
 const crossNamespace = computed(() => mergePair.value && mergePair.value.left.namespace !== mergePair.value.right.namespace)
 
 function handleError(e) {
@@ -149,7 +161,7 @@ async function reload() {
   error.value = ''
   try {
     const res = await memoryClient.listDuplicateCandidates({ namespace: namespace.value, limit: LIMIT })
-    truncated.value = res.groups.length >= LIMIT
+    truncated.value = res.truncated
     pairs.value = buildPairs(res.groups)
   } catch (e) {
     handleError(e)
@@ -182,17 +194,21 @@ async function dismiss(p) {
 
 async function keep(p, side) {
   const gone = side === 'left' ? p.right : p.left
+  const kept = side === 'left' ? p.left : p.right
   busy.value = true // disable all actions while the confirm dialog is open
   const ok = await confirmDialog(
-    `Keep the ${side} memory and delete the other one? The deleted memory is moved to the Trash and can be restored from there.`,
-    { title: 'Resolve duplicate', actionLabel: 'Delete the other' },
+    `Keep the ${side} memory and fold the other one into it? Its links, dismissals and access history are carried over, and it is moved to the Trash (restorable).` +
+      (isGlobalPreference(gone) && !isGlobalPreference(kept)
+        ? ' WARNING: the other memory is a global preference (injected into every session); the one you keep is not, so that preference will stop being applied.'
+        : ''),
+    { title: 'Resolve duplicate', actionLabel: 'Fold the other into it' },
   )
   if (!ok) { busy.value = false; return }
   error.value = ''
   try {
-    await memoryClient.delete({ id: gone.id })
+    await memoryClient.mergeInto({ keepId: kept.id, removeIds: [gone.id] })
     drop(p, [gone.id])
-    toast.success('Moved to trash', {
+    toast.success('Merged into the kept memory; the other moved to trash', {
       action: {
         label: 'Undo',
         onClick: async () => {

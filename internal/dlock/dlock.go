@@ -263,6 +263,11 @@ func (l *Locker) AcquireAll(ctx context.Context, keys []string, wait time.Durati
 		if !errors.Is(err, errLeaseBudget) {
 			return hctx, release, err
 		}
+		// Past the overall wait, a lease budget that keeps expiring must end the
+		// call, not restart it forever (later keys are then taken unbudgeted).
+		if !time.Now().Before(overall) {
+			return nil, nil, fmt.Errorf("%w: lease budget kept expiring while acquiring %d keys", ErrTimeout, len(sorted))
+		}
 		if perr := pause(ctx, timer, pollMin+rand.N(pollJitter)); perr != nil {
 			return nil, nil, perr
 		}

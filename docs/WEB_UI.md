@@ -130,7 +130,7 @@ collapses them so each unordered pair shows once, older memory on the left. Per 
 other (moves to Trash; the toast has **Undo** -> `RestoreFromTrash`); **Merge…** opens a
 dialog prefilled with both texts, the union of tags and the left namespace, and saves
 with `supersedes` = both ids (the worker trashes both originals only after the merge is
-indexed; the pair is hidden locally meanwhile). Namespace filter is server-side
+indexed and carries their links over to the merged memory; the pair is hidden locally meanwhile). **Keep left/right** calls `MergeInto` (carries links, dismissals, stats, createdAt onto the kept memory before trashing the other). A side that is a `global` + `preference` memory gets a badge and a warning when the result would no longer be one. The truncation banner uses the server's `truncated` flag. Namespace filter is server-side
 (`*` = all). No pair distance is shown (the RPC does not return it). No nav badge.
 
 ### Trash (`ui/src/views/TrashView.vue`)
