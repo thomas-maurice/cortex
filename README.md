@@ -221,6 +221,10 @@ port as the Connect API; open the server's address in a browser. Views:
   lands here first. List with deletion time and reason, **restore** (re-queued for
   indexing under the same id), **purge** one or all (confirm dialogs). Entries
   expire after `TRASH_RETENTION`.
+- **Stale review** (Memories view, "Stale" filter) — never recalled / not recalled in
+  30, 90 or 180 days, oldest last recall first, with recall count and last-recalled
+  time on each card. Multi-select (with "select all on page") and **Move to trash**
+  in bulk; the success toast offers **Undo** (restores the same ids from the trash).
 - **Preferences** — standing, cross-project preferences: the memories in the
   `global` namespace tagged `preference`. Add / edit / delete them here without
   touching namespace or tags (both are managed for you). These are what the
@@ -693,7 +697,8 @@ authenticate with `--token` / `CORTEX_AUTH_TOKEN`.
 | `cortex get <id> [--json]` | Show one memory by id (incl. linked ids); `--json` uses the `export` record shape. |
 | `cortex search "<q>" [-d 0.6] [-t tag] [-x tag] [--include-expired]` | Semantic search with a relevance cutoff and tag filters. Prints the matched excerpt (`matched: …`) under hits on long memories. Expired memories are hidden unless `--include-expired`. |
 | `cortex consolidate "<topic>" [-n '*'] [-l N] [-t tag] [-x tag] [--include-expired]` | Print the cluster of memories about a topic + their manifest (read-only gather; the LLM does the merge). No tag flag = no tag filter (whole cluster). |
-| `cortex delete <id>` | Delete a memory by ID (moved to the trash). |
+| `cortex list --stale [--since 90d] [--min-age 30d] [-n ns] [-l N]` | Stale-memory review: memories never recalled (or, with `--since`, not recalled for that long), oldest last-access first; only memories older than `--min-age` (default 30d; `0` disables) count. Prints recall count + last recall per memory. See "Stale-memory review". |
+| `cortex delete <id>...` | Delete memories by ID (moved to the trash). Several ids use one `DeleteMany` call (max 500) with per-id results; non-zero exit if any failed. |
 | `cortex tags [-n ns]` | List tags with memory counts and last activity. `tags rename <from> <to> [-n ns]` fixes drift (`k8s` / `kubernetes`; merges into an existing tag), `tags delete <tag> [-n ns] [--yes]` removes a tag from every memory. Touching the reserved `preference` tag needs `--yes`. |
 | `cortex trash ls [-n ns] [--reason r]` / `trash restore <id>... \| --all [-n ns] [--reason r]` / `trash purge <id>... \| --all [-n ns] [--reason r] [--yes]` | Soft-delete trash: list trashed memories, restore them (re-queued for indexing, same id, with their recall history; ids are rejected if a live memory has that id; `--all` restores every match independently and reports failures) or purge them permanently. `cortex status` shows the trash count. |
 | `cortex export -o backup.json` | Dump all memories (text + metadata, no vectors) to JSON. |
@@ -854,6 +859,22 @@ true. Give them an expiry:
   restored from the trash whose (non-`expired`-reason) expiry has lapsed likewise comes
   back hidden, and the restore says so. Memory counts
   (Status, Namespaces) cover live memories only, with expired ones shown separately.
+
+## Stale-memory review
+
+`accessCount` / `lastAccessedAt` are bumped when a memory surfaces as a top search hit
+(reinforcement; only while `RERANK_WEIGHT>0`), so memories that never or no longer
+surface are cleanup/merge candidates. `List` takes additive `stale` (`NEVER_RECALLED`:
+`accessCount==0` and no `lastAccessedAt`; `NOT_RECALLED_SINCE` + `stale_days`: last
+recall older than N days, or never recalled AND created longer ago than N days),
+`min_age_days` (default 30; 0 disables, so brand-new memories are never flagged),
+`offset`; the response carries `total`. Results are oldest-last-access first (never-recalled
+memories rank by `createdAt`). It is a server-side cursor scan filtered in Go (an
+`IsNull` filter would need `indexNullState` on existing classes), so it is correct beyond
+10k memories; cost is one pass over the tenant per call. If reinforcement is off
+(`RERANK_WEIGHT=0`) every memory looks "never recalled" — don't bulk-clean then.
+`DeleteMany` (max 500 ids, one in-flight call per tenant, per-id results, other tenants'
+ids = "not found") moves each id to the trash through the normal delete path.
 
 ## Request size limit
 

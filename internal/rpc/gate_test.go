@@ -112,6 +112,18 @@ func TestHeavyRPCsSingleFlightPerTenant(t *testing.T) {
 				return err
 			}
 		},
+		"List(stale)": func(s *Service) func(context.Context) error {
+			return func(ctx context.Context) error {
+				_, err := s.List(ctx, connect.NewRequest(&cortexv1.ListRequest{Stale: cortexv1.StaleMode_STALE_MODE_NEVER_RECALLED}))
+				return err
+			}
+		},
+		"DeleteMany": func(s *Service) func(context.Context) error {
+			return func(ctx context.Context) error {
+				_, err := s.DeleteMany(ctx, connect.NewRequest(&cortexv1.DeleteManyRequest{Ids: []string{"6f1c1a4e-3b0e-4a56-9c1e-2d6a3c0b8f11"}}))
+				return err
+			}
+		},
 		"RestoreSelf": func(s *Service) func(context.Context) error {
 			return func(ctx context.Context) error {
 				_, err := s.RestoreSelf(ctx, connect.NewRequest(&cortexv1.RestoreSelfRequest{Data: []byte("{}")}))

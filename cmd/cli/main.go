@@ -7,12 +7,14 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -478,19 +480,35 @@ func listCmd() *cobra.Command {
 	var limit int
 	var tags, anyTags, excludeTags []string
 	var includeExpired bool
+	var stale bool
+	var since, minAge string
 	cmd := &cobra.Command{
 		Use:   "list",
-		Short: "List stored memories, newest first",
-		Args:  cobra.NoArgs,
+		Short: "List stored memories, newest first (or --stale: never/no-longer recalled)",
+		Long: "List stored memories, newest first.\n\n" +
+			"--stale switches to review mode: memories that are never recalled (or, with --since,\n" +
+			"not recalled for that long), oldest last-access first. Only memories created more than\n" +
+			"--min-age ago (default 30d) count, so brand-new memories are never flagged. Durations\n" +
+			"are whole days: 90d, 12w, or Go durations like 2160h. Clean up with `cortex delete <id>...`.",
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			resp, err := client().List(cmd.Context(), connect.NewRequest(&cortexv1.ListRequest{
+			req := &cortexv1.ListRequest{
 				Namespace:      namespace,
 				Limit:          int32(limit),
 				Tags:           tags,
 				AnyTags:        anyTags,
 				ExcludeTags:    excludeTags,
 				IncludeExpired: includeExpired,
-			}))
+			}
+			if !stale && (since != "" || minAge != "") {
+				return fmt.Errorf("--since and --min-age require --stale")
+			}
+			if stale {
+				if err := applyStaleFlags(req, since, minAge); err != nil {
+					return err
+				}
+			}
+			resp, err := client().List(cmd.Context(), connect.NewRequest(req))
 			if err != nil {
 				return err
 			}
@@ -501,10 +519,19 @@ func listCmd() *cobra.Command {
 			}
 			for _, m := range mems {
 				printMemory(m)
+				if stale {
+					printRecallStats(m)
+				}
+			}
+			if stale {
+				fmt.Printf("\n%d of %d stale\n", len(mems), resp.Msg.GetTotal())
 			}
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&stale, "stale", false, "review mode: list memories never recalled (or not recalled for --since), oldest last-access first")
+	cmd.Flags().StringVar(&since, "since", "", "with --stale: not recalled for this long, e.g. 90d (default: never recalled)")
+	cmd.Flags().StringVar(&minAge, "min-age", "", "with --stale: only memories created more than this long ago (default 30d; 0 disables)")
 	cmd.Flags().StringVarP(&namespace, "namespace", "n", "", `namespace filter; "*" for all namespaces`)
 	cmd.Flags().IntVarP(&limit, "limit", "l", 20, "max memories to list")
 	cmd.Flags().StringSliceVarP(&tags, "tag", "t", nil, "require this tag (repeatable; memory must have all)")
@@ -648,22 +675,136 @@ func searchCmd() *cobra.Command {
 
 func deleteCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "delete <id>",
-		Short: "Delete a memory by ID (moved to the trash; see `cortex trash`)",
-		Args:  cobra.ExactArgs(1),
+		Use:   "delete <id>...",
+		Short: "Delete memories by ID (moved to the trash; see `cortex trash`)",
+		Long: "Delete one or more memories by ID. Deleted memories go to the trash and stay\n" +
+			"restorable (`cortex trash restore`). With several ids a single DeleteMany call is\n" +
+			"made (max 500); failures are reported per id and the exit status is non-zero if any failed.",
+		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			id := strings.TrimSpace(args[0])
-			if id == "" {
-				return fmt.Errorf("id must not be empty")
-			}
-			if _, err := client().Delete(cmd.Context(), connect.NewRequest(&cortexv1.DeleteRequest{Id: id})); err != nil {
-				return err
-			}
-			fmt.Println("deleted", id, "(moved to trash; `cortex trash restore` to undo)")
-			return nil
+			return runDelete(cmd.Context(), client(), os.Stdout, args)
 		},
 	}
 	return cmd
+}
+
+// deleteAPI is the slice of the memory client runDelete needs.
+type deleteAPI interface {
+	Delete(context.Context, *connect.Request[cortexv1.DeleteRequest]) (*connect.Response[cortexv1.DeleteResponse], error)
+	DeleteMany(context.Context, *connect.Request[cortexv1.DeleteManyRequest]) (*connect.Response[cortexv1.DeleteManyResponse], error)
+}
+
+// runDelete deletes one id via Delete, several via DeleteMany (one round trip,
+// per-id results). It returns an error when any id failed so scripts can tell.
+func runDelete(ctx context.Context, c deleteAPI, w io.Writer, args []string) error {
+	ids := make([]string, 0, len(args))
+	for _, a := range args {
+		if id := strings.TrimSpace(a); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		return fmt.Errorf("id must not be empty")
+	}
+	if len(ids) == 1 {
+		if _, err := c.Delete(ctx, connect.NewRequest(&cortexv1.DeleteRequest{Id: ids[0]})); err != nil {
+			return err
+		}
+		_, err := fmt.Fprintln(w, "deleted", ids[0], "(moved to trash; `cortex trash restore` to undo)")
+		return err
+	}
+	resp, err := c.DeleteMany(ctx, connect.NewRequest(&cortexv1.DeleteManyRequest{Ids: ids}))
+	if err != nil {
+		return err
+	}
+	failed := 0
+	for _, r := range resp.Msg.GetResults() {
+		if r.GetDeleted() {
+			_, _ = fmt.Fprintln(w, "deleted", r.GetId())
+		} else {
+			failed++
+			_, _ = fmt.Fprintf(w, "FAILED  %s: %s\n", r.GetId(), r.GetError())
+		}
+	}
+	_, _ = fmt.Fprintf(w, "%d deleted, %d failed (moved to trash; `cortex trash restore` to undo)\n", resp.Msg.GetDeleted(), failed)
+	if failed > 0 {
+		return fmt.Errorf("%d of %d deletes failed", failed, len(resp.Msg.GetResults()))
+	}
+	return nil
+}
+
+// parseAgeDays parses a whole-day age such as "90d", "12w" or a Go duration
+// ("2160h"; rounded UP to whole days). "0" means zero. The server works in days.
+func parseAgeDays(s string) (int32, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, fmt.Errorf("empty duration")
+	}
+	var d time.Duration
+	switch {
+	case s == "0":
+		return 0, nil
+	case strings.HasSuffix(s, "d") || strings.HasSuffix(s, "w"):
+		n, err := strconv.Atoi(s[:len(s)-1])
+		if err != nil || n < 0 {
+			return 0, fmt.Errorf("invalid duration %q (want e.g. 90d, 12w, 2160h)", s)
+		}
+		mult := 1
+		if s[len(s)-1] == 'w' {
+			mult = 7
+		}
+		if n > 36500/mult {
+			return 0, fmt.Errorf("duration %q too large", s)
+		}
+		return int32(n * mult), nil
+	default:
+		var err error
+		if d, err = time.ParseDuration(s); err != nil || d < 0 {
+			return 0, fmt.Errorf("invalid duration %q (want e.g. 90d, 12w, 2160h)", s)
+		}
+	}
+	days := (d + 24*time.Hour - 1) / (24 * time.Hour)
+	if days > 36500 {
+		return 0, fmt.Errorf("duration %q too large", s)
+	}
+	return int32(days), nil
+}
+
+// applyStaleFlags turns --since/--min-age into the stale fields of a ListRequest.
+func applyStaleFlags(req *cortexv1.ListRequest, since, minAge string) error {
+	req.Stale = cortexv1.StaleMode_STALE_MODE_NEVER_RECALLED
+	if since != "" {
+		days, err := parseAgeDays(since)
+		if err != nil {
+			return fmt.Errorf("--since: %w", err)
+		}
+		if days == 0 {
+			return fmt.Errorf("--since must be at least 1d (omit it for never-recalled)")
+		}
+		req.Stale = cortexv1.StaleMode_STALE_MODE_NOT_RECALLED_SINCE
+		req.StaleDays = days
+	}
+	if minAge != "" {
+		days, err := parseAgeDays(minAge)
+		if err != nil {
+			return fmt.Errorf("--min-age: %w", err)
+		}
+		req.MinAgeDays = &days
+	}
+	return nil
+}
+
+// printRecallStats prints the usage signal under a stale-review entry.
+func printRecallStats(m *cortexv1.Memory) {
+	last := "never recalled"
+	if ts := m.GetLastAccessedAt(); ts != nil {
+		last = "last recalled " + ts.AsTime().Local().Format("2006-01-02")
+	}
+	created := ""
+	if ts := m.GetCreatedAt(); ts != nil {
+		created = "  created " + ts.AsTime().Local().Format("2006-01-02")
+	}
+	fmt.Printf("   recalls=%d  %s%s\n", m.GetAccessCount(), last, created)
 }
 
 // exportRecord is the stable JSON shape for `cortex export` (no vectors).

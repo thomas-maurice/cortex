@@ -314,7 +314,8 @@ and scripting without going through Claude. Global flags: `--server`
 | `list [-n '*'] [-l N] [-t tag] [-T anyTag] [-x excludeTag] [--include-expired]` | List newest-first with tag/namespace filters; expired memories hidden unless `--include-expired`. |
 | `get <id> [--json]` | Show one memory by id (full text + linked ids) via the `GetMemory` RPC (tenant-scoped; NotFound for unknown/other-tenant ids; no reinforcement). Same RPC backs the `cortex_memory_get` MCP tool, which also marks the id delivered in recallstate. |
 | `search "<q>" [-n '*'] [-l N] [-d 0.6] [--autocut N] [-t/-T/-x tag] [--reinforce] [--include-expired]` | Hybrid (BM25+vector) semantic search. `-d` = distance cutoff. CLI does NOT reinforce by default. |
-| `delete <id>` | Delete one memory by id (soft: moved to the `Trash` class, see §4). |
+| `delete <id>...` | Delete memories by id (soft: moved to the `Trash` class, see §4). >1 id = one `DeleteMany` RPC (max 500, per-tenant gate, per-id results, non-zero exit on any failure). |
+| `list --stale [--since 90d] [--min-age 30d]` | Stale review (`List` with `stale`/`stale_days`/`min_age_days`/`offset`, `total` in the response): never-recalled or not-recalled-since, oldest last-access first, min-age guard default 30d. Go-side scan (`TenantStore.ListStale`, `internal/store/stale.go`) — no IsNull filter (needs indexNullState). Same filter + bulk trash/Undo in the UI Memories view. |
 | `trash ls [-n ns]` / `trash restore <id>...` / `trash purge <id>... \| --all [-n ns] [--yes]` | Soft-delete trash (`ListTrash`/`RestoreFromTrash`/`PurgeTrash` RPCs; `cmd/cli/trash.go`). |
 | `export [-n '*'] [-o file]` | Dump memories (text+metadata, no vectors) to JSON (stdout by default). |
 | `import <file> [--batch N]` | Restore a dump via the NATS ingest queue (worker re-embeds). Preserves ids/links. **This is how you load seed data** — point `--server` at the target. |

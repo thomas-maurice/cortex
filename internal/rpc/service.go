@@ -143,7 +143,7 @@ type Service struct {
 	// Single-flight guards (see tenantGate): one in-flight backup / reindex /
 	// restore per tenant, and one admin bulk operation server-wide, so no tenant
 	// can multiply the memory/Ollama cost of "fetch everything" RPCs.
-	backupGate, reindexGate, restoreGate, adminGate, mergeGate tenantGate
+	backupGate, reindexGate, restoreGate, adminGate, mergeGate, deleteManyGate, staleGate tenantGate
 	// previewGate: one in-flight PreviewRecall per tenant (each fans out to many
 	// embeds + searches).
 	previewGate tenantGate
@@ -564,6 +564,9 @@ func (s *Service) SearchSimilar(ctx context.Context, req *connect.Request[cortex
 }
 
 func (s *Service) List(ctx context.Context, req *connect.Request[cortexv1.ListRequest]) (*connect.Response[cortexv1.ListResponse], error) {
+	if req.Msg.GetStale() != cortexv1.StaleMode_STALE_MODE_UNSPECIFIED {
+		return s.listStale(ctx, req.Msg)
+	}
 	ts, err := s.tenantStore(ctx)
 	if err != nil {
 		return nil, err

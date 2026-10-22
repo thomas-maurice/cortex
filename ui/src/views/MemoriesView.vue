@@ -24,7 +24,22 @@
       </div>
       <div class="grid flex-1 gap-1.5">
         <Label class="text-xs">Search</Label>
-        <Input v-model="query" placeholder="semantic query (blank = list newest)" @keyup.enter="reload" />
+        <Input v-model="query" :disabled="staleActive" :placeholder="staleActive ? 'search is off while reviewing stale memories' : 'semantic query (blank = list newest)'" @keyup.enter="reload" />
+      </div>
+      <div class="grid gap-1.5" style="width: 220px">
+        <Label class="text-xs">Stale</Label>
+        <Select v-model="stale" :disabled="loading">
+          <SelectTrigger size="sm" aria-label="Stale filter">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="off">Off (newest first)</SelectItem>
+            <SelectItem value="never">Never recalled</SelectItem>
+            <SelectItem value="30">Not recalled in 30 days</SelectItem>
+            <SelectItem value="90">Not recalled in 90 days</SelectItem>
+            <SelectItem value="180">Not recalled in 180 days</SelectItem>
+          </SelectContent>
+        </Select>
       </div>
       <Button :disabled="loading" @click="reload">
         <component :is="query ? SearchIcon : RotateCw" class="size-4" />
@@ -51,6 +66,23 @@
       </Badge>
     </div>
 
+    <p v-if="staleActive" class="text-xs text-muted-foreground">
+      Stale review: oldest last recall first. Memories created in the last {{ STALE_MIN_AGE_DAYS }} days are never listed.
+      {{ total }} match<span v-if="total !== 1">es</span>.
+    </p>
+
+    <div v-if="memories.length" class="flex flex-wrap items-center gap-3 text-sm">
+      <label class="inline-flex cursor-pointer items-center gap-2">
+        <input type="checkbox" class="size-4" :checked="allSelected" :indeterminate.prop="someSelected && !allSelected" aria-label="Select all on page" @change="toggleAll" />
+        Select all on page
+      </label>
+      <span v-if="selected.size" class="text-muted-foreground">{{ selected.size }} selected</span>
+      <Button v-if="selected.size" variant="destructive" size="sm" :disabled="bulkBusy" @click="bulkTrash">
+        <Trash2 class="size-4" />Move {{ selected.size }} to trash
+      </Button>
+      <Button v-if="selected.size" variant="ghost" size="sm" @click="selected = new Set()">Clear</Button>
+    </div>
+
     <Alert v-if="error" variant="destructive">
       <AlertDescription>{{ error }}</AlertDescription>
     </Alert>
@@ -69,6 +101,7 @@
     <Card v-for="m in memories" :key="m.id">
       <CardContent class="py-4">
         <div class="flex items-start justify-between gap-3">
+          <input type="checkbox" class="mt-1 size-4 shrink-0" :checked="selected.has(m.id)" aria-label="Select memory" @change="toggleOne(m.id)" />
           <div class="min-w-0 flex-1 cursor-pointer" @click="openInspector(m, resolveMemory)">
             <!-- Search hits on long memories: the matched chunk, as PLAIN text (escaped by
                  Vue interpolation, never v-html) so it can't inject markup. -->
@@ -117,21 +150,33 @@
           <span v-if="m.createdAt">{{ formatDate(m.createdAt) }}</span>
           <ExpiryBadge :valid-until="m.validUntil" />
           <span v-if="m._distance !== undefined">dist: {{ m._distance.toFixed(3) }}</span>
+          <Badge v-if="staleActive && !m.accessCount" variant="outline" title="never surfaced as a top search hit">
+            <Flame class="size-3" />0 recalls
+          </Badge>
+          <span v-if="staleActive && !m.lastAccessedAt" class="inline-flex items-center gap-1 text-amber-600 dark:text-amber-400">
+            <History class="size-3" />never recalled
+          </span>
           <Badge v-if="m.accessCount" variant="secondary" class="text-amber-600 dark:text-amber-400" title="times the agent recalled this memory (living memory)">
             <Flame class="size-3" />{{ m.accessCount }}
           </Badge>
           <span v-if="m.lastAccessedAt" class="inline-flex items-center gap-1" title="when this memory was last recalled">
-            <History class="size-3" />{{ formatDate(m.lastAccessedAt) }}
+            <History class="size-3" />{{ staleActive ? 'last recalled ' : '' }}{{ formatDate(m.lastAccessedAt) }}
           </span>
         </div>
       </CardContent>
     </Card>
+
+    <div v-if="staleActive && total > PAGE_SIZE" class="flex items-center justify-center gap-3 text-sm">
+      <Button variant="outline" size="sm" :disabled="loading || offset === 0" @click="goPage(-1)">Previous</Button>
+      <span class="text-muted-foreground">{{ offset + 1 }}–{{ Math.min(offset + PAGE_SIZE, total) }} of {{ total }}</span>
+      <Button variant="outline" size="sm" :disabled="loading || offset + PAGE_SIZE >= total" @click="goPage(1)">Next</Button>
+    </div>
   </div>
 </template>
 
 <script setup>
 import { timestampDate } from '@bufbuild/protobuf/wkt'
-import { ref, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Code, ConnectError } from '@connectrpc/connect'
 import { toast } from 'vue-sonner'
@@ -166,7 +211,9 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
+import { StaleMode } from '@/gen/cortex/v1/cortex_pb'
 
 const router = useRouter()
 const route = useRoute()
@@ -180,6 +227,29 @@ const activeTags = ref(qTags)
 const memories = ref([])
 const loading = ref(false)
 const error = ref('')
+
+const STALE_MIN_AGE_DAYS = 30 // sent explicitly so the UI text can't drift from the server default
+// stale: 'off' | 'never' | '30' | '90' | '180' (days not recalled). Stale mode is a
+// server-side scan (List RPC), ignores the semantic query, and is paginated.
+const stale = ref('off')
+const staleActive = computed(() => stale.value !== 'off')
+const offset = ref(0)
+const total = ref(0)
+
+const selected = ref(new Set())
+const bulkBusy = ref(false)
+const allSelected = computed(() => memories.value.length > 0 && memories.value.every((m) => selected.value.has(m.id)))
+const someSelected = computed(() => memories.value.some((m) => selected.value.has(m.id)))
+
+function toggleOne(id) {
+  const next = new Set(selected.value)
+  if (!next.delete(id)) next.add(id)
+  selected.value = next
+}
+
+function toggleAll() {
+  selected.value = allSelected.value ? new Set() : new Set(memories.value.map((m) => m.id))
+}
 
 const showNew = ref(false)
 const saving = ref(false)
@@ -214,6 +284,7 @@ function handleError(e) {
 const PAGE = 50
 const MAX_ROUNDS = 10
 const SERVER_MAX = 10000
+const PAGE_SIZE = PAGE
 const filteredNote = ref('')
 
 function exactTagMatch(list) {
@@ -242,11 +313,44 @@ async function fetchExact(fetchPage) {
   return exactTagMatch(await fetchPage(limit)).slice(0, PAGE)
 }
 
-async function reload() {
+// reload restarts from the first page (filters changed / refresh); load keeps
+// the current page (used after edits and bulk deletes).
+function reload() {
+  offset.value = 0
+  return load()
+}
+
+function goPage(dir) {
+  offset.value = Math.max(0, offset.value + dir * PAGE_SIZE)
+  return load()
+}
+
+async function load(retry = false) {
+  // Stale mode is a full server-side scan (single-flight per tenant): never overlap loads.
+  if (staleActive.value && loading.value && !retry) return
   loading.value = true
   error.value = ''
+  selected.value = new Set()
   try {
-    if (query.value.trim()) {
+    if (staleActive.value) {
+      // The server filters tags exactly in stale mode: no client-side post-filter (it would break totals/pages).
+      filteredNote.value = ''
+      const req = { namespace: namespace.value, limit: PAGE_SIZE, offset: offset.value, tags: activeTags.value, minAgeDays: STALE_MIN_AGE_DAYS, includeExpired: includeExpired.value }
+      if (stale.value === 'never') {
+        req.stale = StaleMode.NEVER_RECALLED
+      } else {
+        req.stale = StaleMode.NOT_RECALLED_SINCE
+        req.staleDays = Number(stale.value)
+      }
+      const res = await memoryClient.list(req)
+      memories.value = res.memories
+      total.value = res.total
+      // The last page can vanish after deletes: step back instead of showing nothing.
+      if (res.memories.length === 0 && offset.value > 0 && res.total > 0) {
+        offset.value = Math.max(0, Math.floor((res.total - 1) / PAGE_SIZE) * PAGE_SIZE)
+        return load(true)
+      }
+    } else if (query.value.trim()) {
       // noReinforce: browsing in the UI must not count as a recall — only the
       // agent's (MCP) searches feed the living-memory usage signal.
       memories.value = await fetchExact(async (limit) => {
@@ -260,18 +364,24 @@ async function reload() {
       })
     }
   } catch (e) {
-    handleError(e)
+    if (staleActive.value && e instanceof ConnectError && e.code === Code.ResourceExhausted) {
+      toast.info('Stale scan is busy — try again in a moment.')
+    } else {
+      handleError(e)
+    }
   } finally {
     loading.value = false
   }
 }
 
 function filterByNamespace(ns) {
+  if (staleActive.value && loading.value) return
   namespace.value = ns
   reload()
 }
 
 function toggleTag(t) {
+  if (staleActive.value && loading.value) return
   const i = activeTags.value.indexOf(t)
   if (i === -1) activeTags.value.push(t)
   else activeTags.value.splice(i, 1)
@@ -314,7 +424,42 @@ async function remove(id) {
   }
 }
 
-watch(inspectorChanged, reload)
+async function bulkTrash() {
+  const ids = [...selected.value]
+  if (!ids.length) return
+  if (!(await confirmDialog(`Move ${ids.length} memor${ids.length === 1 ? 'y' : 'ies'} to the trash? They can be restored from the trash (or with Undo).`, { actionLabel: 'Move to trash' }))) return
+  bulkBusy.value = true
+  try {
+    const res = await memoryClient.deleteMany({ ids })
+    const done = res.results.filter((r) => r.deleted).map((r) => r.id)
+    const failed = res.results.filter((r) => !r.deleted)
+    if (failed.length) toast.error(`${failed.length} could not be deleted: ${failed[0].error}`)
+    if (done.length) {
+      toast.success(`${done.length} memor${done.length === 1 ? 'y' : 'ies'} moved to trash`, {
+        duration: 10000,
+        action: { label: 'Undo', onClick: () => undoTrash(done) },
+      })
+    }
+    await load()
+  } catch (e) {
+    handleError(e)
+  } finally {
+    bulkBusy.value = false
+  }
+}
+
+async function undoTrash(ids) {
+  try {
+    await memoryClient.restoreFromTrash({ ids })
+    toast.success('Restored — memories are re-queued for indexing and will reappear shortly.')
+    await load()
+  } catch (e) {
+    handleError(e)
+  }
+}
+
+watch(inspectorChanged, () => load())
+watch(stale, reload)
 watch(includeExpired, reload)
 
 onMounted(reload)

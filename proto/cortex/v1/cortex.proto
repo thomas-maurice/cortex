@@ -39,6 +39,9 @@ service MemoryService {
   rpc GetMemory(GetMemoryRequest) returns (GetMemoryResponse) {}
   // Delete removes a memory by ID.
   rpc Delete(DeleteRequest) returns (DeleteResponse) {}
+  // DeleteMany moves up to 500 memories to the trash in one call, reporting
+  // success/failure per id. One in-flight call per tenant.
+  rpc DeleteMany(DeleteManyRequest) returns (DeleteManyResponse) {}
   // Status is a fast health/connectivity probe of the backing services.
   rpc Status(StatusRequest) returns (StatusResponse) {}
   // GetVersion reports the server's build version. Intentionally
@@ -450,10 +453,33 @@ message ListRequest {
   repeated string exclude_tags = 4; // drop memories carrying ANY of these
   repeated string any_tags = 5;     // memory must carry AT LEAST ONE of these
   bool include_expired = 20;        // keep memories whose valid_until has passed (default: hidden)
+  // stale selects the stale-memory review mode (default STALE_MODE_UNSPECIFIED =
+  // the normal newest-first listing, which ignores the fields below). Stale mode
+  // returns memories oldest-last-access first, paginated by offset/limit; the
+  // reference time for sorting is last_accessed_at, or created_at when never recalled.
+  StaleMode stale = 6;
+  // stale_days: with STALE_MODE_NOT_RECALLED_SINCE, the idle threshold in days
+  // (reference time older than N days; must be > 0).
+  int32 stale_days = 7;
+  // min_age_days: only memories created more than this many days ago can be
+  // stale, so brand-new memories are never flagged. Unset = 30; 0 disables.
+  optional int32 min_age_days = 8;
+  int32 offset = 9; // stale mode only: rows to skip (pagination)
+}
+
+enum StaleMode {
+  STALE_MODE_UNSPECIFIED = 0;
+  // never recalled: access_count == 0 and no last_accessed_at.
+  STALE_MODE_NEVER_RECALLED = 1;
+  // not recalled in stale_days: last_accessed_at older than N days, or never
+  // recalled AND created_at older than N days.
+  STALE_MODE_NOT_RECALLED_SINCE = 2;
 }
 
 message ListResponse {
   repeated Memory memories = 1;
+  // total matching rows before offset/limit (stale mode only; 0 otherwise).
+  int32 total = 2;
 }
 
 message DeleteRequest {
@@ -466,6 +492,24 @@ message DeleteRequest {
 
 message DeleteResponse {
   string status = 1; // "deleted"
+}
+
+// DeleteMany moves several memories to the trash (each via the normal Delete
+// path). Per-id failures do not abort the rest.
+message DeleteManyRequest {
+  repeated string ids = 1; // at most 500
+}
+
+message DeleteManyResult {
+  string id = 1; // normalized id
+  bool deleted = 2;
+  // error is empty on success; "not found" for unknown/other-tenant ids.
+  string error = 3;
+}
+
+message DeleteManyResponse {
+  repeated DeleteManyResult results = 1; // one per distinct input id, in input order
+  int32 deleted = 2;
 }
 
 message BackupSelfRequest {}
