@@ -133,6 +133,15 @@ func TestLocateDisambiguatesRepeatsByChunkIndex(t *testing.T) {
 	assert.Equal(t, rep, string(runes[s2:e2]))
 }
 
+// Split trims chunks with unicode.IsSpace, so exotic whitespace at a chunk edge
+// (NBSP, U+2028, \v, \f) must not stop the chunk being located.
+func TestLocateUnicodeWhitespace(t *testing.T) {
+	text := "intro\u00a0\u2028 the needle sentence.\v\f tail"
+	s, e, ok := Locate(text, "\u00a0the needle sentence.\u2028", 0)
+	require.True(t, ok)
+	assert.Equal(t, "the needle sentence.", string([]rune(text)[s:e]))
+}
+
 // Offsets count code points: an astral-plane emoji is 2 UTF-16 units and 4 bytes
 // but ONE rune.
 func TestLocateAstralRunes(t *testing.T) {

@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"unicode"
 	"unicode/utf8"
 
 	tiktoken "github.com/pkoukk/tiktoken-go"
@@ -236,7 +237,7 @@ func collapseSpace(s string) (string, []int) {
 	var orig []int
 	pendingSpace := false
 	for i, r := range []rune(s) {
-		if isSpace(r) {
+		if unicode.IsSpace(r) { // Split trims with unicode.IsSpace (NBSP, U+2028, \v, \f…)
 			pendingSpace = b.Len() > 0
 			continue
 		}

@@ -137,11 +137,12 @@ async function run() {
     const edgeList = []
     const dark = theme.value === 'dark'
     for (const h of res.hits) {
-      const m = h.memory
+      const m = { ...h.memory, _match: h.match } // _match -> inspector highlights the span
+      const ex = (h.match?.text ?? '').trim()
       nodeList.push({
         id: 'm:' + m.id,
         label: truncate(m.text, 30),
-        title: m.text,
+        title: ex && ex !== (m.text ?? '').trim() ? `matched: ${ex}` : m.text,
         color: nsNodeColors(m.namespace, dark),
         shape: 'dot',
         size: sizeFor(h.distance),

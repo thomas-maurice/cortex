@@ -20,6 +20,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"connectrpc.com/connect"
 	"github.com/spf13/cobra"
@@ -132,6 +133,45 @@ func mergeHits(lists [][]*cortexv1.Hit, limit int) []*cortexv1.Hit {
 	return out
 }
 
+// cutBytes shortens s to at most n bytes without splitting a UTF-8 rune.
+func cutBytes(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
+}
+
+// squash collapses whitespace runs to single spaces: chunk text joins sentences
+// with one space while the source may separate them with blank lines.
+func squash(s string) string { return strings.Join(strings.Fields(s), " ") }
+
+// recallText is the memory text injected for a hit, within maxChars bytes. When
+// the hit matched a chunk that a plain prefix cut would drop (a late section of a
+// long memory), the matched excerpt leads — it is the part relevant to the prompt
+// — followed by as much of the start of the memory as the budget allows, clearly
+// marked partial. Otherwise it is the plain (possibly truncated) text.
+func recallText(h *cortexv1.Hit, maxChars int) string {
+	text := strings.TrimSpace(h.GetMemory().GetText())
+	plain := text
+	if maxChars > 0 && len(text) > maxChars {
+		plain = cutBytes(text, maxChars) + "… [truncated]"
+	}
+	ex := strings.TrimSpace(h.GetMatch().GetText())
+	if ex == "" || ex == text || (maxChars <= 0) || len(text) <= maxChars || strings.Contains(squash(plain), squash(ex)) {
+		return plain
+	}
+	head := "[partial memory] matched: "
+	if len(ex) >= maxChars {
+		return head + cutBytes(ex, maxChars) + "… [truncated]"
+	}
+	out := head + ex
+	// len(ex) < maxChars here (the >= case returned above), so rest > 0.
+	return out + "\n[start of memory] " + cutBytes(text, maxChars-len(ex)) + "… [truncated]"
+}
+
 // formatRecall renders hits as the context block injected into the prompt. Each
 // memory carries its id so the model can edit/link/delete it, and the preamble
 // warns that matches are semantic and possibly stale.
@@ -144,10 +184,7 @@ func formatRecall(hits []*cortexv1.Hit, maxChars int) string {
 	b.WriteString("Memories auto-recalled from Cortex for this prompt (semantic matches — possibly stale or irrelevant; verify before relying on them). Use cortex_memory_search for more.\n")
 	for _, h := range hits {
 		m := h.GetMemory()
-		text := strings.TrimSpace(m.GetText())
-		if maxChars > 0 && len(text) > maxChars {
-			text = text[:maxChars] + "… [truncated]"
-		}
+		text := recallText(h, maxChars)
 		fmt.Fprintf(&b, "\n### [%s] dist=%.2f id=%s\n%s\n", m.GetNamespace(), h.GetDistance(), m.GetId(), text)
 	}
 	b.WriteString("</cortex-recall>\n")
