@@ -45,46 +45,22 @@ func (ts *TenantStore) ListNamespaces(ctx context.Context) ([]NamespaceStat, err
 		}
 	}
 
-	memQ := ts.s.client.Experimental().Search().
-		WithCollection(memory.ClassName).
-		WithProperties("namespace", "createdAt").
-		WithMetadata(&graphql.Metadata{ID: true}).
-		WithLimit(allCount)
-	if ts.t != "" {
-		memQ = memQ.WithTenant(ts.t)
-	}
-	memRes, err := memQ.Do(ctx)
-	if err != nil {
-		if !isTenantNotFound(err) {
-			return nil, fmt.Errorf("scan memories: %w", err)
-		}
-		// tenant not found → empty; memRes stays nil, no entries added
-	}
-	for _, r := range memRes {
+	err := ts.s.scanAll(ctx, memory.ClassName, ts.t, []string{"namespace", "createdAt"}, func(r graphql.SearchResult) {
 		st := get(propString(r.Properties, "namespace"))
 		st.MemoryCount++
 		bump(st, propString(r.Properties, "createdAt"))
+	})
+	if err != nil && !isTenantNotFound(err) {
+		return nil, fmt.Errorf("scan memories: %w", err)
 	}
 
-	sumQ := ts.s.client.Experimental().Search().
-		WithCollection(memory.SummaryClassName).
-		WithProperties("namespace", "updatedAt").
-		WithMetadata(&graphql.Metadata{ID: true}).
-		WithLimit(allCount)
-	if ts.t != "" {
-		sumQ = sumQ.WithTenant(ts.t)
-	}
-	sumRes, err := sumQ.Do(ctx)
-	if err != nil {
-		if !isTenantNotFound(err) {
-			return nil, fmt.Errorf("scan summaries: %w", err)
-		}
-		// tenant not found → empty; sumRes stays nil, no entries added
-	}
-	for _, r := range sumRes {
+	err = ts.s.scanAll(ctx, memory.SummaryClassName, ts.t, []string{"namespace", "updatedAt"}, func(r graphql.SearchResult) {
 		st := get(propString(r.Properties, "namespace"))
 		st.SummaryCount++
 		bump(st, propString(r.Properties, "updatedAt"))
+	})
+	if err != nil && !isTenantNotFound(err) {
+		return nil, fmt.Errorf("scan summaries: %w", err)
 	}
 
 	out := make([]NamespaceStat, 0, len(stats))
@@ -152,27 +128,17 @@ func (ts *TenantStore) renameInClass(ctx context.Context, className, from, to st
 // idsInNamespace returns the ids of every object in className whose namespace is
 // exactly the given value.
 func (ts *TenantStore) idsInNamespace(ctx context.Context, className, namespace string) ([]string, error) {
-	q := ts.s.client.Experimental().Search().
-		WithCollection(className).
-		WithMetadata(&graphql.Metadata{ID: true}).
-		WithLimit(allCount).
-		WithWhere(filters.Where().
-			WithPath([]string{"namespace"}).
-			WithOperator(filters.Equal).
-			WithValueText(namespace))
-	if ts.t != "" {
-		q = q.WithTenant(ts.t)
-	}
-	res, err := q.Do(ctx)
+	ids := make([]string, 0)
+	err := ts.s.scanAll(ctx, className, ts.t, []string{"namespace"}, func(r graphql.SearchResult) {
+		if propString(r.Properties, "namespace") == namespace {
+			ids = append(ids, r.ID)
+		}
+	})
 	if err != nil {
 		if isTenantNotFound(err) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("scan %s namespace %q: %w", className, namespace, err)
-	}
-	ids := make([]string, 0, len(res))
-	for _, r := range res {
-		ids = append(ids, r.ID)
 	}
 	return ids, nil
 }

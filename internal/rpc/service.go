@@ -27,8 +27,10 @@ import (
 	"github.com/thomas-maurice/cortex/internal/store"
 )
 
-// allLimit caps a full-store fetch (export/reindex). Canonical value is
-// store.AllLimit; this alias keeps call sites readable without a long prefix.
+// allLimit is the upper bound for user-facing List/Search limits (see
+// clampLimit). Canonical value is store.AllLimit; this alias keeps call sites
+// readable. It is NOT used for "need every row" paths (backup, reindex, export),
+// which cursor-page via store.TenantStore.ListAll instead.
 const allLimit = store.AllLimit
 
 const (
@@ -517,7 +519,7 @@ func (s *Service) Reindex(ctx context.Context, req *connect.Request[cortexv1.Rei
 	if err != nil {
 		return nil, err
 	}
-	recs, err := ts.List(ctx, store.ListOpts{Namespace: ns, Limit: allLimit})
+	recs, err := ts.ListAll(ctx, ns)
 	if err != nil {
 		return nil, err
 	}

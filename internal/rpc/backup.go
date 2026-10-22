@@ -364,11 +364,11 @@ func (s *Service) BackupSelf(ctx context.Context, _ *connect.Request[cortexv1.Ba
 	callerID, _ := identity.From(ctx)
 	tenant := callerID.UserID
 
-	recs, err := ts.List(ctx, store.ListOpts{Limit: allLimit})
+	recs, err := ts.ListAll(ctx, "")
 	if err != nil {
 		return nil, fmt.Errorf("list memories: %w", err)
 	}
-	sums, err := ts.ListSummaries(ctx, store.SummaryListOpts{Limit: allLimit})
+	sums, err := ts.ListAllSummaries(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list summaries: %w", err)
 	}
@@ -574,11 +574,11 @@ func (s *Service) runFullBackup(ctx context.Context) (*cortexv1.BackupAllRespons
 	totalSummaries := 0
 	for _, tenant := range tenants {
 		ts := s.store.Tenant(tenant)
-		recs, err := ts.List(ctx, store.ListOpts{Limit: allLimit})
+		recs, err := ts.ListAll(ctx, "")
 		if err != nil {
 			return nil, fmt.Errorf("list memories for tenant %q: %w", tenant, err)
 		}
-		sums, err := ts.ListSummaries(ctx, store.SummaryListOpts{Limit: allLimit})
+		sums, err := ts.ListAllSummaries(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("list summaries for tenant %q: %w", tenant, err)
 		}
