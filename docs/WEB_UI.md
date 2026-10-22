@@ -91,6 +91,7 @@ user/pass check for a user store and emit per-user claims.
 | `/sessions` | **Sessions** — conversation summaries (edit in place) | `ListSummaries`, `SummarizeSession` |
 | `/namespaces` | **Namespaces** — per-namespace counts; rename / delete a whole namespace | `ListNamespaces`, `RenameNamespace`, `DeleteNamespace` |
 | `/tags` | **Tags** — per-tag counts + last activity; rename / merge / delete; click opens Memories filtered by the tag (`/memories?tag=…&namespace=…`) | `ListTags`, `RenameTag`, `DeleteTag` |
+| `/trash` | **Trash** — deleted memories; restore / purge one / purge all (confirm dialogs) | `ListTrash`, `RestoreFromTrash`, `PurgeTrash` |
 | `/preferences` | **Preferences** — `global` + `preference` memories, edit/add/delete | `List`, `Save`, `UpdateMemory`, `Delete` |
 | `/backup` | **Backup** — export / import memories (JSON, no vectors) | `List`, `RestoreMemories` |
 | `/queue` | **Indexing** — live index-queue counts + dead letters; auto-refreshes | `IndexQueue`, `Dead` |
@@ -102,8 +103,17 @@ A table of every namespace with its memory count, summary count, and last
 activity. **Rename** is inline and metadata-only — the server PATCHes the
 `namespace` field on each object (memories *and* conversation summaries), so
 nothing is re-embedded; renaming into an existing namespace merges the two.
-**Delete** removes an entire namespace's memories and summaries and is guarded by
-a typed confirmation (you must type the namespace name).
+**Delete** removes an entire namespace and is guarded by a typed confirmation (you
+must type the namespace name): its memories are moved to the trash (restorable), its
+summaries are permanently removed.
+
+### Trash (`ui/src/views/TrashView.vue`)
+
+Table of soft-deleted memories (text excerpt, namespace, deleted-at, reason) newest
+first, with the server's retention shown. **Restore** re-queues a memory for indexing
+under its original id; **Purge** deletes one permanently. The view pages (50/page), filters by
+namespace and reason, supports multi-select with **Restore selected** / **Purge selected**, and
+**Restore all (matching)** / **Purge all (matching)** (the latter requires typing `purge`). Deleting from the Memories view / inspector says "moved to trash".
 
 ### Tags (`ui/src/views/TagsView.vue`)
 
@@ -210,7 +220,7 @@ ui/
     utils/connect.js       typed Connect client (createClient; attaches the JWT)
     utils/api.js           /auth/login client
     views/                 LoginView, MemoriesView, GraphView, ExploreView,
-                           SessionsView, NamespacesView, TagsView, PreferencesView,
+                           SessionsView, NamespacesView, TagsView, TrashView, PreferencesView,
                            BackupView, QueueView (Indexing), StatusView
 internal/rpc/
   jwt.go                   HS256 issue/parse

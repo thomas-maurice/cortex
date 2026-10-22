@@ -424,13 +424,13 @@ func (s *Store) TouchApiKeyLastUsed(ctx context.Context, id string, at time.Time
 	})
 }
 
-// DropTenant removes a user's memory tenant from all three MT classes (Memory,
-// MemoryChunk, ConversationSummary). It is called by the P5 DeleteUser RPC after
+// DropTenant removes a user's memory tenant from all MT classes (Memory,
+// MemoryChunk, ConversationSummary, Trash). It is called by the P5 DeleteUser RPC after
 // cascading the api-key deletion. A missing tenant (never written to) is silently
 // ignored so the delete is idempotent. Only meaningful when multi-tenancy is on;
 // callers must check s.multiTenant before calling (the RPC layer does this).
 func (s *Store) DropTenant(ctx context.Context, userID string) error {
-	for _, class := range []string{memory.ClassName, memory.ChunkClassName, memory.SummaryClassName} {
+	for _, class := range []string{memory.ClassName, memory.ChunkClassName, memory.SummaryClassName, memory.TrashClassName} {
 		if err := s.client.Schema().TenantsDeleter().
 			WithClassName(class).WithTenants(userID).Do(ctx); err != nil {
 			// 404 / tenant-not-found means the user never had any data — no-op.

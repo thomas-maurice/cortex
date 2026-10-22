@@ -43,7 +43,7 @@ func TestHybridSurfacesKeyword(t *testing.T) {
 	require.NoError(t, err)
 
 	// Fresh class so prior runs don't interfere.
-	_ = st.DeleteClass(ctx)
+	_ = st.DeleteAllClasses(ctx)
 	require.NoError(t, st.EnsureSchema(ctx))
 
 	// MT off (empty tenant) — identical to pre-P3 single-user behaviour.
@@ -120,5 +120,5 @@ func TestHybridSurfacesKeyword(t *testing.T) {
 		assert.Equal(t, keywordID, hits[0].ID, "with keyword weight the exact-token doc must be the top hit")
 	})
 
-	_ = st.DeleteClass(ctx)
+	_ = st.DeleteAllClasses(ctx)
 }

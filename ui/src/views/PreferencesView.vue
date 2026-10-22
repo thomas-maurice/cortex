@@ -204,7 +204,7 @@ async function saveEdit(m) {
 }
 
 async function remove(id) {
-  if (!(await confirmDialog('Delete this preference? This cannot be undone.', { title: 'Delete preference', actionLabel: 'Delete' }))) return
+  if (!(await confirmDialog('Delete this preference? It is moved to the trash and can be restored from there.', { title: 'Delete preference', actionLabel: 'Delete' }))) return
   error.value = ''
   try {
     await memoryClient.delete({ id })

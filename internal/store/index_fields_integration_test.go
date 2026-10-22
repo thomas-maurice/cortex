@@ -31,8 +31,8 @@ func integrationStore(t *testing.T) (*Store, string) {
 	require.NoError(t, err)
 	st.SetMultiTenant(mt)
 	ctx := context.Background()
-	_ = st.DeleteClass(ctx)
-	t.Cleanup(func() { _ = st.DeleteClass(ctx) })
+	_ = st.DeleteAllClasses(ctx)
+	t.Cleanup(func() { _ = st.DeleteAllClasses(ctx) })
 	if mt {
 		return st, "idx-fields-tenant"
 	}

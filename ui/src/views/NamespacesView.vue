@@ -139,8 +139,8 @@ async function confirmRename(ns) {
 async function remove(ns) {
   // Bulk irreversible delete.
   const ok = await confirmDialog(
-    `Delete the entire "${ns.name}" namespace? This permanently removes ` +
-      `${Number(ns.memoryCount)} memories and ${Number(ns.summaryCount)} summaries and cannot be undone.`,
+    `Delete the entire "${ns.name}" namespace? ${Number(ns.memoryCount)} memories are moved to the trash ` +
+      `(restorable until the retention period expires); ${Number(ns.summaryCount)} summaries are permanently removed.`,
     { title: 'Delete namespace', actionLabel: 'Delete', destructive: true, typeToConfirm: ns.name },
   )
   if (!ok) return

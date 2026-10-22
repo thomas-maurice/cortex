@@ -103,6 +103,9 @@ type Config struct {
 	// (CORTEX_S3_* / AWS_*). When S3.Enabled every successful full backup is also
 	// uploaded. Credentials live in memory only — never persisted or exposed.
 	S3 S3Config
+	// TrashRetention is how long soft-deleted memories stay restorable before the
+	// periodic sweep purges them (TRASH_RETENTION; 0 = keep forever).
+	TrashRetention time.Duration
 }
 
 // Service implements the MemoryService Connect handler. It is the single owner
@@ -135,6 +138,10 @@ type Service struct {
 	// created lazily so NewService stays infallible. Tests may preset it.
 	lockerMu sync.Mutex
 	locker   *dlock.Locker
+	// scanGate: one in-flight DeleteNamespace / ListTrash / PurgeTrash(all) per
+	// tenant — each scans or buffers a whole namespace or trash (DeleteNamespace and
+	// the bulk PurgeTrash/RestoreFromTrash forms; read-only ListTrash is not gated).
+	scanGate tenantGate
 	// afterGate, when non-nil, runs right after a gate is acquired; a non-nil
 	// return aborts the call. Test seam only (lets a test hold a call in flight).
 	afterGate func() error
@@ -540,11 +547,16 @@ func (s *Service) Delete(ctx context.Context, req *connect.Request[cortexv1.Dele
 	if err != nil {
 		return nil, err
 	}
+	reason, ok := memory.NormalizeDeleteReason(strings.TrimSpace(req.Msg.GetReason()))
+	if !ok {
+		return nil, connect.NewError(connect.CodeInvalidArgument,
+			fmt.Errorf("reason %q is not allowed (use delete, %s or %s)", req.Msg.GetReason(), memory.TrashReasonStaleReview, memory.TrashReasonDuplicateReview))
+	}
 	ts, err := s.tenantStore(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if err := ts.Delete(ctx, id); err != nil {
+	if err := ts.DeleteWithReason(ctx, id, reason); err != nil {
 		return nil, err
 	}
 	return connect.NewResponse(&cortexv1.DeleteResponse{Status: "deleted"}), nil
@@ -570,6 +582,9 @@ func (s *Service) Status(ctx context.Context, _ *connect.Request[cortexv1.Status
 		if ts, err := s.tenantStore(ctx); err == nil {
 			if c, err := ts.Count(ctx, ""); err == nil {
 				out.MemoryCount = int64(c)
+			}
+			if c, err := ts.CountTrash(ctx); err == nil {
+				out.TrashCount = int64(c)
 			}
 		}
 	}
@@ -1317,6 +1332,11 @@ func (s *Service) DeleteNamespace(ctx context.Context, req *connect.Request[cort
 	if ns == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("namespace must not be empty"))
 	}
+	release, err := s.gated(ctx, &s.scanGate, false, scanBusyMsg)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	ts, err := s.tenantStore(ctx)
 	if err != nil {
 		return nil, err
@@ -1568,7 +1588,8 @@ func removeString(xs []string, v string) []string {
 //  2. Snapshot: list every memory and summary from the non-MT store and write a
 //     backup JSON file (reusing writeBackup) — the safety net before anything
 //     destructive.
-//  3. Drop the three non-MT classes + recreate them with MT enabled (EnsureSchema
+//  3. Drop the non-MT classes (incl. Trash, whose entries are snapshotted and
+//     re-written into the target tenant) + recreate them with MT enabled (EnsureSchema
 //     in MT mode; the store was booted with SetMultiTenant(true)).
 //  4. Re-import every snapshotted memory into the bootstrap tenant via
 //     PublishIndex and every summary via PublishSummary. The worker re-embeds and
@@ -1624,20 +1645,41 @@ func (s *Service) MigrateMT(ctx context.Context, _ *connect.Request[cortexv1.Mig
 		return nil, fmt.Errorf("snapshot summaries: %w", err)
 	}
 
+	// The trash (soft-deleted memories) is converted too, not dropped: snapshot it
+	// while it is still non-MT. When the server booted in MT mode EnsureSchema
+	// already created Trash as MT (empty, nothing to carry over).
+	var trash []memory.TrashEntry
+	if trashMT, err := s.store.IsClassMultiTenant(ctx, memory.TrashClassName); err != nil {
+		return nil, fmt.Errorf("check trash MT status: %w", err)
+	} else if exists, err := s.store.ClassExists(ctx, memory.TrashClassName); err != nil {
+		return nil, fmt.Errorf("check trash class: %w", err)
+	} else if exists && !trashMT {
+		if trash, err = s.store.ListAllTrash(ctx); err != nil {
+			return nil, fmt.Errorf("snapshot trash: %w", err)
+		}
+	}
+
 	// Write the backup before anything destructive. Uses the same cortex export
 	// JSON format so the backup can be imported with `cortex import` if needed.
 	backupPath, err := s.writeBackup(recs)
 	if err != nil {
 		return nil, fmt.Errorf("write backup before migration: %w", err)
 	}
+	// The backup above holds memories only; park the trash next to it BEFORE the
+	// drop so a failure re-writing it afterwards cannot lose it.
+	trashPath, err := writeTrashSidecar(backupPath, trash)
+	if err != nil {
+		return nil, fmt.Errorf("write trash backup before migration: %w", err)
+	}
 	s.log.Info("migrate-mt: snapshot complete",
-		"memories", len(recs), "summaries", len(sums), "backup", backupPath)
+		"memories", len(recs), "summaries", len(sums), "trash", len(trash), "backup", backupPath, "trash_backup", trashPath)
 
-	// Drop the three non-MT classes and recreate them with MT enabled.
+	// Drop the non-MT classes (Trash included, its entries are re-written below)
+	// and recreate them with MT enabled.
 	// The store was booted with SetMultiTenant(true), so EnsureSchema creates
 	// MT classes. WARNING: DeleteClass is irreversible; the backup is the
 	// recovery path.
-	if err := s.store.DeleteClass(ctx); err != nil {
+	if err := s.store.DeleteAllClasses(ctx); err != nil {
 		return nil, fmt.Errorf("drop non-MT classes: %w", err)
 	}
 	if err := s.store.EnsureSchema(ctx); err != nil {
@@ -1676,9 +1718,25 @@ func (s *Service) MigrateMT(ctx context.Context, _ *connect.Request[cortexv1.Mig
 		summariesQueued++
 	}
 
+	// Carry the trash over LAST and non-fatally: memories and summaries are already
+	// re-queued, so a trash failure must not abort the (one-shot, un-re-runnable)
+	// migration. Entries go in directly (not via the index path: no vector, and
+	// they keep deletedAt/reason). Failures are logged and counted; the sidecar
+	// file holds every entry.
+	tts := s.store.Tenant(targetTenant)
+	trashFailed := 0
+	for _, e := range trash {
+		if err := tts.PutTrashEntry(ctx, e); err != nil {
+			trashFailed++
+			s.log.Error("migrate-mt: trash entry not migrated", "id", e.ID, "trash_backup", trashPath, "err", err)
+		}
+	}
+
 	s.log.Info("migrate-mt: re-import queued",
 		"memories_queued", memoriesQueued,
 		"summaries_queued", summariesQueued,
+		"trash_migrated", len(trash)-trashFailed,
+		"trash_failed", trashFailed,
 		"tenant", targetTenant,
 	)
 
@@ -1689,12 +1747,51 @@ func (s *Service) MigrateMT(ctx context.Context, _ *connect.Request[cortexv1.Mig
 		MemoriesQueued:    int32(memoriesQueued),
 		SummariesQueued:   int32(summariesQueued),
 		Tenant:            targetTenant,
+		TrashMigrated:     int32(len(trash) - trashFailed),
 		Message: fmt.Sprintf(
-			"migration complete: %d memories and %d summaries queued for re-import into tenant %q; "+
-				"backup at %s; chunks will regenerate as the worker processes the queue",
-			memoriesQueued, summariesQueued, targetTenant, backupPath,
+			"migration complete: %d memories and %d summaries queued for re-import into tenant %q "+
+				"(%d trash entries carried over%s); backup at %s; chunks will regenerate as the worker processes the queue%s",
+			memoriesQueued, summariesQueued, targetTenant, len(trash)-trashFailed, trashNote(trashPath), backupPath,
+			trashFailureNote(trashFailed, trashPath),
 		),
 	}), nil
+}
+
+// writeTrashSidecar writes the snapshotted trash entries to
+// "<backup-name>.trash.json" next to the migration backup (same JSON style; the
+// records' fields plus deletedAt/reason, so `cortex import` can re-create them as
+// live memories). Returns "" when there is no trash to save.
+func writeTrashSidecar(backupPath string, trash []memory.TrashEntry) (string, error) {
+	if len(trash) == 0 {
+		return "", nil
+	}
+	path := strings.TrimSuffix(backupPath, ".json") + ".trash.json"
+	data, err := json.MarshalIndent(trash, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+// trashFailureNote warns that some trash entries were not migrated and where the
+// full copy is. Importing the sidecar restores them as LIVE memories (deletedAt
+// and reason are lost).
+func trashFailureNote(failed int, sidecar string) string {
+	if failed == 0 {
+		return ""
+	}
+	return fmt.Sprintf("; WARNING: %d trash entries could NOT be migrated (see server log) — all are saved in %s; "+
+		"`cortex import %s` restores them as LIVE memories (deletedAt/reason are lost)", failed, sidecar, sidecar)
+}
+
+func trashNote(path string) string {
+	if path == "" {
+		return ""
+	}
+	return "; saved to " + path
 }
 
 // writeBackup snapshots records (text + metadata, no vectors) to a timestamped
@@ -1712,7 +1809,7 @@ func (s *Service) writeBackup(recs []memory.Record) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	if err := os.WriteFile(path, data, 0o600); err != nil {
 		return "", fmt.Errorf("write backup: %w", err)
 	}
 	s.log.Info("wrote reindex backup", "path", path, "count", len(recs))

@@ -155,6 +155,8 @@ services:
       # files are retained in CORTEX_BACKUP_DIR after each backup (default 7).
       # BACKUP_INTERVAL: ${BACKUP_INTERVAL:-}
       # BACKUP_KEEP: ${BACKUP_KEEP:-7}
+      # How long deleted memories stay restorable in the trash (Go duration e.g. 720h, NOT 30d; 0 = forever; invalid = server won't start).
+      # TRASH_RETENTION: ${TRASH_RETENTION:-168h}
       # Dedicated metrics listener (/metrics, /healthz, /readyz; unauthenticated)
       # inside the container. /metrics is never served on the API port (8080).
       # Not published to the host. Empty disables it (default is :9090).

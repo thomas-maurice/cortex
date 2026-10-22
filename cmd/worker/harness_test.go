@@ -47,6 +47,8 @@ type fakeStore struct {
 	rngMu     sync.Mutex
 	rng       *rand.Rand
 	log       []string // audit trail of write ops, "<op> <id>"
+	// deleteReasons records the trash reason of every delete, "<id> <reason>".
+	deleteReasons []string
 	// dupHits are returned by SearchMemoryVectors (dedup neighbours).
 	dupHits []string
 	// writeDelay slows every index write (Upsert/UpdateIndexFields), to model a
@@ -200,10 +202,11 @@ func (ft *fakeTenant) ReplaceChunks(_ context.Context, rec memory.Record, chunks
 	return nil
 }
 
-func (ft *fakeTenant) Delete(_ context.Context, id string) error {
+func (ft *fakeTenant) DeleteWithReason(_ context.Context, id, reason string) error {
 	ft.f.yield()
 	ft.f.mu.Lock()
 	defer ft.f.mu.Unlock()
+	ft.f.deleteReasons = append(ft.f.deleteReasons, id+" "+reason)
 	delete(ft.f.objs, ft.key(id))
 	delete(ft.f.chunks, ft.key(id))
 	return nil

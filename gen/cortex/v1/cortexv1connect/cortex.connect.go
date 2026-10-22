@@ -105,6 +105,14 @@ const (
 	MemoryServiceRenameTagProcedure = "/cortex.v1.MemoryService/RenameTag"
 	// MemoryServiceDeleteTagProcedure is the fully-qualified name of the MemoryService's DeleteTag RPC.
 	MemoryServiceDeleteTagProcedure = "/cortex.v1.MemoryService/DeleteTag"
+	// MemoryServiceListTrashProcedure is the fully-qualified name of the MemoryService's ListTrash RPC.
+	MemoryServiceListTrashProcedure = "/cortex.v1.MemoryService/ListTrash"
+	// MemoryServiceRestoreFromTrashProcedure is the fully-qualified name of the MemoryService's
+	// RestoreFromTrash RPC.
+	MemoryServiceRestoreFromTrashProcedure = "/cortex.v1.MemoryService/RestoreFromTrash"
+	// MemoryServicePurgeTrashProcedure is the fully-qualified name of the MemoryService's PurgeTrash
+	// RPC.
+	MemoryServicePurgeTrashProcedure = "/cortex.v1.MemoryService/PurgeTrash"
 	// MemoryServiceMigrateMTProcedure is the fully-qualified name of the MemoryService's MigrateMT RPC.
 	MemoryServiceMigrateMTProcedure = "/cortex.v1.MemoryService/MigrateMT"
 	// MemoryServiceBackupSelfProcedure is the fully-qualified name of the MemoryService's BackupSelf
@@ -263,6 +271,17 @@ type MemoryServiceClient interface {
 	// DeleteTag removes a tag from every memory (the memories are kept).
 	// Single-flight per tenant.
 	DeleteTag(context.Context, *connect.Request[v1.DeleteTagRequest]) (*connect.Response[v1.DeleteTagResponse], error)
+	// ListTrash lists the caller's trashed (soft-deleted) memories, newest
+	// deletion first. Deletes (Delete, supersedes, DeleteNamespace) move the record
+	// into a Trash class instead of destroying it; entries expire after the
+	// server's TRASH_RETENTION.
+	ListTrash(context.Context, *connect.Request[v1.ListTrashRequest]) (*connect.Response[v1.ListTrashResponse], error)
+	// RestoreFromTrash re-queues trashed memories through the normal index path
+	// (the worker re-embeds), keeping their ids, and removes them from the trash.
+	// NotFound for an unknown id; AlreadyExists when a live memory has that id.
+	RestoreFromTrash(context.Context, *connect.Request[v1.RestoreFromTrashRequest]) (*connect.Response[v1.RestoreFromTrashResponse], error)
+	// PurgeTrash permanently deletes trashed memories (by ids, or all).
+	PurgeTrash(context.Context, *connect.Request[v1.PurgeTrashRequest]) (*connect.Response[v1.PurgeTrashResponse], error)
 	// MigrateMT performs a one-shot migration from a non-MT store to a
 	// multi-tenant store: it snapshots all memories and summaries, drops the
 	// three memory classes, recreates them with MT enabled, and re-imports every
@@ -531,6 +550,24 @@ func NewMemoryServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(memoryServiceMethods.ByName("DeleteTag")),
 			connect.WithClientOptions(opts...),
 		),
+		listTrash: connect.NewClient[v1.ListTrashRequest, v1.ListTrashResponse](
+			httpClient,
+			baseURL+MemoryServiceListTrashProcedure,
+			connect.WithSchema(memoryServiceMethods.ByName("ListTrash")),
+			connect.WithClientOptions(opts...),
+		),
+		restoreFromTrash: connect.NewClient[v1.RestoreFromTrashRequest, v1.RestoreFromTrashResponse](
+			httpClient,
+			baseURL+MemoryServiceRestoreFromTrashProcedure,
+			connect.WithSchema(memoryServiceMethods.ByName("RestoreFromTrash")),
+			connect.WithClientOptions(opts...),
+		),
+		purgeTrash: connect.NewClient[v1.PurgeTrashRequest, v1.PurgeTrashResponse](
+			httpClient,
+			baseURL+MemoryServicePurgeTrashProcedure,
+			connect.WithSchema(memoryServiceMethods.ByName("PurgeTrash")),
+			connect.WithClientOptions(opts...),
+		),
 		migrateMT: connect.NewClient[v1.MigrateMTRequest, v1.MigrateMTResponse](
 			httpClient,
 			baseURL+MemoryServiceMigrateMTProcedure,
@@ -685,6 +722,9 @@ type memoryServiceClient struct {
 	listTags                *connect.Client[v1.ListTagsRequest, v1.ListTagsResponse]
 	renameTag               *connect.Client[v1.RenameTagRequest, v1.RenameTagResponse]
 	deleteTag               *connect.Client[v1.DeleteTagRequest, v1.DeleteTagResponse]
+	listTrash               *connect.Client[v1.ListTrashRequest, v1.ListTrashResponse]
+	restoreFromTrash        *connect.Client[v1.RestoreFromTrashRequest, v1.RestoreFromTrashResponse]
+	purgeTrash              *connect.Client[v1.PurgeTrashRequest, v1.PurgeTrashResponse]
 	migrateMT               *connect.Client[v1.MigrateMTRequest, v1.MigrateMTResponse]
 	backupSelf              *connect.Client[v1.BackupSelfRequest, v1.BackupSelfResponse]
 	restoreSelf             *connect.Client[v1.RestoreSelfRequest, v1.RestoreSelfResponse]
@@ -850,6 +890,21 @@ func (c *memoryServiceClient) RenameTag(ctx context.Context, req *connect.Reques
 // DeleteTag calls cortex.v1.MemoryService.DeleteTag.
 func (c *memoryServiceClient) DeleteTag(ctx context.Context, req *connect.Request[v1.DeleteTagRequest]) (*connect.Response[v1.DeleteTagResponse], error) {
 	return c.deleteTag.CallUnary(ctx, req)
+}
+
+// ListTrash calls cortex.v1.MemoryService.ListTrash.
+func (c *memoryServiceClient) ListTrash(ctx context.Context, req *connect.Request[v1.ListTrashRequest]) (*connect.Response[v1.ListTrashResponse], error) {
+	return c.listTrash.CallUnary(ctx, req)
+}
+
+// RestoreFromTrash calls cortex.v1.MemoryService.RestoreFromTrash.
+func (c *memoryServiceClient) RestoreFromTrash(ctx context.Context, req *connect.Request[v1.RestoreFromTrashRequest]) (*connect.Response[v1.RestoreFromTrashResponse], error) {
+	return c.restoreFromTrash.CallUnary(ctx, req)
+}
+
+// PurgeTrash calls cortex.v1.MemoryService.PurgeTrash.
+func (c *memoryServiceClient) PurgeTrash(ctx context.Context, req *connect.Request[v1.PurgeTrashRequest]) (*connect.Response[v1.PurgeTrashResponse], error) {
+	return c.purgeTrash.CallUnary(ctx, req)
 }
 
 // MigrateMT calls cortex.v1.MemoryService.MigrateMT.
@@ -1051,6 +1106,17 @@ type MemoryServiceHandler interface {
 	// DeleteTag removes a tag from every memory (the memories are kept).
 	// Single-flight per tenant.
 	DeleteTag(context.Context, *connect.Request[v1.DeleteTagRequest]) (*connect.Response[v1.DeleteTagResponse], error)
+	// ListTrash lists the caller's trashed (soft-deleted) memories, newest
+	// deletion first. Deletes (Delete, supersedes, DeleteNamespace) move the record
+	// into a Trash class instead of destroying it; entries expire after the
+	// server's TRASH_RETENTION.
+	ListTrash(context.Context, *connect.Request[v1.ListTrashRequest]) (*connect.Response[v1.ListTrashResponse], error)
+	// RestoreFromTrash re-queues trashed memories through the normal index path
+	// (the worker re-embeds), keeping their ids, and removes them from the trash.
+	// NotFound for an unknown id; AlreadyExists when a live memory has that id.
+	RestoreFromTrash(context.Context, *connect.Request[v1.RestoreFromTrashRequest]) (*connect.Response[v1.RestoreFromTrashResponse], error)
+	// PurgeTrash permanently deletes trashed memories (by ids, or all).
+	PurgeTrash(context.Context, *connect.Request[v1.PurgeTrashRequest]) (*connect.Response[v1.PurgeTrashResponse], error)
 	// MigrateMT performs a one-shot migration from a non-MT store to a
 	// multi-tenant store: it snapshots all memories and summaries, drops the
 	// three memory classes, recreates them with MT enabled, and re-imports every
@@ -1315,6 +1381,24 @@ func NewMemoryServiceHandler(svc MemoryServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(memoryServiceMethods.ByName("DeleteTag")),
 		connect.WithHandlerOptions(opts...),
 	)
+	memoryServiceListTrashHandler := connect.NewUnaryHandler(
+		MemoryServiceListTrashProcedure,
+		svc.ListTrash,
+		connect.WithSchema(memoryServiceMethods.ByName("ListTrash")),
+		connect.WithHandlerOptions(opts...),
+	)
+	memoryServiceRestoreFromTrashHandler := connect.NewUnaryHandler(
+		MemoryServiceRestoreFromTrashProcedure,
+		svc.RestoreFromTrash,
+		connect.WithSchema(memoryServiceMethods.ByName("RestoreFromTrash")),
+		connect.WithHandlerOptions(opts...),
+	)
+	memoryServicePurgeTrashHandler := connect.NewUnaryHandler(
+		MemoryServicePurgeTrashProcedure,
+		svc.PurgeTrash,
+		connect.WithSchema(memoryServiceMethods.ByName("PurgeTrash")),
+		connect.WithHandlerOptions(opts...),
+	)
 	memoryServiceMigrateMTHandler := connect.NewUnaryHandler(
 		MemoryServiceMigrateMTProcedure,
 		svc.MigrateMT,
@@ -1495,6 +1579,12 @@ func NewMemoryServiceHandler(svc MemoryServiceHandler, opts ...connect.HandlerOp
 			memoryServiceRenameTagHandler.ServeHTTP(w, r)
 		case MemoryServiceDeleteTagProcedure:
 			memoryServiceDeleteTagHandler.ServeHTTP(w, r)
+		case MemoryServiceListTrashProcedure:
+			memoryServiceListTrashHandler.ServeHTTP(w, r)
+		case MemoryServiceRestoreFromTrashProcedure:
+			memoryServiceRestoreFromTrashHandler.ServeHTTP(w, r)
+		case MemoryServicePurgeTrashProcedure:
+			memoryServicePurgeTrashHandler.ServeHTTP(w, r)
 		case MemoryServiceMigrateMTProcedure:
 			memoryServiceMigrateMTHandler.ServeHTTP(w, r)
 		case MemoryServiceBackupSelfProcedure:
@@ -1658,6 +1748,18 @@ func (UnimplementedMemoryServiceHandler) RenameTag(context.Context, *connect.Req
 
 func (UnimplementedMemoryServiceHandler) DeleteTag(context.Context, *connect.Request[v1.DeleteTagRequest]) (*connect.Response[v1.DeleteTagResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cortex.v1.MemoryService.DeleteTag is not implemented"))
+}
+
+func (UnimplementedMemoryServiceHandler) ListTrash(context.Context, *connect.Request[v1.ListTrashRequest]) (*connect.Response[v1.ListTrashResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cortex.v1.MemoryService.ListTrash is not implemented"))
+}
+
+func (UnimplementedMemoryServiceHandler) RestoreFromTrash(context.Context, *connect.Request[v1.RestoreFromTrashRequest]) (*connect.Response[v1.RestoreFromTrashResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cortex.v1.MemoryService.RestoreFromTrash is not implemented"))
+}
+
+func (UnimplementedMemoryServiceHandler) PurgeTrash(context.Context, *connect.Request[v1.PurgeTrashRequest]) (*connect.Response[v1.PurgeTrashResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cortex.v1.MemoryService.PurgeTrash is not implemented"))
 }
 
 func (UnimplementedMemoryServiceHandler) MigrateMT(context.Context, *connect.Request[v1.MigrateMTRequest]) (*connect.Response[v1.MigrateMTResponse], error) {

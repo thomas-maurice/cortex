@@ -683,3 +683,35 @@ func TestFetchHealthTurnsUnreadyAfterContinuousFailure(t *testing.T) {
 	h.ok()
 	assert.NoError(t, h.err(50*time.Millisecond), "one successful pull restores readiness")
 }
+
+// A superseded source must be deleted WITH the trash reason naming its replacement
+// (so a bad consolidation is recoverable from the trash and attributable); the
+// merged record itself is indexed normally.
+func TestSupersedesGoesToTrash(t *testing.T) {
+	s := newStack(t, 1, time.Minute)
+	id, victim := uuid.NewString(), uuid.NewString()
+	seed(t, s, "", memory.Record{ID: victim, Text: "src"})
+	rec := memory.Record{ID: id, Text: "merged", Namespace: "ns", CreatedAt: time.Now()}
+	rec.Supersedes = []string{victim}
+	runIndex(t, s, indexMsg(t, 1, rec))
+
+	_, ok := s.fs.peek("", victim)
+	assert.False(t, ok, "source is deleted from the live store")
+	assert.Equal(t, []string{victim + " supersedes:" + id}, s.fs.deleteReasons)
+}
+
+// Unlink/purge-time removals must tolerate a MISSING (valid-UUID) endpoint: the
+// edge is still cleared from the side that exists, and the message is acked (not
+// retried), so purging a trashed memory strips the dangling link on its neighbour.
+func TestLinkRemoveWithMissingEndpoint(t *testing.T) {
+	s := newStack(t, 1, time.Minute)
+	b, gone := uuid.NewString(), uuid.NewString()
+	seed(t, s, "", memory.Record{ID: b, Text: "b", LinkedIDs: []string{gone, "x"}})
+
+	rm := linkMsg(t, memory.LinkMsg{Op: memory.LinkOpRemove, A: gone, B: b})
+	handleLink(context.Background(), testLog, s.m, s.js, s.locker, s.stores, rm)
+	got, _ := s.fs.peek("", b)
+	assert.Equal(t, []string{"x"}, got.LinkedIDs)
+	assert.EqualValues(t, 1, rm.acked.Load())
+	assert.Zero(t, rm.nakked.Load())
+}

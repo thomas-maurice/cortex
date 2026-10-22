@@ -62,9 +62,9 @@ func TestMigrateMTFlow(t *testing.T) {
 	// MT is OFF — simulates a pre-migration single-user deployment.
 	stNonMT.SetMultiTenant(false)
 
-	_ = stNonMT.DeleteClass(ctx) // ensure a clean slate
+	_ = stNonMT.DeleteAllClasses(ctx) // ensure a clean slate
 	require.NoError(t, stNonMT.EnsureSchema(ctx))
-	t.Cleanup(func() { _ = stNonMT.DeleteClass(ctx) })
+	t.Cleanup(func() { _ = stNonMT.DeleteAllClasses(ctx) })
 
 	// Confirm classes are NOT MT before migration.
 	isMT, err := stNonMT.IsClassMultiTenant(ctx, memory.ClassName)
@@ -103,6 +103,16 @@ func TestMigrateMTFlow(t *testing.T) {
 		}, vec), "seed summary %d", i)
 	}
 
+	// Two trashed memories (one deleted long ago) that must survive the conversion.
+	trashed := []memory.Record{
+		{ID: uuid.NewString(), Text: "trashed one", Namespace: "migration-test", Tags: []string{"x"}, CreatedAt: now},
+		{ID: uuid.NewString(), Text: "trashed two", Namespace: "other", CreatedAt: now},
+	}
+	deletedAt := []time.Time{now.Add(-48 * time.Hour).Truncate(time.Second), now.Truncate(time.Second)}
+	for i, r := range trashed {
+		require.NoError(t, ts.putTrash(ctx, r, memory.TrashReasonDelete, deletedAt[i]))
+	}
+
 	// Wait for all objects to be queryable.
 	require.EventuallyWithT(t, func(c *assert.CollectT) {
 		n, err := ts.Count(ctx, "")
@@ -129,8 +139,12 @@ func TestMigrateMTFlow(t *testing.T) {
 		assert.True(t, snappedIDs[id], "memory %s must appear in the snapshot", id)
 	}
 
+	trashSnap, err := stNonMT.ListAllTrash(ctx)
+	require.NoError(t, err)
+	require.Len(t, trashSnap, len(trashed), "ListAllTrash must snapshot the non-MT trash")
+
 	// --- Phase 2: rebuild as MT (drop + EnsureSchema with MT on). ---
-	require.NoError(t, stNonMT.DeleteClass(ctx), "drop non-MT classes")
+	require.NoError(t, stNonMT.DeleteAllClasses(ctx), "drop non-MT classes")
 
 	// Now create a NEW store handle with MT enabled — this is what the server
 	// does: it was booted with SetMultiTenant(true) before MigrateMT is called.
@@ -168,6 +182,13 @@ func TestMigrateMTFlow(t *testing.T) {
 		require.NoError(t, btsTenant.UpsertSummary(ctx, s, vec), "re-import summary %s", s.ConversationID)
 	}
 
+	isMTTrash, err := stMT.IsClassMultiTenant(ctx, memory.TrashClassName)
+	require.NoError(t, err)
+	assert.True(t, isMTTrash, "Trash class must be MT after migration")
+	for _, e := range trashSnap {
+		require.NoError(t, btsTenant.PutTrashEntry(ctx, e), "migrate trash entry %s", e.ID)
+	}
+
 	// Wait for all re-imported memories to be queryable in the bootstrap tenant.
 	require.EventuallyWithT(t, func(c *assert.CollectT) {
 		n, err := btsTenant.Count(ctx, "")
@@ -184,6 +205,27 @@ func TestMigrateMTFlow(t *testing.T) {
 		for _, r := range list {
 			assert.Equal(t, "migration-test", r.Namespace, "migrated memory must preserve namespace")
 		}
+	})
+
+	t.Run("trash is converted into the admin tenant with its metadata", func(t *testing.T) {
+		list, err := btsTenant.ListTrash(ctx, "")
+		require.NoError(t, err)
+		require.Len(t, list, len(trashed))
+		byID := map[string]memory.TrashEntry{}
+		for _, e := range list {
+			byID[e.ID] = e
+		}
+		for i, r := range trashed {
+			e, ok := byID[r.ID]
+			require.True(t, ok, "trashed %s survives migration", r.ID)
+			assert.Equal(t, r.Text, e.Text)
+			assert.Equal(t, r.Namespace, e.Namespace)
+			assert.True(t, deletedAt[i].Equal(e.DeletedAt), "deletedAt preserved (retention clock must not reset)")
+			assert.Equal(t, memory.TrashReasonDelete, e.Reason)
+		}
+		other, err := stMT.Tenant("other-user").ListTrash(ctx, "")
+		require.NoError(t, err)
+		assert.Empty(t, other)
 	})
 
 	t.Run("search works in bootstrap tenant after migration", func(t *testing.T) {

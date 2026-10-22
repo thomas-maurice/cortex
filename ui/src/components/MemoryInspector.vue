@@ -194,10 +194,10 @@ async function saveEdit() {
 }
 
 async function remove() {
-  if (!(await confirmDialog('Delete this memory?', { actionLabel: 'Delete' }))) return
+  if (!(await confirmDialog('Delete this memory? It is moved to the trash and can be restored from there.', { actionLabel: 'Delete' }))) return
   try {
     await memoryClient.delete({ id: m.value.id })
-    toast.success('Memory deleted')
+    toast.success('Memory moved to trash')
     closeInspector()
     bumpInspectorChanged()
   } catch (e) {

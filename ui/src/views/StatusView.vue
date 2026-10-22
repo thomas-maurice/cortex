@@ -27,6 +27,7 @@
           </TableRow>
           <TableRow><TableHead>Dimensions</TableHead><TableCell>{{ status.dims }}</TableCell></TableRow>
           <TableRow><TableHead>Memories</TableHead><TableCell>{{ status.memoryCount }}</TableCell></TableRow>
+          <TableRow><TableHead>Trash</TableHead><TableCell>{{ status.trashCount }}</TableCell></TableRow>
           <TableRow><TableHead>Version</TableHead><TableCell>{{ status.version }}</TableCell></TableRow>
         </TableBody>
       </Table>

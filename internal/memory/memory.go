@@ -4,6 +4,7 @@ package memory
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -14,6 +15,9 @@ const (
 	ClassName        = "Memory"
 	ChunkClassName   = "MemoryChunk"
 	SummaryClassName = "ConversationSummary"
+	// TrashClassName holds soft-deleted memories (see store/trash.go). Same tenancy
+	// as Memory, no vector.
+	TrashClassName = "Trash"
 	// UserClassName / ApiKeyClassName are the multi-tenancy identity registry —
 	// global (NON-multi-tenant) collections that hold the user accounts and API
 	// keys. They exist only when CORTEX_MULTI_TENANT is on, and are read/written by
@@ -245,4 +249,41 @@ type DeadLetter struct {
 	Error      string    `json:"error"`
 	Deliveries int       `json:"deliveries"`
 	FailedAt   time.Time `json:"failedAt"`
+}
+
+// Trash reasons recorded on a TrashEntry (the supersedes reason is suffixed with
+// the superseding memory's id).
+const (
+	TrashReasonDelete          = "delete"
+	TrashReasonSupersedes      = "supersedes:"
+	TrashReasonNamespaceDelete = "namespace-delete"
+	// Reasons a caller may pass to Delete (so mass deletions are filterable).
+	TrashReasonStaleReview     = "stale-review"
+	TrashReasonDuplicateReview = "duplicate-review"
+)
+
+// NormalizeDeleteReason maps a caller-supplied delete reason to one of the allowed
+// values ("" = "delete"); ok is false for anything outside the bounded set.
+func NormalizeDeleteReason(r string) (string, bool) {
+	switch r {
+	case "", TrashReasonDelete:
+		return TrashReasonDelete, true
+	case TrashReasonStaleReview, TrashReasonDuplicateReview:
+		return r, true
+	}
+	return "", false
+}
+
+// TrashReasonMatches reports whether an entry's reason satisfies a filter: empty
+// matches all, otherwise exact or a family prefix ("supersedes" matches
+// "supersedes:<id>").
+func TrashReasonMatches(reason, filter string) bool {
+	return filter == "" || reason == filter || strings.HasPrefix(reason, filter+":")
+}
+
+// TrashEntry is a soft-deleted Record plus when and why it was deleted.
+type TrashEntry struct {
+	Record
+	DeletedAt time.Time `json:"deletedAt"`
+	Reason    string    `json:"reason"`
 }
