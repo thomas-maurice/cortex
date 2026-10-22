@@ -146,6 +146,16 @@ services:
       # files are retained in CORTEX_BACKUP_DIR after each backup (default 7).
       # BACKUP_INTERVAL: ${BACKUP_INTERVAL:-}
       # BACKUP_KEEP: ${BACKUP_KEEP:-7}
+      # GET /metrics (Prometheus, unauthenticated) is on by default; set false on a
+      # publicly exposed server. /healthz and /readyz are always on.
+      METRICS_ENABLED: ${METRICS_ENABLED:-true}
+    healthcheck:
+      # The distroless image has no wget/curl, so the server probes its own /readyz.
+      test: ["CMD", "/usr/local/bin/cortex-server", "healthcheck"]
+      interval: 15s
+      timeout: 8s
+      retries: 5
+      start_period: 30s
     depends_on:
       - nats
       - weaviate

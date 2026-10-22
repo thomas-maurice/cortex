@@ -42,7 +42,7 @@ avoid colliding with other local services:
 | weaviate | 8081 (REST), 50051 (gRPC) | The live store — **has real data**. |
 | nats | 4223 (client), 8223 (mon) | JetStream; the index queue. |
 | ollama | 11434 | Embeddings. Model `qwen3-embedding:0.6b` (1024-dim). |
-| worker | — | NATS → Ollama → Weaviate. The only writer. |
+| worker | — | NATS → Ollama → Weaviate. The only writer. Ops HTTP on `:9090` inside the container (`METRICS_ADDR`; not published). |
 
 Common commands (run from the repo root):
 
@@ -54,6 +54,11 @@ make logs      # tail worker + server logs
 make model     # pull the embedding model into the running ollama container
 docker compose ps
 ```
+
+The server also serves unauthenticated `GET /healthz`, `/readyz` (503 if NATS/Weaviate/Ollama
+is down; body is ok/fail per check only) and `/metrics` (Prometheus; `METRICS_ENABLED=false`
+turns it off) — `curl http://localhost:8088/readyz` needs no token. The compose server
+healthcheck runs `cortex-server healthcheck` (distroless image: no wget/curl).
 
 Quick health / smoke checks against the running server (auth is on, so mint a
 JWT first — an `unauthenticated` reply still proves the server is up):
@@ -166,6 +171,12 @@ should encode *why* the behaviour matters, not just what it does (Rule 9).
 - Two Weaviate classes: `Memory` and `ConversationSummary` (one per
   conversation, upserted). A namespace conceptually spans **both** — anything that
   renames/deletes a namespace must touch both classes or it orphans summaries.
+
+- **Observability** lives in `internal/obs` (shared registry, `/healthz` `/readyz` `/metrics`
+  handlers, dependency probes reusing `Store.Ready` / `Embedder.Reachable`). Server RPC metrics are
+  a Connect interceptor + a scrape-time queue collector in `internal/rpc/metrics.go`; worker metrics
+  are `cmd/worker/metrics.go` (passed explicitly, nil-safe; embed latency via `embed.Client.SetObserver`).
+  Never put user input, tenant ids or namespaces in metric labels. See README "Observability".
 
 Package map: `internal/rpc` (service + auth/JWT/login + client), `internal/store`
 (Weaviate schema/queries), `internal/bus` (NATS), `internal/embed` (Ollama),

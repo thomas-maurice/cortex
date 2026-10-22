@@ -20,6 +20,7 @@ type Client struct {
 	baseURL string
 	model   string
 	http    *http.Client
+	observe func(d time.Duration, err error)
 }
 
 // New returns an embedder. baseURL e.g. "http://localhost:11434",
@@ -31,6 +32,11 @@ func New(baseURL, model string) *Client {
 		http:    &http.Client{Timeout: ollamaClientTimeout},
 	}
 }
+
+// SetObserver registers a callback invoked after every Embed call with its total
+// duration (retries included) and final error. Used by the worker for metrics;
+// call before the client is shared between goroutines.
+func (c *Client) SetObserver(fn func(d time.Duration, err error)) { c.observe = fn }
 
 // Model returns the embedding model this client uses.
 func (c *Client) Model() string { return c.model }
@@ -158,6 +164,15 @@ const embedRetryBackoff = 200 * time.Millisecond
 // failure, or an empty vector are NOT retried: re-issuing an identical request
 // would not change the outcome.
 func (c *Client) Embed(ctx context.Context, text string) ([]float32, error) {
+	start := time.Now()
+	vec, err := c.embed(ctx, text)
+	if c.observe != nil {
+		c.observe(time.Since(start), err)
+	}
+	return vec, err
+}
+
+func (c *Client) embed(ctx context.Context, text string) ([]float32, error) {
 	body, err := json.Marshal(embedReq{Model: c.model, Prompt: text})
 	if err != nil {
 		return nil, err

@@ -653,23 +653,16 @@ func (s *Service) IndexQueue(ctx context.Context, _ *connect.Request[cortexv1.In
 	}
 	out := &cortexv1.IndexQueueResponse{}
 
-	cons, err := s.js.Consumer(ctx, memory.StreamName, memory.ConsumerName)
-	if err != nil {
-		// No consumer yet means the worker has never started; report an empty
-		// queue rather than failing the probe.
-		if errors.Is(err, jetstream.ErrConsumerNotFound) {
-			return connect.NewResponse(out), nil
-		}
-		return nil, err
-	}
-	out.ConsumerPresent = true
-
-	info, err := cons.Info(ctx)
+	present, pending, inFlight, err := s.queueStats(ctx)
 	if err != nil {
 		return nil, err
 	}
-	out.Pending = int64(info.NumPending)
-	out.InFlight = int64(info.NumAckPending)
+	out.ConsumerPresent = present
+	if !present {
+		return connect.NewResponse(out), nil
+	}
+	out.Pending = pending
+	out.InFlight = inFlight
 
 	dls, err := bus.FetchDead(ctx, s.js)
 	if err != nil {

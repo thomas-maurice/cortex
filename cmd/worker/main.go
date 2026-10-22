@@ -6,8 +6,10 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"slices"
@@ -18,11 +20,13 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go/jetstream"
+	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/thomas-maurice/cortex/internal/bus"
 	"github.com/thomas-maurice/cortex/internal/chunk"
 	"github.com/thomas-maurice/cortex/internal/embed"
 	"github.com/thomas-maurice/cortex/internal/memory"
+	"github.com/thomas-maurice/cortex/internal/obs"
 	"github.com/thomas-maurice/cortex/internal/store"
 )
 
@@ -102,6 +106,9 @@ func main() {
 		// scopes its store writes by the payload's tenant when on. Must match the
 		// server's CORTEX_MULTI_TENANT.
 		multiTenant = envBool("CORTEX_MULTI_TENANT", true)
+		// metricsAddr is the listen address of the ops HTTP server (/metrics,
+		// /healthz, /readyz). An explicitly empty METRICS_ADDR disables it.
+		metricsAddr = envOrEmpty("METRICS_ADDR", ":9090")
 	)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -134,6 +141,9 @@ func main() {
 	checkSchema(ctx, log, st)
 
 	embedder := embed.New(ollamaURL, ollamaModel)
+	reg := obs.NewRegistry()
+	m := newMetrics(reg)
+	embedder.SetObserver(m.observeEmbed)
 
 	// A nil chunker means chunking is disabled: indexChunks becomes a no-op and the
 	// worker only writes whole-memory vectors (the server then searches those).
@@ -175,8 +185,12 @@ func main() {
 		"dedup_distance", dedupDistance, "chunking_enabled", chunkingEnabled,
 		"chunk_max_tokens", chunkMaxTokens, "chunk_overlap", chunkOverlap, "multi_tenant", multiTenant)
 
+	if metricsAddr != "" {
+		serveOps(ctx, log, metricsAddr, reg, obs.DependencyChecks(nc, st, embedder))
+	}
+
 	cc, err := cons.Consume(func(msg jetstream.Msg) {
-		handle(ctx, log, js, embedder, st, chunker, msg, dedupDistance)
+		handle(ctx, log, m, js, embedder, st, chunker, msg, dedupDistance)
 	})
 	if err != nil {
 		log.Error("consume", "err", err)
@@ -185,7 +199,7 @@ func main() {
 	defer cc.Stop()
 
 	lcc, err := linkCons.Consume(func(msg jetstream.Msg) {
-		handleLink(ctx, log, js, st, msg)
+		handleLink(ctx, log, m, js, st, msg)
 	})
 	if err != nil {
 		log.Error("consume links", "err", err)
@@ -195,6 +209,38 @@ func main() {
 
 	<-ctx.Done()
 	log.Info("shutting down")
+}
+
+// envOrEmpty is like env but distinguishes "unset" (use def) from "set to empty"
+// (returns ""), so an operator can switch a feature off with KEY="".
+func envOrEmpty(key, def string) string {
+	if v, ok := os.LookupEnv(key); ok {
+		return v
+	}
+	return def
+}
+
+// serveOps runs the ops HTTP server (/metrics, /healthz, /readyz) in the
+// background and shuts it down when ctx is cancelled. A failure to listen is
+// logged but not fatal: metrics must never take the indexer down.
+func serveOps(ctx context.Context, log *slog.Logger, addr string, reg *prometheus.Registry, checks []obs.Check) {
+	mux := http.NewServeMux()
+	obs.Mount(mux, reg, checks)
+	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	go func() {
+		<-ctx.Done()
+		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(shutCtx); err != nil {
+			log.Error("ops http shutdown", "err", err)
+		}
+	}()
+	go func() {
+		log.Info("worker ops http listening", "addr", addr)
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Error("ops http server", "err", err)
+		}
+	}()
 }
 
 // checkSchema verifies the Weaviate classes exist and are correctly shaped after
@@ -239,12 +285,12 @@ func ensureSchemaWithRetry(ctx context.Context, log *slog.Logger, st *store.Stor
 
 // handle dispatches by subject: fact-index events and conversation-summary
 // events share one durable consumer.
-func handle(ctx context.Context, log *slog.Logger, js jetstream.JetStream, embedder *embed.Client, st *store.Store, chunker *chunk.Chunker, msg jetstream.Msg, dedupDistance float32) {
+func handle(ctx context.Context, log *slog.Logger, m *metrics, js jetstream.JetStream, embedder *embed.Client, st *store.Store, chunker *chunk.Chunker, msg jetstream.Msg, dedupDistance float32) {
 	if msg.Subject() == memory.SubjectSummary {
-		handleSummary(ctx, log, js, embedder, st, msg)
+		handleSummary(ctx, log, m, js, embedder, st, msg)
 		return
 	}
-	handleIndex(ctx, log, js, embedder, st, chunker, msg, dedupDistance)
+	handleIndex(ctx, log, m, js, embedder, st, chunker, msg, dedupDistance)
 }
 
 // deadLetterPublisher is the signature for publishing a dead-letter record.
@@ -258,7 +304,7 @@ type deadLetterPublisher func(dl memory.DeadLetter) error
 // or NAK-s if the dead-letter publish itself fails (so NATS redelivers and we
 // get another chance to preserve the bytes rather than silently dropping them).
 // A durability queue must never silently lose bytes.
-func deadLetterMalformed(ctx context.Context, log *slog.Logger, pub deadLetterPublisher, msg jetstream.Msg, unmarshalErr error) {
+func deadLetterMalformed(ctx context.Context, log *slog.Logger, m *metrics, kind string, pub deadLetterPublisher, msg jetstream.Msg, unmarshalErr error) {
 	raw := msg.Data()
 	dl := memory.DeadLetter{
 		Record: memory.Record{
@@ -275,9 +321,11 @@ func deadLetterMalformed(ctx context.Context, log *slog.Logger, pub deadLetterPu
 		if nerr := msg.Nak(); nerr != nil {
 			log.Warn("msg nak failed", "err", nerr)
 		}
+		m.count(kind, outcomeRetry)
 		return
 	}
 	log.Error("bad payload, dead-lettered", "raw_bytes", len(raw), "err", unmarshalErr)
+	m.count(kind, outcomeDead)
 	if nerr := msg.Term(); nerr != nil {
 		log.Warn("msg term failed", "err", nerr)
 	}
@@ -287,11 +335,11 @@ func deadLetterMalformed(ctx context.Context, log *slog.Logger, pub deadLetterPu
 // conversation, replaced in place). Summaries are reproducible — the agent
 // re-summarises periodically — so on permanent failure we log loudly and ack
 // rather than dead-letter.
-func handleSummary(ctx context.Context, log *slog.Logger, js jetstream.JetStream, embedder *embed.Client, st *store.Store, msg jetstream.Msg) {
+func handleSummary(ctx context.Context, log *slog.Logger, m *metrics, js jetstream.JetStream, embedder *embed.Client, st *store.Store, msg jetstream.Msg) {
 	var sum memory.Summary
 	if err := json.Unmarshal(msg.Data(), &sum); err != nil {
 		pub := func(dl memory.DeadLetter) error { return bus.PublishDead(ctx, js, dl) }
-		deadLetterMalformed(ctx, log, pub, msg, err)
+		deadLetterMalformed(ctx, log, m, kindSummary, pub, msg, err)
 		return
 	}
 
@@ -324,9 +372,7 @@ func handleSummary(ctx context.Context, log *slog.Logger, js jetstream.JetStream
 			"embed_ms", embedDur.Milliseconds(), "store_ms", storeDur.Milliseconds(),
 			"total_ms", (embedDur + storeDur).Milliseconds(),
 			"queue_latency_ms", time.Since(sum.UpdatedAt).Milliseconds())
-		if nerr := msg.Ack(); nerr != nil {
-			log.Warn("msg ack failed", "err", nerr)
-		}
+		ack(log, m, kindSummary, msg)
 		return
 	}
 
@@ -339,12 +385,22 @@ func handleSummary(ctx context.Context, log *slog.Logger, js jetstream.JetStream
 		if nerr := msg.Ack(); nerr != nil {
 			log.Warn("msg ack failed", "err", nerr)
 		}
+		m.count(kindSummary, outcomeTerm)
 		return
 	}
 	log.Warn("summarizing failed, will retry", "conversation", sum.ConversationID, "deliveries", deliveries, "err", procErr)
 	if nerr := msg.NakWithDelay(2 * time.Second); nerr != nil {
 		log.Warn("msg nak failed", "err", nerr)
 	}
+	m.count(kindSummary, outcomeRetry)
+}
+
+// ack acknowledges msg as successfully processed and counts it.
+func ack(log *slog.Logger, m *metrics, kind string, msg jetstream.Msg) {
+	if err := msg.Ack(); err != nil {
+		log.Warn("msg ack failed", "err", err)
+	}
+	m.count(kind, outcomeAck)
 }
 
 // linkMu serializes the read-modify-write the link consumer performs on each
@@ -364,16 +420,17 @@ var linkMu sync.Mutex
 // remove needs no waiting: a missing endpoint has no edge to clear, so it applies
 // to whichever endpoint exists and acks. The apply itself is idempotent
 // (set-union / set-difference), so redelivery and duplicate publishes are no-ops.
-func handleLink(ctx context.Context, log *slog.Logger, js jetstream.JetStream, st *store.Store, msg jetstream.Msg) {
+func handleLink(ctx context.Context, log *slog.Logger, m *metrics, js jetstream.JetStream, st *store.Store, msg jetstream.Msg) {
 	var lm memory.LinkMsg
 	if err := json.Unmarshal(msg.Data(), &lm); err != nil {
 		pub := func(dl memory.DeadLetter) error { return bus.PublishDead(ctx, js, dl) }
-		deadLetterMalformed(ctx, log, pub, msg, err)
+		deadLetterMalformed(ctx, log, m, kindLink, pub, msg, err)
 		return
 	}
 	if lm.A == "" || lm.B == "" || lm.A == lm.B {
 		log.Warn("invalid link msg, terminating", "op", lm.Op, "a", lm.A, "b", lm.B)
 		_ = msg.Term()
+		m.count(kindLink, outcomeTerm)
 		return
 	}
 
@@ -385,12 +442,12 @@ func handleLink(ctx context.Context, log *slog.Logger, js jetstream.JetStream, s
 
 	a, aOK, err := ts.Get(ctx, lm.A)
 	if err != nil {
-		linkRetry(log, msg, lm, "endpoint lookup failed", err)
+		linkRetry(log, m, msg, lm, "endpoint lookup failed", err)
 		return
 	}
 	b, bOK, err := ts.Get(ctx, lm.B)
 	if err != nil {
-		linkRetry(log, msg, lm, "endpoint lookup failed", err)
+		linkRetry(log, m, msg, lm, "endpoint lookup failed", err)
 		return
 	}
 
@@ -402,29 +459,31 @@ func handleLink(ctx context.Context, log *slog.Logger, js jetstream.JetStream, s
 			log.Error("gave up linking, endpoint never appeared", "a", lm.A, "b", lm.B,
 				"a_exists", aOK, "b_exists", bOK, "deliveries", deliveries)
 			_ = msg.Term()
+			m.count(kindLink, outcomeTerm)
 			return
 		}
 		log.Info("link endpoint not indexed yet, will retry", "a", lm.A, "b", lm.B,
 			"a_exists", aOK, "b_exists", bOK, "deliveries", deliveries)
 		_ = msg.NakWithDelay(linkRetryDelay(deliveries))
+		m.count(kindLink, outcomeRetry)
 		return
 	}
 
 	newA, newB := applyEdge(lm.Op, lm.A, a.LinkedIDs, lm.B, b.LinkedIDs)
 	if aOK {
 		if err := ts.SetLinks(ctx, lm.A, newA); err != nil {
-			linkRetry(log, msg, lm, "set links failed", err)
+			linkRetry(log, m, msg, lm, "set links failed", err)
 			return
 		}
 	}
 	if bOK {
 		if err := ts.SetLinks(ctx, lm.B, newB); err != nil {
-			linkRetry(log, msg, lm, "set links failed", err)
+			linkRetry(log, m, msg, lm, "set links failed", err)
 			return
 		}
 	}
 	log.Info("link applied", "op", lm.Op, "a", lm.A, "b", lm.B)
-	_ = msg.Ack()
+	ack(log, m, kindLink, msg)
 }
 
 // applyEdge returns the new link slices for endpoints a and b after applying op.
@@ -450,10 +509,11 @@ func linkRetryDelay(deliveries int) time.Duration {
 
 // linkRetry NAKs a transient link failure (store error) with backoff; on a fresh
 // message deliveries is 0, giving an immediate redelivery.
-func linkRetry(log *slog.Logger, msg jetstream.Msg, lm memory.LinkMsg, what string, err error) {
+func linkRetry(log *slog.Logger, m *metrics, msg jetstream.Msg, lm memory.LinkMsg, what string, err error) {
 	deliveries := numDelivered(msg)
 	log.Warn("link apply failed, will retry", "reason", what, "op", lm.Op, "a", lm.A, "b", lm.B, "deliveries", deliveries, "err", err)
 	_ = msg.NakWithDelay(linkRetryDelay(deliveries))
+	m.count(kindLink, outcomeRetry)
 }
 
 // numDelivered reads the JetStream delivery count for msg, or 0 if unavailable.
@@ -593,14 +653,15 @@ func indexChunks(ctx context.Context, embedder *embed.Client, ts *store.TenantSt
 	return len(cvs), nil
 }
 
-func handleIndex(ctx context.Context, log *slog.Logger, js jetstream.JetStream, embedder *embed.Client, st *store.Store, chunker *chunk.Chunker, msg jetstream.Msg, dedupDistance float32) {
+func handleIndex(ctx context.Context, log *slog.Logger, m *metrics, js jetstream.JetStream, embedder *embed.Client, st *store.Store, chunker *chunk.Chunker, msg jetstream.Msg, dedupDistance float32) {
+	defer m.observeIndex(time.Now())
 	var rec memory.Record
 	if err := json.Unmarshal(msg.Data(), &rec); err != nil {
 		// Unrecoverable: bad payload. Dead-letter it (preserving raw bytes) and
 		// Term so NATS does not redeliver. If the dead-letter publish fails, NAK
 		// instead — redelivery is better than silent data loss.
 		pub := func(dl memory.DeadLetter) error { return bus.PublishDead(ctx, js, dl) }
-		deadLetterMalformed(ctx, log, pub, msg, err)
+		deadLetterMalformed(ctx, log, m, kindIndex, pub, msg, err)
 		return
 	}
 
@@ -656,16 +717,19 @@ func handleIndex(ctx context.Context, log *slog.Logger, js jetstream.JetStream, 
 			"embed_ms", embedDur.Milliseconds(), "store_ms", storeDur.Milliseconds(),
 			"total_ms", (embedDur + storeDur).Milliseconds(),
 			"queue_latency_ms", time.Since(rec.CreatedAt).Milliseconds())
-		_ = msg.Ack()
+		ack(log, m, kindIndex, msg)
 		return
 	}
 
-	// Failure path. Retry until MaxDeliver, then dead-letter so the record is
-	// preserved rather than silently dropped.
-	deliveries := 0
-	if md, err := msg.Metadata(); err == nil {
-		deliveries = int(md.NumDelivered)
-	}
+	pub := func(dl memory.DeadLetter) error { return bus.PublishDead(ctx, js, dl) }
+	settleIndexFailure(log, m, pub, msg, rec, procErr)
+}
+
+// settleIndexFailure handles a failed index attempt. Retry until MaxDeliver,
+// then dead-letter so the record is preserved rather than silently dropped. A
+// failed dead-letter publish retries instead — never lose the record.
+func settleIndexFailure(log *slog.Logger, m *metrics, pub deadLetterPublisher, msg jetstream.Msg, rec memory.Record, procErr error) {
+	deliveries := numDelivered(msg)
 	if deliveries >= memory.MaxDeliver {
 		dl := memory.DeadLetter{
 			Record:     rec,
@@ -673,17 +737,20 @@ func handleIndex(ctx context.Context, log *slog.Logger, js jetstream.JetStream, 
 			Deliveries: deliveries,
 			FailedAt:   time.Now().UTC(),
 		}
-		if err := bus.PublishDead(ctx, js, dl); err != nil {
+		if err := pub(dl); err != nil {
 			// Couldn't preserve it — keep retrying rather than lose it.
 			log.Error("dead-letter publish failed, will retry", "id", rec.ID, "err", err)
 			_ = msg.NakWithDelay(5 * time.Second)
+			m.count(kindIndex, outcomeRetry)
 			return
 		}
 		log.Error("gave up indexing, dead-lettered", "id", rec.ID, "deliveries", deliveries, "err", procErr)
 		_ = msg.Ack()
+		m.count(kindIndex, outcomeDead)
 		return
 	}
 
 	log.Warn("indexing failed, will retry", "id", rec.ID, "deliveries", deliveries, "err", procErr)
 	_ = msg.NakWithDelay(2 * time.Second)
+	m.count(kindIndex, outcomeRetry)
 }

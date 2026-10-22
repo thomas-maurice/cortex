@@ -124,7 +124,7 @@ func TestDeadLetterMalformed(t *testing.T) {
 			return nil
 		}
 
-		deadLetterMalformed(context.Background(), slog.Default(), pub, msg, unmarshalErr)
+		deadLetterMalformed(context.Background(), slog.Default(), nil, kindIndex, pub, msg, unmarshalErr)
 
 		require.True(t, msg.termed, "message must be Term'd after a successful dead-letter publish so NATS does not redeliver it")
 		assert.False(t, msg.nakked, "must not also Nak when Term succeeded")
@@ -146,7 +146,7 @@ func TestDeadLetterMalformed(t *testing.T) {
 			return errors.New("nats unavailable")
 		}
 
-		deadLetterMalformed(context.Background(), slog.Default(), pub, msg, unmarshalErr)
+		deadLetterMalformed(context.Background(), slog.Default(), nil, kindIndex, pub, msg, unmarshalErr)
 
 		require.True(t, msg.nakked, "must Nak when the dead-letter publish fails so NATS redelivers and we can retry preservation")
 		assert.False(t, msg.termed, "must not Term when the dead-letter publish failed — that would permanently lose the bytes")

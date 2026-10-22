@@ -1,6 +1,9 @@
 package main
 
 import (
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -102,4 +105,29 @@ func TestS3ConfigFromEnv(t *testing.T) {
 		assert.False(t, cfg.UseSsl)
 		assert.False(t, cfg.Enabled, "explicitly disabled despite a bucket")
 	})
+}
+
+// The compose healthcheck runs this subcommand because the distroless image has
+// no wget/curl; it must turn /readyz's status into the exit result.
+func TestHealthcheck(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		status  int
+		wantErr bool
+	}{{"ready", http.StatusOK, false}, {"not ready", http.StatusServiceUnavailable, true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				assert.Equal(t, "/readyz", r.URL.Path)
+				w.WriteHeader(tc.status)
+			}))
+			defer srv.Close()
+			err := healthcheck(strings.TrimPrefix(srv.URL, "http://"))
+			if tc.wantErr {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+	assert.Error(t, healthcheck("not-an-addr"))
 }

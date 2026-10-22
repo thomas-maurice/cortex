@@ -726,6 +726,30 @@ cortex --server http://localhost:8088 migrate-mt --yes
 - All migrated data lands in the bootstrap admin's tenant. Redistributing data
   across multiple users is out of scope; this is a single-tenant-to-MT bootstrap.
 
+## Observability (metrics + health)
+
+Server (same port as the API, **unauthenticated** — keep them off the public internet or disable `/metrics`):
+
+| endpoint | purpose |
+|----------|---------|
+| `GET /healthz` | Liveness: `200 ok` while the process serves HTTP. Checks no dependencies. |
+| `GET /readyz` | Readiness: probes NATS, Weaviate and Ollama; `200` if all up, else `503`. Body is `{"nats":"ok","weaviate":"ok","ollama":"fail"}` (no error text). |
+| `GET /metrics` | Prometheus exposition (dedicated registry + Go/process collectors). Disable with `METRICS_ENABLED=false` (default `true`). |
+
+Worker: set `METRICS_ADDR` (default `:9090`, empty disables) to serve the same three endpoints; the port is not published to the host in `docker-compose.yml`.
+
+The runtime image is distroless (no wget/curl), so the compose healthcheck runs `cortex-server healthcheck`, which GETs the server's own `/readyz` (exit 0 = ready).
+
+| metric | where | notes |
+|--------|-------|-------|
+| `cortex_rpc_requests_total{procedure,code}` | server | `code` is `ok` or a Connect code |
+| `cortex_rpc_duration_seconds{procedure}` | server | histogram |
+| `cortex_index_queue_pending` | server | JetStream index consumer backlog, read at scrape time |
+| `cortex_dead_letters` | server | dead-lettered messages held in the stream |
+| `cortex_worker_messages_total{subject_kind,outcome}` | worker | kind `index\|summary\|link`; outcome `ack\|retry\|dead\|term` |
+| `cortex_embed_duration_seconds` / `cortex_embed_errors_total` | worker | Ollama embed latency (retries included) / failures |
+| `cortex_index_duration_seconds` | worker | full index-message handling |
+
 ## Embedding model
 
 Ollama does all the embedding. The default is **`qwen3-embedding:0.6b`** (1024-dim,
