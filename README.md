@@ -731,13 +731,13 @@ cortex --server http://localhost:8088 migrate-mt --yes
 
 ## Observability (metrics + health)
 
-Server (same port as the API, **unauthenticated** — keep them off the public internet or disable `/metrics`):
+Server (same port as the API, **unauthenticated** — keep them off the public internet; `/metrics` is disabled unless `METRICS_ENABLED=true`):
 
 | endpoint | purpose |
 |----------|---------|
 | `GET /healthz` | Liveness: `200 ok` while the process serves HTTP. Checks no dependencies. |
-| `GET /readyz` | Readiness: probes NATS, Weaviate and Ollama; `200` if all up, else `503`. Body is `{"nats":"ok","weaviate":"ok","ollama":"fail"}` (no error text). |
-| `GET /metrics` | Prometheus exposition (dedicated registry + Go/process collectors). Disable with `METRICS_ENABLED=false` (default `true`). |
+| `GET /readyz` | Readiness: probes NATS, Weaviate and Ollama; `200` if all up, else `503`. Body is `{"nats":"ok","weaviate":"ok","ollama":"fail"}` (no error text). The result is cached ~1s and concurrent probes are shared, so request floods do not fan out to the backends. |
+| `GET /metrics` | Prometheus exposition (dedicated registry + Go/process collectors). **Off by default** (unauthenticated): set `METRICS_ENABLED=true` to serve it, and keep it off the public internet (scrape the container directly, or exclude `/metrics` at the reverse proxy, e.g. Traefik `&& !PathPrefix(\`/metrics\`)`). |
 
 Worker: set `METRICS_ADDR` (default `:9090`, empty disables) to serve the same three endpoints; the port is not published to the host in `docker-compose.yml`.
 

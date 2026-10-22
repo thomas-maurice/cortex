@@ -140,8 +140,10 @@ services:
       traefik.http.services.cortex.loadbalancer.server.scheme: h2c
     healthcheck:
       # Distroless image: no wget/curl, so the server probes its own /readyz.
-      # /metrics, /healthz and /readyz are unauthenticated — if the router is
-      # public, set METRICS_ENABLED=false (or block /metrics at Traefik).
+      # /healthz and /readyz are unauthenticated. GET /metrics is OFF by default
+      # (METRICS_ENABLED unset). To enable it safely, set METRICS_ENABLED=true AND
+      # either scrape the container directly (not via Traefik) or exclude it from
+      # the public router rule with: && !PathPrefix(`/metrics`)
       test: ['CMD', '/usr/local/bin/cortex-server', 'healthcheck']
       interval: 15s
       timeout: 8s

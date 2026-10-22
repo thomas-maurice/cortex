@@ -174,18 +174,33 @@ func TestAcquireAllReleasesOnFailureAndDedups(t *testing.T) {
 	relAll()
 }
 
-func TestKeySanitisingAndTenantScoping(t *testing.T) {
+func TestKeyHashedAndCollisionFree(t *testing.T) {
 	t.Parallel()
-	assert.Equal(t, "mem.-.abc", Key("mem", "", "abc"), "single-user mode maps empty tenant to -")
-	assert.NotEqual(t, Key("mem", "t1", "id"), Key("mem", "t2", "id"), "same id in two tenants must not share a lock")
+	pairs := [][2]string{
+		{"", "abc"}, {"t1", "id"}, {"t2", "id"}, {"t", "a.b"}, {"t", "a_b"}, {"t", "a b"},
+		{"a", "b.c"}, {"a.b", "c"}, {"ab", "c"}, {"a", "bc"},
+		{"t", strings.Repeat("x", 190)}, {"t", strings.Repeat("x", 5000)}, {"t", strings.Repeat("x", 5000) + "y"},
+	}
+	seen := map[string][2]string{}
+	for _, p := range pairs {
+		k := Key("mem", p[0], p[1])
+		prev, dup := seen[k]
+		assert.False(t, dup, "%v and %v collide on key %q", p, prev, k)
+		seen[k] = p
+		assert.Equal(t, k, Key("mem", p[0], p[1]), "same pair must give the same key")
+		assert.Len(t, k, len("mem.")+64, "key length is constant regardless of input")
+	}
 	assert.NotEqual(t, Key("mem", "t", "id"), Key("sum", "t", "id"), "memory and summary locks are distinct")
+}
 
+func TestKeyIsValidKVKey(t *testing.T) {
+	t.Parallel()
 	l := newLocker(t, time.Minute, "w")
 	ctx := context.Background()
-	for _, id := range []string{"a b", "a/b*", "a>b", "ünï", "x.y", fmt.Sprintf("%x", "weird\x00\n")} {
+	for _, id := range []string{"a b", "a/b*", "a>b", "ünï", "x.y", strings.Repeat("x", 5000), fmt.Sprintf("%x", "weird\x00\n")} {
 		key := Key("mem", "ten ant>", id)
 		rel, err := l.Acquire(ctx, key, time.Second)
-		require.NoError(t, err, "key %q for id %q must be a valid KV key", key, id)
+		require.NoError(t, err, "key %q must be a valid KV key", key)
 		require.NoError(t, rel())
 	}
 }
@@ -237,21 +252,6 @@ func TestAcquireAllDeadlineFromFirstLease(t *testing.T) {
 	// "a" must have been given up and re-taken while waiting on "b", i.e. be held by us now.
 	_, err = l.Acquire(ctx, "a", 200*time.Millisecond)
 	require.ErrorIs(t, err, ErrTimeout)
-}
-
-func TestKeyLengthBoundedByHash(t *testing.T) {
-	t.Parallel()
-	long := strings.Repeat("x", 5000)
-	k1, k2 := Key("mem", "t", long), Key("mem", "t", long+"y")
-	assert.LessOrEqual(t, len(k1), maxKeyLen)
-	assert.NotEqual(t, k1, k2, "distinct long ids must not collide")
-	assert.Equal(t, k1, Key("mem", "t", long), "deterministic")
-	assert.NotEqual(t, k1, Key("mem", "u", long), "tenant is part of the hash")
-
-	l := newLocker(t, time.Minute, "w")
-	rel, err := l.Acquire(context.Background(), k1, time.Second)
-	require.NoError(t, err, "hashed key must be a valid KV key")
-	require.NoError(t, rel())
 }
 
 func TestInfraErrorsAreLoggedAndCounted(t *testing.T) {

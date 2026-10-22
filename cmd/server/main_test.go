@@ -7,7 +7,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
+
+	"github.com/thomas-maurice/cortex/internal/obs"
 )
 
 // TestInitialBackupDelay pins the restart-resilient scheduling rule: the first
@@ -130,4 +133,28 @@ func TestHealthcheck(t *testing.T) {
 		})
 	}
 	assert.Error(t, healthcheck("not-an-addr"))
+}
+
+// /metrics is unauthenticated, so it must be opt-in: unset means off (falls
+// through to the UI catch-all), "true" means served.
+func TestMetricsOptIn(t *testing.T) {
+	serve := func() int {
+		var reg *prometheus.Registry
+		if metricsEnabledFromEnv() {
+			reg = obs.NewRegistry()
+		}
+		mux := http.NewServeMux()
+		obs.Mount(mux, reg, nil)
+		mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusTeapot) })
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+		return rec.Code
+	}
+
+	t.Setenv("METRICS_ENABLED", "")
+	assert.Equal(t, http.StatusTeapot, serve(), "unset must not serve /metrics")
+	t.Setenv("METRICS_ENABLED", "false")
+	assert.Equal(t, http.StatusTeapot, serve())
+	t.Setenv("METRICS_ENABLED", "true")
+	assert.Equal(t, http.StatusOK, serve(), "METRICS_ENABLED=true must serve /metrics")
 }

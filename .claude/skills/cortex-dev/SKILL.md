@@ -56,8 +56,8 @@ docker compose ps
 ```
 
 The server also serves unauthenticated `GET /healthz`, `/readyz` (503 if NATS/Weaviate/Ollama
-is down; body is ok/fail per check only) and `/metrics` (Prometheus; `METRICS_ENABLED=false`
-turns it off) — `curl http://localhost:8088/readyz` needs no token. The compose server
+is down; body is ok/fail per check only) and `/metrics` (Prometheus; OFF by default —
+`METRICS_ENABLED=true` turns it on; dev compose sets it; `/readyz` is cached ~1s) — `curl http://localhost:8088/readyz` needs no token. The compose server
 healthcheck runs `cortex-server healthcheck` (distroless image: no wget/curl).
 
 Quick health / smoke checks against the running server (auth is on, so mint a

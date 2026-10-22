@@ -197,8 +197,9 @@ be processed concurrently and out of order, and three mechanisms keep that corre
 
 1. **Per-id distributed lock.** A JetStream KV bucket (`cortex_locks`, 60s
    TTL, file storage so held locks survive a NATS restart) holds one key per
-   `tenant + memory id` (summaries: `tenant + conversation id`; keys are sanitised
-   to valid KV characters and replaced by a sha256 when too long). Acquire is
+   `tenant + memory id` (summaries: `tenant + conversation id`; keys are always
+   `<kind>.<sha256-hex of tenant NUL id>`, so distinct pairs never collide and ids
+   never need sanitising). Acquire is
    `kv.Create` (fails if present); release deletes only at the revision we
    created, so a holder whose lock expired cannot delete the next holder's. The
    index write and the link apply both run under it; a link takes BOTH endpoint

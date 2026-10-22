@@ -73,41 +73,116 @@ func HealthHandler() http.Handler {
 	})
 }
 
+// ReadyCacheTTL is how long a /readyz result is reused. The endpoint is
+// unauthenticated, so without it a request flood would fan out to the backends
+// on every hit.
+const ReadyCacheTTL = time.Second
+
 // ReadyHandler runs every check concurrently under timeout and answers 200 when
 // all pass, 503 otherwise. The JSON body maps check name to "ok"/"fail" only.
+// The result is cached for ReadyCacheTTL and concurrent callers share one
+// in-flight probe.
 func ReadyHandler(timeout time.Duration, checks []Check) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ctx, cancel := context.WithTimeout(r.Context(), timeout)
+	return readyHandler(timeout, ReadyCacheTTL, checks)
+}
+
+type readyResult struct {
+	ok   bool
+	body []byte
+}
+
+func readyHandler(timeout, ttl time.Duration, checks []Check) http.Handler {
+	var (
+		mu       sync.Mutex
+		cached   *readyResult
+		cachedAt time.Time
+		inflight *readyFlight
+	)
+	probe := func() *readyResult {
+		// Detached from any request: one caller's cancellation must not fail the
+		// probe the others are waiting on.
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
 
 		var (
-			mu      sync.Mutex
+			rmu     sync.Mutex
 			wg      sync.WaitGroup
 			results = make(map[string]string, len(checks))
-			allOK   = true
 		)
+		// Pessimistic: a check that has not reported (hung, ignores ctx, panicked)
+		// counts as "fail".
+		for _, c := range checks {
+			results[c.Name] = "fail"
+		}
 		for _, c := range checks {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				res := "ok"
-				if err := c.Fn(ctx); err != nil {
-					res = "fail"
-				}
-				mu.Lock()
-				defer mu.Unlock()
-				results[c.Name] = res
-				if res != "ok" {
-					allOK = false
+				defer func() { _ = recover() }() // a panicking check stays "fail"
+				if err := c.Fn(ctx); err == nil {
+					rmu.Lock()
+					results[c.Name] = "ok"
+					rmu.Unlock()
 				}
 			}()
 		}
-		wg.Wait()
+		done := make(chan struct{})
+		go func() { wg.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-ctx.Done(): // do not wait for checks that ignore ctx
+		}
 
+		rmu.Lock()
+		snap := make(map[string]string, len(results))
+		allOK := true
+		for k, v := range results {
+			snap[k] = v
+			allOK = allOK && v == "ok"
+		}
+		rmu.Unlock()
+		body, _ := json.Marshal(snap)
+		return &readyResult{ok: allOK, body: append(body, '\n')}
+	}
+	get := func() *readyResult {
+		mu.Lock()
+		if cached != nil && time.Since(cachedAt) < ttl {
+			r := cached
+			mu.Unlock()
+			return r
+		}
+		if f := inflight; f != nil {
+			mu.Unlock()
+			<-f.done
+			return f.res
+		}
+		f := &readyFlight{done: make(chan struct{})}
+		inflight = f
+		mu.Unlock()
+
+		defer func() {
+			mu.Lock()
+			if f.res != nil {
+				cached, cachedAt = f.res, time.Now()
+			}
+			inflight = nil
+			mu.Unlock()
+			close(f.done)
+		}()
+		f.res = probe()
+		return f.res
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		res := get()
 		w.Header().Set("Content-Type", "application/json")
-		if !allOK {
+		if !res.ok {
 			w.WriteHeader(http.StatusServiceUnavailable)
 		}
-		_ = json.NewEncoder(w).Encode(results)
+		_, _ = w.Write(res.body)
 	})
+}
+
+type readyFlight struct {
+	done chan struct{}
+	res  *readyResult
 }

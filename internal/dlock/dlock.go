@@ -27,7 +27,6 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"slices"
-	"strings"
 	"sync"
 	"time"
 
@@ -47,8 +46,6 @@ const (
 	pollJitter = 200 * time.Millisecond
 	// ensureMinInterval rate-limits bucket re-creation attempts.
 	ensureMinInterval = 500 * time.Millisecond
-	// maxKeyLen bounds a KV key; longer sanitised keys are replaced by a hash.
-	maxKeyLen = 200
 )
 
 // Locker hands out per-key locks backed by one KV bucket.
@@ -139,32 +136,13 @@ func (l *Locker) Wait() time.Duration { return l.ttl + 30*time.Second }
 // expire and be re-taken underneath it.
 func (l *Locker) Hold() time.Duration { return l.ttl * 3 / 4 }
 
-// Key builds a KV-safe lock key for a (tenant, id) pair. Characters outside
-// [A-Za-z0-9_-] become '_' (ids can be client-supplied link targets). Distinct
-// ids can in theory alias to one key; that only over-serialises, never breaks
-// exclusion. An empty tenant (single-user mode) maps to "-". A key longer than
-// maxKeyLen is replaced by a sha256 of the original (tenant, id).
+// Key builds a KV-safe lock key for a (tenant, id) pair: "<kind>.<sha256 hex of
+// tenant NUL id>". Hashing means ids (which can be client-supplied link targets)
+// never need sanitising, distinct (tenant, id) pairs cannot collide, and keys have
+// a constant length.
 func Key(kind, tenant, id string) string {
-	t := tenant
-	if t == "" {
-		t = "-"
-	}
-	key := kind + "." + sanitize(t) + "." + sanitize(id)
-	if len(key) > maxKeyLen {
-		sum := sha256.Sum256([]byte(tenant + "\x00" + id))
-		return kind + ".h." + hex.EncodeToString(sum[:])
-	}
-	return key
-}
-
-func sanitize(s string) string {
-	return strings.Map(func(r rune) rune {
-		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
-			return r
-		}
-		return '_'
-	}, s)
+	sum := sha256.Sum256([]byte(tenant + "\x00" + id))
+	return kind + "." + hex.EncodeToString(sum[:])
 }
 
 // pause sleeps for d or until ctx ends, reusing timer.

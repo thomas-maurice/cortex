@@ -106,6 +106,10 @@ func envBool(key string, def bool) bool {
 	return b
 }
 
+// metricsEnabledFromEnv reports whether GET /metrics should be served. It is
+// unauthenticated, so it defaults to OFF and must be enabled explicitly.
+func metricsEnabledFromEnv() bool { return envBool("METRICS_ENABLED", false) }
+
 // envDuration reads a Go duration env var (e.g. "24h", "30m"), returning def
 // when unset or unparseable. An empty string or "0" effectively disables a
 // feature guarded by duration > 0.
@@ -194,9 +198,9 @@ func main() {
 		// goroutine; backupKeep == 0 disables pruning after each backup.
 		backupInterval = envDuration("BACKUP_INTERVAL", 0)
 		backupKeep     = envInt("BACKUP_KEEP", 7)
-		// metricsEnabled gates GET /metrics (unauthenticated). Turn it off on a
-		// publicly exposed server; /healthz and /readyz are always on.
-		metricsEnabled = envBool("METRICS_ENABLED", true)
+		// metricsEnabled gates GET /metrics (unauthenticated). Off by default
+		// (secure by default); /healthz and /readyz are always on.
+		metricsEnabled = metricsEnabledFromEnv()
 	)
 
 	// Login brute-force / DoS protection for /auth/login. Defaults are conservative
