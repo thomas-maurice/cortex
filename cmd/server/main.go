@@ -106,9 +106,15 @@ func envBool(key string, def bool) bool {
 	return b
 }
 
-// metricsEnabledFromEnv reports whether GET /metrics should be served. It is
-// unauthenticated, so it defaults to OFF and must be enabled explicitly.
-func metricsEnabledFromEnv() bool { return envBool("METRICS_ENABLED", false) }
+// metricsAddrFromEnv is the dedicated metrics listener address:
+// API_METRICS_ADDR, default :9090, an explicitly empty value disables it.
+// /metrics is unauthenticated and is never served on the API port.
+func metricsAddrFromEnv() string {
+	if v, ok := os.LookupEnv("API_METRICS_ADDR"); ok {
+		return v
+	}
+	return ":9090"
+}
 
 // defaultMaxRequestBytes bounds one RPC request body. Restore uploads carry a
 // whole backup, so it is generous; it exists to stop unbounded payloads.
@@ -220,9 +226,9 @@ func main() {
 		// goroutine; backupKeep == 0 disables pruning after each backup.
 		backupInterval = envDuration("BACKUP_INTERVAL", 0)
 		backupKeep     = envInt("BACKUP_KEEP", 7)
-		// metricsEnabled gates GET /metrics (unauthenticated). Off by default
-		// (secure by default); /healthz and /readyz are always on.
-		metricsEnabled = metricsEnabledFromEnv()
+		// metricsAddr is the dedicated listener for /metrics (+ /healthz, /readyz).
+		// Empty disables metrics entirely.
+		metricsAddr = metricsAddrFromEnv()
 	)
 
 	// Login brute-force / DoS protection for /auth/login. Defaults are conservative
@@ -368,7 +374,7 @@ func main() {
 	// Metrics interceptor goes outermost so auth-rejected calls are counted too.
 	interceptors := []connect.Interceptor{rpc.ServerLogInterceptor(log), rpc.ServerAuthInterceptor(auth)}
 	var reg *prometheus.Registry
-	if metricsEnabled {
+	if metricsAddr != "" {
 		reg = obs.NewRegistry()
 		reg.MustRegister(svc.QueueCollector())
 		interceptors = append([]connect.Interceptor{rpc.MetricsInterceptor(reg)}, interceptors...)
@@ -379,7 +385,8 @@ func main() {
 	mux.Handle(path, handler)
 	// Unauthenticated ops endpoints (the Connect auth interceptor above only wraps
 	// the RPC handler). Mounted before the "/" UI catch-all.
-	obs.Mount(mux, reg, obs.DependencyChecks(nc, st, embedder))
+	checks := obs.DependencyChecks(nc, st, embedder)
+	obs.Mount(mux, nil, checks) // never /metrics on the API port
 	// gRPC server reflection so tools like grpcurl, Bruno, and Postman can
 	// introspect and call the API without a local .proto. Reflection exposes only
 	// the schema (method + message names, already public in proto/); actual RPC
@@ -413,6 +420,15 @@ func main() {
 			log.Error("http server shutdown", "err", err)
 		}
 	}()
+
+	if reg != nil {
+		mmux := http.NewServeMux()
+		obs.Mount(mmux, reg, checks)
+		// Not fatal: metrics must never take the API down.
+		if _, err := obs.Serve(ctx, log, "metrics", metricsAddr, mmux); err != nil {
+			log.Error("metrics http listen", "addr", metricsAddr, "err", err)
+		}
+	}
 
 	log.Info("cortex server listening", "addr", listen, "namespace", defaultNS, "model", ollamaModel, "auth", enabled)
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {

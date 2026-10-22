@@ -131,3 +131,16 @@ func TestDeadLetterMalformed(t *testing.T) {
 		assert.Zero(t, msg.termed.Load(), "must not Term when the dead-letter publish failed — that would permanently lose the bytes")
 	})
 }
+
+// The ops listener env var is WORKER_METRICS_ADDR (renamed from METRICS_ADDR,
+// which must no longer have any effect); empty disables.
+func TestMetricsAddrFromEnv(t *testing.T) {
+	t.Setenv("WORKER_METRICS_ADDR", "")
+	require.NoError(t, os.Unsetenv("WORKER_METRICS_ADDR"))
+	t.Setenv("METRICS_ADDR", ":1234")
+	assert.Equal(t, ":9090", metricsAddrFromEnv(), "old METRICS_ADDR is ignored")
+	t.Setenv("WORKER_METRICS_ADDR", "")
+	assert.Equal(t, "", metricsAddrFromEnv(), "empty disables")
+	t.Setenv("WORKER_METRICS_ADDR", ":9191")
+	assert.Equal(t, ":9191", metricsAddrFromEnv())
+}

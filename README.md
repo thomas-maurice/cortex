@@ -740,15 +740,37 @@ the backup payload at 100 MiB. See the trust model in `docs/DESIGN.md`.
 
 ## Observability (metrics + health)
 
-Server (same port as the API, **unauthenticated** — keep them off the public internet; `/metrics` is disabled unless `METRICS_ENABLED=true`):
+All of these endpoints are **unauthenticated**; keep them off the public internet. `/metrics` is served only on a dedicated port, never on the API port.
+
+| port | process | serves |
+|------|---------|--------|
+| 8080 (`CORTEX_LISTEN`) | server | the API + UI, plus `/healthz` and `/readyz` |
+| 9090 (`API_METRICS_ADDR`) | server | `/metrics`, `/healthz`, `/readyz` |
+| 9090 (`WORKER_METRICS_ADDR`) | worker | `/metrics`, `/healthz`, `/readyz` |
 
 | endpoint | purpose |
 |----------|---------|
 | `GET /healthz` | Liveness: `200 ok` while the process serves HTTP. Checks no dependencies. |
-| `GET /readyz` | Readiness: probes NATS, Weaviate and Ollama; `200` if all up, else `503`. Body is `{"nats":"ok","weaviate":"ok","ollama":"fail"}` (no error text). The result is cached ~1s and concurrent probes are shared, so request floods do not fan out to the backends. |
-| `GET /metrics` | Prometheus exposition (dedicated registry + Go/process collectors). **Off by default** (unauthenticated): set `METRICS_ENABLED=true` to serve it, and keep it off the public internet (scrape the container directly, or exclude `/metrics` at the reverse proxy, e.g. Traefik `&& !PathPrefix(\`/metrics\`)`). |
+| `GET /readyz` | Readiness: probes NATS, Weaviate and Ollama; `200` if all up, else `503`. Body is `{"nats":"ok","weaviate":"ok","ollama":"fail"}` (no error text). The result is cached ~1s and concurrent probes are shared, so request floods do not fan out to the backends. The worker adds its JetStream pull health. |
+| `GET /metrics` | Prometheus exposition (dedicated registry + Go/process collectors). |
 
-Worker: set `METRICS_ADDR` (default `:9090`, empty disables) to serve the same three endpoints; the port is not published to the host in `docker-compose.yml`.
+Env vars: `API_METRICS_ADDR` (server) and `WORKER_METRICS_ADDR` (worker), both defaulting to `:9090`; set to an empty string to disable the listener (no metrics are collected then). The ports are not published to the host in `docker-compose.yml`. A failure to bind is logged and never stops the service.
+
+### Traefik / Prometheus
+
+Traefik needs no change: the example router targets only port 8080 (`loadbalancer.server.port: '8080'`), so `/metrics` on `:9090` is never publicly routed. Scrape over the compose network instead. A plain compose DNS name resolves to all replicas of a scaled `worker` only through `dns_sd_configs` (type `A`), so use that for the worker:
+
+```yaml
+scrape_configs:
+  - job_name: cortex-server
+    static_configs:
+      - targets: ['server:9090']
+  - job_name: cortex-worker
+    dns_sd_configs:
+      - names: ['worker']   # one target per replica (--scale worker=N)
+        type: A
+        port: 9090
+```
 
 The runtime image is distroless (no wget/curl), so the compose healthcheck runs `cortex-server healthcheck`, which GETs the server's own `/readyz` (exit 0 = ready).
 
@@ -773,7 +795,7 @@ Workers scale horizontally: run as many replicas as the embedding backend can fe
 docker compose up -d --scale worker=3     # or `deploy: {replicas: 3}` in the compose file
 ```
 
-`METRICS_ADDR` is per container, so replicas do not clash (the port is not
+`WORKER_METRICS_ADDR` is per container, so replicas do not clash (the port is not
 published). `WORKER_CONCURRENCY` (default `4`) bounds in-flight messages per
 consumer within one process. Correctness does not depend on a single worker: each
 memory's read-modify-write runs under a per-id lock in a NATS KV bucket

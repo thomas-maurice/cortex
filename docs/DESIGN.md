@@ -190,7 +190,7 @@ re-ordering and zero reinforcement writes, behaviour identical to before. The
 ## Horizontal scaling (worker replicas)
 
 The worker is safe to run as N replicas (`docker compose up -d --scale worker=3`,
-or `deploy.replicas: 3`; `METRICS_ADDR` is per-container so ports do not clash).
+or `deploy.replicas: 3`; `WORKER_METRICS_ADDR` is per-container so ports do not clash).
 All replicas share the durable `indexer` and `linker` consumers, so JetStream
 spreads messages across them; each process also handles `WORKER_CONCURRENCY`
 (default 4) messages per consumer at once. Messages for one memory can therefore

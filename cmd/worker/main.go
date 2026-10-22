@@ -20,7 +20,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go/jetstream"
-	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/thomas-maurice/cortex/internal/bus"
 	"github.com/thomas-maurice/cortex/internal/chunk"
@@ -123,8 +122,8 @@ func main() {
 		// server's CORTEX_MULTI_TENANT.
 		multiTenant = envBool("CORTEX_MULTI_TENANT", true)
 		// metricsAddr is the listen address of the ops HTTP server (/metrics,
-		// /healthz, /readyz). An explicitly empty METRICS_ADDR disables it.
-		metricsAddr = envOrEmpty("METRICS_ADDR", ":9090")
+		// /healthz, /readyz). An explicitly empty WORKER_METRICS_ADDR disables it.
+		metricsAddr = metricsAddrFromEnv()
 		// concurrency bounds in-flight messages per consumer in THIS process. Scale
 		// further by adding worker replicas.
 		concurrency = envInt("WORKER_CONCURRENCY", 4)
@@ -206,7 +205,12 @@ func main() {
 		for name, p := range map[string]*pool{"jetstream-index": indexPool, "jetstream-link": linkPool} {
 			checks = append(checks, obs.Check{Name: name, Fn: func(context.Context) error { return p.health.err(fetchReadyGrace) }})
 		}
-		serveOps(ctx, log, metricsAddr, reg, checks)
+		mux := http.NewServeMux()
+		obs.Mount(mux, reg, checks)
+		// A failure to listen is logged but not fatal: metrics must never take the indexer down.
+		if _, err := obs.Serve(ctx, log, "worker ops", metricsAddr, mux); err != nil {
+			log.Error("ops http listen", "addr", metricsAddr, "err", err)
+		}
 	}
 
 	<-ctx.Done()
@@ -289,28 +293,9 @@ func envOrEmpty(key, def string) string {
 	return def
 }
 
-// serveOps runs the ops HTTP server (/metrics, /healthz, /readyz) in the
-// background and shuts it down when ctx is cancelled. A failure to listen is
-// logged but not fatal: metrics must never take the indexer down.
-func serveOps(ctx context.Context, log *slog.Logger, addr string, reg *prometheus.Registry, checks []obs.Check) {
-	mux := http.NewServeMux()
-	obs.Mount(mux, reg, checks)
-	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
-	go func() {
-		<-ctx.Done()
-		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := srv.Shutdown(shutCtx); err != nil {
-			log.Error("ops http shutdown", "err", err)
-		}
-	}()
-	go func() {
-		log.Info("worker ops http listening", "addr", addr)
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Error("ops http server", "err", err)
-		}
-	}()
-}
+// metricsAddrFromEnv is the ops listener address: WORKER_METRICS_ADDR, default
+// :9090, empty disables.
+func metricsAddrFromEnv() string { return envOrEmpty("WORKER_METRICS_ADDR", ":9090") }
 
 // checkSchema verifies the Weaviate classes exist and are correctly shaped after
 // EnsureSchema, logging a clear OK or loud, actionable warnings (e.g. a class

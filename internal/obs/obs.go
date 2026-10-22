@@ -6,6 +6,9 @@ package obs
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"log/slog"
+	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -54,14 +57,42 @@ func DependencyChecks(nc *nats.Conn, st *store.Store, em *embed.Client) []Check 
 }
 
 // Mount registers /healthz and /readyz (always) and /metrics (when reg != nil)
-// on mux. These routes are unauthenticated by design, so they expose no error
-// text, hostnames or versions.
+// on mux. The server's API mux passes a nil reg: /metrics lives only on the
+// dedicated metrics listener. These routes are unauthenticated by design, so
+// they expose no error text, hostnames or versions.
 func Mount(mux *http.ServeMux, reg *prometheus.Registry, checks []Check) {
 	mux.Handle("GET /healthz", HealthHandler())
 	mux.Handle("GET /readyz", ReadyHandler(ReadyTimeout, checks))
 	if reg != nil {
 		mux.Handle("GET /metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
 	}
+}
+
+// Serve listens on addr and serves handler in the background until ctx is
+// cancelled, then shuts down gracefully. It returns the bound address (useful
+// with ":0") or the listen error; callers decide whether that is fatal (for the
+// metrics listeners it must not be: metrics never take the service down).
+func Serve(ctx context.Context, log *slog.Logger, name, addr string, handler http.Handler) (net.Addr, error) {
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	srv := &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second}
+	go func() {
+		<-ctx.Done()
+		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(shutCtx); err != nil {
+			log.Error(name+" http shutdown", "err", err)
+		}
+	}()
+	go func() {
+		log.Info(name+" http listening", "addr", ln.Addr().String())
+		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Error(name+" http server", "err", err)
+		}
+	}()
+	return ln.Addr(), nil
 }
 
 // HealthHandler is liveness: 200 as long as the process serves HTTP. It checks

@@ -5,11 +5,11 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -143,28 +143,54 @@ func TestHealthcheck(t *testing.T) {
 	assert.Error(t, healthcheck("not-an-addr"))
 }
 
-// /metrics is unauthenticated, so it must be opt-in: unset means off (falls
-// through to the UI catch-all), "true" means served.
-func TestMetricsOptIn(t *testing.T) {
-	serve := func() int {
-		var reg *prometheus.Registry
-		if metricsEnabledFromEnv() {
-			reg = obs.NewRegistry()
-		}
-		mux := http.NewServeMux()
-		obs.Mount(mux, reg, nil)
-		mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusTeapot) })
+// /metrics is unauthenticated, so it must never share the (publicly routed)
+// API port: on the API mux it falls through to the UI catch-all even though
+// /healthz and /readyz stay there.
+func TestAPIMuxNeverServesMetrics(t *testing.T) {
+	mux := http.NewServeMux()
+	obs.Mount(mux, nil, nil)
+	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusTeapot) })
+	for path, want := range map[string]int{"/metrics": http.StatusTeapot, "/healthz": http.StatusOK, "/readyz": http.StatusOK} {
 		rec := httptest.NewRecorder()
-		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
-		return rec.Code
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		assert.Equal(t, want, rec.Code, path)
+	}
+}
+
+// The dedicated listener serves /metrics plus the probes, on a port that is not
+// the API's, and stops with the context.
+func TestMetricsListener(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mux := http.NewServeMux()
+	obs.Mount(mux, obs.NewRegistry(), nil)
+	addr, err := obs.Serve(ctx, slog.Default(), "metrics", "127.0.0.1:0", mux)
+	require.NoError(t, err)
+
+	for _, path := range []string{"/metrics", "/healthz", "/readyz"} {
+		resp, err := http.Get("http://" + addr.String() + path)
+		require.NoError(t, err, path)
+		_ = resp.Body.Close()
+		assert.Equal(t, http.StatusOK, resp.StatusCode, path)
 	}
 
-	t.Setenv("METRICS_ENABLED", "")
-	assert.Equal(t, http.StatusTeapot, serve(), "unset must not serve /metrics")
-	t.Setenv("METRICS_ENABLED", "false")
-	assert.Equal(t, http.StatusTeapot, serve())
-	t.Setenv("METRICS_ENABLED", "true")
-	assert.Equal(t, http.StatusOK, serve(), "METRICS_ENABLED=true must serve /metrics")
+	cancel()
+	require.Eventually(t, func() bool {
+		_, err := http.Get("http://" + addr.String() + "/healthz")
+		return err != nil
+	}, 5*time.Second, 20*time.Millisecond, "listener must shut down with ctx")
+}
+
+// Disabling metrics is an explicit empty value; unset keeps the default.
+func TestMetricsAddrFromEnv(t *testing.T) {
+	// t.Setenv registers restore; Unsetenv then makes it genuinely unset.
+	t.Setenv("API_METRICS_ADDR", "")
+	require.NoError(t, os.Unsetenv("API_METRICS_ADDR"))
+	assert.Equal(t, ":9090", metricsAddrFromEnv())
+	t.Setenv("API_METRICS_ADDR", "")
+	assert.Equal(t, "", metricsAddrFromEnv(), "empty disables the listener")
+	t.Setenv("API_METRICS_ADDR", ":9191")
+	assert.Equal(t, ":9191", metricsAddrFromEnv())
 }
 
 // TestRequestSizeLimit pins the server-wide cap: without it an authenticated

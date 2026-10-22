@@ -58,6 +58,8 @@ services:
   # Indexing worker: NATS -> Ollama embed -> Weaviate. The only writer process type;
   # safe to scale out (per-id locks in NATS KV), e.g. deploy.replicas: 3.
   worker:
+    # To run several workers (`docker compose up -d --scale worker=N`), remove
+    # container_name: compose cannot scale a service with a fixed container name.
     container_name: cortex-worker
     image: ghcr.io/thomas-maurice/cortex:latest # pin a version tag (e.g. :0.1.0) for prod
     user: '568:568'
@@ -70,6 +72,8 @@ services:
       OLLAMA_MODEL: qwen3-embedding:0.6b
       WEAVIATE_HOST: weaviate:8080
       WEAVIATE_GRPC_HOST: weaviate:50051
+      # Metrics/health listener inside the compose network (empty disables).
+      WORKER_METRICS_ADDR: ':9090'
       # Multi-tenancy is ON BY DEFAULT; set CORTEX_MULTI_TENANT=false to disable it
       # (must match the server).
     depends_on:
@@ -87,6 +91,8 @@ services:
     entrypoint: ['/usr/local/bin/cortex-server']
     environment:
       CORTEX_LISTEN: ':8080'
+      # Metrics/health listener, NOT routed by Traefik (it targets 8080 only).
+      API_METRICS_ADDR: ':9090'
       NATS_URL: nats://nats:4222
       OLLAMA_URL: http://ollama:11434
       OLLAMA_MODEL: qwen3-embedding:0.6b
@@ -140,10 +146,10 @@ services:
       traefik.http.services.cortex.loadbalancer.server.scheme: h2c
     healthcheck:
       # Distroless image: no wget/curl, so the server probes its own /readyz.
-      # /healthz and /readyz are unauthenticated. GET /metrics is OFF by default
-      # (METRICS_ENABLED unset). To enable it safely, set METRICS_ENABLED=true AND
-      # either scrape the container directly (not via Traefik) or exclude it from
-      # the public router rule with: && !PathPrefix(`/metrics`)
+      # /healthz and /readyz are unauthenticated. Metrics are served on a separate
+      # listener (API_METRICS_ADDR, default :9090). Traefik routes only port 8080
+      # (the loadbalancer.server.port label above), so /metrics is never publicly
+      # routed; scrape server:9090 / worker:9090 from inside the network.
       test: ['CMD', '/usr/local/bin/cortex-server', 'healthcheck']
       interval: 15s
       timeout: 8s

@@ -42,7 +42,7 @@ avoid colliding with other local services:
 | weaviate | 8081 (REST), 50051 (gRPC) | The live store — **has real data**. |
 | nats | 4223 (client), 8223 (mon) | JetStream; the index queue. |
 | ollama | 11434 | Embeddings via batched `/api/embed` (Ollama >= 0.3.4; `embed.Client.EmbedBatch`, 32/request). Model `qwen3-embedding:0.6b` (1024-dim). |
-| worker | — | NATS → Ollama → Weaviate. The only writer process type, safe as N replicas (`docker compose up -d --scale worker=N`, see §4). Ops HTTP on `:9090` inside the container (`METRICS_ADDR`; not published). |
+| worker | — | NATS → Ollama → Weaviate. The only writer process type, safe as N replicas (`docker compose up -d --scale worker=N`, see §4). Ops HTTP on `:9090` inside the container (`WORKER_METRICS_ADDR`; not published). |
 
 Common commands (run from the repo root):
 
@@ -56,8 +56,9 @@ docker compose ps
 ```
 
 The server also serves unauthenticated `GET /healthz`, `/readyz` (503 if NATS/Weaviate/Ollama
-is down; body is ok/fail per check only) and `/metrics` (Prometheus; OFF by default —
-`METRICS_ENABLED=true` turns it on; dev compose sets it; `/readyz` is cached ~1s) — `curl http://localhost:8088/readyz` needs no token. The compose server
+is down; body is ok/fail per check only) on the API port. `/metrics` (Prometheus) is NEVER on the API port: it is on a
+dedicated listener `API_METRICS_ADDR` (default `:9090`, empty disables; also serves
+`/healthz` `/readyz`; not published in dev compose). `/readyz` is cached ~1s — `curl http://localhost:8088/readyz` needs no token. The compose server
 healthcheck runs `cortex-server healthcheck` (distroless image: no wget/curl).
 
 Quick health / smoke checks against the running server (auth is on, so mint a
@@ -192,7 +193,7 @@ should encode *why* the behaviour matters, not just what it does (Rule 9).
   renames/deletes a namespace must touch both classes or it orphans summaries.
 
 - **Observability** lives in `internal/obs` (shared registry, `/healthz` `/readyz` `/metrics`
-  handlers, dependency probes reusing `Store.Ready` / `Embedder.Reachable`). Server RPC metrics are
+  handlers, `obs.Serve` for the dedicated metrics listeners, dependency probes reusing `Store.Ready` / `Embedder.Reachable`). Server RPC metrics are
   a Connect interceptor + a scrape-time queue collector in `internal/rpc/metrics.go`; worker metrics
   are `cmd/worker/metrics.go` (passed explicitly, nil-safe; embed latency via `embed.Client.SetObserver`).
   Never put user input, tenant ids or namespaces in metric labels. See README "Observability".

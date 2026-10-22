@@ -81,7 +81,7 @@ func TestMountRouting(t *testing.T) {
 	Mount(off, (*prometheus.Registry)(nil), nil)
 	off.Handle("/", catchAll)
 	code, _ = get(t, off, "/metrics")
-	assert.Equal(t, http.StatusTeapot, code, "METRICS_ENABLED=false must leave /metrics unserved")
+	assert.Equal(t, http.StatusTeapot, code, "nil registry must leave /metrics unserved")
 	code, _ = get(t, off, "/healthz")
 	assert.Equal(t, http.StatusOK, code, "healthz stays on without metrics")
 }

@@ -84,6 +84,9 @@ services:
       # single-user mode. Must match the server. An EXISTING (pre-MT) store needs a
       # one-time `cortex migrate-mt` after first enabling it.
       CORTEX_MULTI_TENANT: ${CORTEX_MULTI_TENANT:-true}
+      # Ops listener (/metrics, /healthz, /readyz; unauthenticated) inside the
+      # container, per replica, not published to the host. Empty disables it.
+      WORKER_METRICS_ADDR: ${WORKER_METRICS_ADDR:-:9090}
     depends_on:
       - nats
       - weaviate
@@ -149,10 +152,10 @@ services:
       # files are retained in CORTEX_BACKUP_DIR after each backup (default 7).
       # BACKUP_INTERVAL: ${BACKUP_INTERVAL:-}
       # BACKUP_KEEP: ${BACKUP_KEEP:-7}
-      # GET /metrics (Prometheus, unauthenticated) is OFF by default on the server;
-      # enabled here explicitly because this stack is local-only. /healthz and
-      # /readyz are always on.
-      METRICS_ENABLED: ${METRICS_ENABLED:-true}
+      # Dedicated metrics listener (/metrics, /healthz, /readyz; unauthenticated)
+      # inside the container. /metrics is never served on the API port (8080).
+      # Not published to the host. Empty disables it (default is :9090).
+      API_METRICS_ADDR: ${API_METRICS_ADDR:-:9090}
     healthcheck:
       # The distroless image has no wget/curl, so the server probes its own /readyz.
       test: ["CMD", "/usr/local/bin/cortex-server", "healthcheck"]
