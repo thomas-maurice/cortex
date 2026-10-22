@@ -74,6 +74,7 @@
 </template>
 
 <script setup>
+import { timestampDate } from '@bufbuild/protobuf/wkt'
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { Code, ConnectError } from '@connectrpc/connect'
@@ -112,7 +113,7 @@ const editDraft = ref({ text: '', tags: '' })
 
 function formatDate(ts) {
   try {
-    return ts.toDate().toLocaleString()
+    return timestampDate(ts).toLocaleString()
   } catch {
     return ''
   }
