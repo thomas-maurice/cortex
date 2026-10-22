@@ -187,6 +187,11 @@ port as the Connect API; open the server's address in a browser. Views:
 - **Explore** — type any text; it is vectorised server-side and matched against
   your memories, rendered as a cloud radiating from a central query node (closer
   + bigger = more relevant, edge label = vector distance).
+- **Recall preview** — paste a prompt and see what the `cortex hook recall`
+  hook would inject: memories with distance bars, a divider at the cutoff, and
+  greyed near misses tagged *over max distance* / *over limit*. Limit, max
+  distance, min chars and max query chunks default to the hook's. Per-session
+  dedup is not simulated.
 - **Sessions** — conversation summaries (`ListSummaries`).
 - **Namespaces** — admin view of every namespace with its memory and summary
   counts and last activity. **Rename** a namespace (a metadata-only move — nothing
@@ -434,6 +439,12 @@ never delay or block a prompt. Behavior details (all tunable via flags on the
   the MCP still dedups its own results in-process for the session's lifetime.
 - Injections do **not** reinforce the living-memory signal unless `--reinforce`
   is set — an automatic push is not the agent choosing to recall.
+- **Tune it without guessing**: `cortex hook recall --dry-run --prompt "..."` (or
+  the web UI's **Recall preview** view) shows what *would* be injected for a
+  prompt, the next few near misses and whether each was cut by `-d` or `-l`. The
+  query logic is shared with the hook (`internal/recall`), so the preview is what
+  the hook does — except per-session dedup, which is client-local state the server
+  cannot see (the preview says so).
 
 ### `consolidate-memories` skill (bundled)
 
@@ -663,6 +674,7 @@ authenticate with `--token` / `CORTEX_AUTH_TOKEN`.
 | `cortex summaries [-n '*'] [-l N]` | List conversation summaries, most-recently-updated first. |
 | `cortex recall "<query>"` | Recall the best-matching past session: summary + its facts. |
 | `cortex hook recall [--timeout 5s]` | Claude Code **UserPromptSubmit** hook endpoint: reads the hook event on stdin, searches memories for the prompt (chunking long ones) and prints matches for injection into context. Fail-open, hard-bounded by `--timeout`. See [Automatic recall](#automatic-recall-userpromptsubmit-hook). |
+| `cortex hook recall --dry-run [--prompt <text>]` | Preview what the hook **would** inject (server-side `PreviewRecall`): prints injected hits with distances, near misses with why they were excluded, and the settings used. Prompt from `--prompt` or stdin (raw text or hook-event JSON). Writes no recall state; never reinforces. Takes the same `-n/-l/-d/--min-chars/--max-query-chunks` flags as the hook. |
 | `cortex state ls \| show <convo> \| clear <convo> \| purge [--older-than 168h]` | Inspect/maintain the LOCAL per-conversation state db (`~/.cache/cortex/cortex.db`) shared by the recall hook and MCP dedup: list conversations, show what was delivered to one, drop one (its memories become injectable again), or purge all idle past the threshold. No server needed. |
 | `cortex config init` | Scaffold `~/.config/cortex/cortex.yaml` (won't overwrite without `--force`). |
 | `cortex config show` | Print the effective config (flags + env + file merged) and which file was used. |
@@ -961,10 +973,11 @@ internal/
   memory/          shared data model (Record, Hit) + stream/class names
   bus/             NATS JetStream: connect, stream, publish
   chunk/           token-bounded, overlapping text splitter (tiktoken, offline)
+  recall/          recall-hook query logic (chunk sampling, merge, limit/cutoff) shared by the hook and PreviewRecall
   embed/           Ollama embeddings client
   store/           Weaviate: schema, upsert, chunk-based gRPC search, links, delete
   rpc/             Connect service impl, auth (token+JWT), login, JWT, client helper
-ui/                embedded Vue 3 SPA (Memories, Graph, Explore, Sessions, Namespaces, Preferences, Backup, Indexing, Status)
+ui/                embedded Vue 3 SPA (Memories, Graph, Explore, Recall preview, Sessions, Namespaces, Preferences, Backup, Indexing, Status)
 testdata/          fake seed memories for a dev stack (cortex import format)
 docker-compose.yml   nats + weaviate + ollama + worker + server
 deploy/truenas/      TrueNAS Scale compose (non-root, host bind mounts, Traefik h2c)

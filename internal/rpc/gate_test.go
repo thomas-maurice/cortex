@@ -88,6 +88,12 @@ func TestHeavyRPCsSingleFlightPerTenant(t *testing.T) {
 				return err
 			}
 		},
+		"PreviewRecall": func(s *Service) func(context.Context) error {
+			return func(ctx context.Context) error {
+				_, err := s.PreviewRecall(ctx, connect.NewRequest(&cortexv1.PreviewRecallRequest{Prompt: "a prompt long enough to search"}))
+				return err
+			}
+		},
 		"RestoreSelf": func(s *Service) func(context.Context) error {
 			return func(ctx context.Context) error {
 				_, err := s.RestoreSelf(ctx, connect.NewRequest(&cortexv1.RestoreSelfRequest{Data: []byte("{}")}))

@@ -88,6 +88,7 @@ user/pass check for a user store and emit per-user claims.
 | `/` | **Memories** — search/list, add (New Memory form), delete | `Search`, `List`, `Save`, `Delete` |
 | `/graph` | **Graph** — memory map + explicit links | `List`, `Search`, `Link`, `Unlink` |
 | `/explore` | **Explore** — query → relevance cloud | `Search` |
+| `/recall-preview` | **Recall preview** — what would the recall hook inject for a prompt? | `PreviewRecall` |
 | `/sessions` | **Sessions** — conversation summaries (edit in place) | `ListSummaries`, `SummarizeSession` |
 | `/namespaces` | **Namespaces** — per-namespace counts; rename / delete a whole namespace | `ListNamespaces`, `RenameNamespace`, `DeleteNamespace` |
 | `/preferences` | **Preferences** — `global` + `preference` memories, edit/add/delete | `List`, `Save`, `UpdateMemory`, `Delete` |
@@ -138,6 +139,21 @@ memories, rendered as a cloud radiating from a central query node. Closer +
 bigger = more relevant; edge length encodes distance; edge label is the distance.
 A **Max dist** cutoff drops weak matches. Searches carry a monotonic request id so
 a slow query can't overwrite a newer one's results.
+
+### Recall preview (`ui/src/views/RecallPreviewView.vue`)
+
+Paste a prompt → `PreviewRecall` runs the same query logic as `cortex hook
+recall` (`internal/recall`: chunk + sample long prompts, concurrent search, merge
+by best distance, limit/cutoff). Inputs: namespace, limit, max distance (slider),
+min chars, max query chunks — defaulting to the hook's own defaults (3 / 0.5 / 12
+/ 4); "Hook defaults" resets them. Output: the query chunks used, the memories
+that **would be injected** (distance bar, matched chunk), a divider at the cutoff,
+and greyed **near misses** tagged *over max distance* or *over limit*. A prompt the
+hook would skip (slash/bang command, under min chars) says so. Read-only: tenant-
+scoped, no reinforcement. **Per-session dedup is not simulated** (client-local
+bbolt state the server cannot see) and the view says so. Near-miss distances come
+from a second, wider search, so they can differ slightly from the injected set's.
+CLI twin: `cortex hook recall --dry-run`.
 
 ## Memory linking — three ways things get connected
 
@@ -190,6 +206,7 @@ ui/
     utils/connect.js       typed Connect client (createClient; attaches the JWT)
     utils/api.js           /auth/login client
     views/                 LoginView, MemoriesView, GraphView, ExploreView,
+                           RecallPreviewView,
                            SessionsView, NamespacesView, PreferencesView,
                            BackupView, QueueView (Indexing), StatusView
 internal/rpc/

@@ -177,6 +177,7 @@ const coreNav = [
   { name: 'memories', label: 'Memories' },
   { name: 'graph', label: 'Graph' },
   { name: 'explore', label: 'Explore' },
+  { name: 'recall-preview', label: 'Recall' },
 ]
 
 // Route names grouped under each nav dropdown, so the toggle shows an active
