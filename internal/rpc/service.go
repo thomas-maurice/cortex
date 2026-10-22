@@ -332,20 +332,25 @@ func (s *Service) UpdateMemory(ctx context.Context, req *connect.Request[cortexv
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("memory %s not found", id))
 	}
 
-	// Changing ONLY the expiry must not re-embed: the expiry is not part of the
-	// vector, so it is applied as a single-property merge (no worker round-trip).
-	// "Only" means text, tags and namespace are absent or identical to what is
-	// stored — editors (UI/CLI) resend the whole form, so identical values count.
-	if expirySet &&
-		(text == "" || text == rec.Text) &&
-		(!req.Msg.GetReplaceTags() || slices.Equal(req.Msg.GetTags(), rec.Tags)) &&
-		(newNS == "" || newNS == rec.Namespace) {
+	// The expiry is owned by SetValidUntil (a single-property merge): it is applied
+	// synchronously and never travels through the index queue, so no queued index
+	// message (reindex, an earlier edit, a restore) can revert it. It is applied
+	// BEFORE any republish so a failure aborts the whole edit.
+	if expirySet {
 		if err := ts.SetValidUntil(ctx, id, newUntil); err != nil {
 			if errors.Is(err, store.ErrNotFound) {
 				return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("memory %s not found", id))
 			}
 			return nil, err
 		}
+	}
+	// Changing ONLY the expiry must not re-embed. "Only" means text, tags and
+	// namespace are absent or identical to what is stored — editors (UI/CLI)
+	// resend the whole form, so identical values count.
+	if expirySet &&
+		(text == "" || text == rec.Text) &&
+		(!req.Msg.GetReplaceTags() || slices.Equal(req.Msg.GetTags(), rec.Tags)) &&
+		(newNS == "" || newNS == rec.Namespace) {
 		return connect.NewResponse(&cortexv1.UpdateMemoryResponse{Id: id, Status: "updated"}), nil
 	}
 
@@ -604,8 +609,9 @@ func (s *Service) Status(ctx context.Context, _ *connect.Request[cortexv1.Status
 		// Count scoped to the caller's tenant — a normal user sees their own count,
 		// not a cross-tenant total (which would be a privacy leak in MT mode).
 		if ts, err := s.tenantStore(ctx); err == nil {
-			if c, err := ts.Count(ctx, ""); err == nil {
-				out.MemoryCount = int64(c)
+			if live, expired, err := ts.CountLiveExpired(ctx); err == nil {
+				out.MemoryCount = int64(live)
+				out.ExpiredCount = int64(expired)
 			}
 		}
 	}
@@ -1290,15 +1296,22 @@ func (s *Service) RestoreMemories(ctx context.Context, req *connect.Request[cort
 		}
 		recs = append(recs, rec)
 	}
-	queued := 0
+	queued, expiredQueued := 0, 0
+	now := time.Now()
 	for _, rec := range recs {
 		// PublishIndex stamps rec.UserID from context — the caller's tenant.
 		if err := bus.PublishIndex(ctx, s.js, rec); err != nil {
 			return nil, fmt.Errorf("restore publish %s: %w", rec.ID, err)
 		}
 		queued++
+		if rec.Expired(now) {
+			expiredQueued++ // a restore keeps valid_until as-is (even a lapsed one); only reported
+		}
 	}
-	return connect.NewResponse(&cortexv1.RestoreMemoriesResponse{Queued: int32(queued)}), nil
+	if expiredQueued > 0 {
+		s.log.Info("restore: queued records carry a lapsed expiry (new memories stay hidden; existing ones keep their expiry)", "expired", expiredQueued, "queued", queued)
+	}
+	return connect.NewResponse(&cortexv1.RestoreMemoriesResponse{Queued: int32(queued), ExpiredQueued: int32(expiredQueued)}), nil
 }
 
 // ListNamespaces aggregates the stored namespaces with per-namespace memory and

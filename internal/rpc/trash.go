@@ -31,6 +31,7 @@ func trashToProto(e memory.TrashEntry) *cortexv1.TrashEntry {
 		LinkedIds:      e.LinkedIDs,
 		DeletedAt:      timestamppb.New(e.DeletedAt),
 		Reason:         e.Reason,
+		ValidUntil:     validUntilProto(e.ValidUntil),
 	}
 }
 
@@ -130,7 +131,7 @@ func (s *Service) RestoreFromTrash(ctx context.Context, req *connect.Request[cor
 	for _, e := range entries {
 		restoring[e.ID] = true
 	}
-	queued := 0
+	queued, expiredQueued := 0, 0
 	for _, e := range entries {
 		rec := e.Record
 		links := rec.LinkedIDs
@@ -139,12 +140,16 @@ func (s *Service) RestoreFromTrash(ctx context.Context, req *connect.Request[cor
 		if rec.CreatedAt.IsZero() {
 			rec.CreatedAt = time.Now().UTC()
 		}
-		// A restored memory whose expiry has already passed would be hidden again
-		// at once and re-trashed by the next sweep, defeating the restore. Whoever
-		// restores it wants it back, so drop the lapsed expiry (a still-future one
-		// is kept: the fact is still time-bound).
-		if rec.Expired(time.Now()) {
+		// One policy: only an entry the SWEEP trashed (reason "expired") loses its
+		// lapsed expiry on restore — otherwise the restored memory would be hidden
+		// and re-swept at once. Any other reason (an explicit delete, supersedes…)
+		// keeps validUntil as it was: if it has lapsed the sweep re-trashes it as
+		// expired after the grace, which is correct.
+		if e.Reason == memory.TrashReasonExpired && rec.Expired(time.Now()) {
 			rec.ValidUntil = time.Time{}
+		}
+		if rec.Expired(time.Now()) {
+			expiredQueued++ // comes back, but hidden until its expiry is changed
 		}
 		if err := bus.PublishIndex(ctx, s.js, rec); err != nil {
 			return nil, fmt.Errorf("restore publish %s (%d already queued): %w", rec.ID, queued, err)
@@ -169,7 +174,7 @@ func (s *Service) RestoreFromTrash(ctx context.Context, req *connect.Request[cor
 			return nil, fmt.Errorf("restore queued %s but removing it from trash failed (purge it manually): %w", rec.ID, err)
 		}
 	}
-	return connect.NewResponse(&cortexv1.RestoreFromTrashResponse{Queued: int32(queued)}), nil
+	return connect.NewResponse(&cortexv1.RestoreFromTrashResponse{Queued: int32(queued), ExpiredQueued: int32(expiredQueued)}), nil
 }
 
 // PurgeTrash permanently deletes trash entries: the listed ids (all must exist in

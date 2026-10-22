@@ -26,7 +26,7 @@
             </TableCell>
           </TableRow>
           <TableRow><TableHead>Dimensions</TableHead><TableCell>{{ status.dims }}</TableCell></TableRow>
-          <TableRow><TableHead>Memories</TableHead><TableCell>{{ status.memoryCount }}</TableCell></TableRow>
+          <TableRow><TableHead>Memories</TableHead><TableCell>{{ status.memoryCount }}<span v-if="Number(status.expiredCount)" class="text-muted-foreground"> (+{{ status.expiredCount }} expired)</span></TableCell></TableRow>
           <TableRow><TableHead>Version</TableHead><TableCell>{{ status.version }}</TableCell></TableRow>
         </TableBody>
       </Table>

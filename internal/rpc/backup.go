@@ -217,6 +217,11 @@ func (s *Service) LastBackupTime() (time.Time, bool) {
 	return newest, found
 }
 
+// restoredExpiredNote explains the "N carry a lapsed expiry" count in restore
+// messages: only memories this restore RE-CREATES come back hidden; over an
+// existing id the stored expiry is kept (the index path never rewrites it).
+const restoredExpiredNote = "restored records carry a lapsed expiry: new memories stay hidden until it is changed, existing memories keep their current expiry"
+
 // RestoreAll is the admin-gated RPC handler. It accepts EITHER a named backup
 // file (name field) OR raw bytes (data field) — exactly one must be set
 // (CodeInvalidArgument when both or neither are provided). It validates the
@@ -288,6 +293,8 @@ func (s *Service) RestoreAll(ctx context.Context, req *connect.Request[cortexv1.
 	}
 
 	resp := &cortexv1.RestoreAllResponse{}
+	now := time.Now()
+	expiredQueued := 0
 
 	// Recreate missing users and API keys — only in MT mode and only when the
 	// backup has user records (single-user backups omit both).
@@ -336,6 +343,9 @@ func (s *Service) RestoreAll(ctx context.Context, req *connect.Request[cortexv1.
 				return nil, fmt.Errorf("re-queue memory %s: %w", r.ID, err)
 			}
 			resp.MemoriesQueued++
+			if r.Expired(now) {
+				expiredQueued++
+			}
 		}
 		for _, sum := range tb.Summaries {
 			if strings.TrimSpace(sum.Text) == "" {
@@ -348,13 +358,13 @@ func (s *Service) RestoreAll(ctx context.Context, req *connect.Request[cortexv1.
 		}
 	}
 	resp.Message = fmt.Sprintf(
-		"restore complete: %d memories and %d summaries queued; "+
+		"restore complete: %d memories (%d "+restoredExpiredNote+") and %d summaries queued; "+
 			"%d users created, %d users skipped; %d keys created, %d keys skipped",
-		resp.MemoriesQueued, resp.SummariesQueued,
+		resp.MemoriesQueued, expiredQueued, resp.SummariesQueued,
 		resp.UsersCreated, resp.UsersSkipped,
 		resp.ApiKeysCreated, resp.ApiKeysSkipped,
 	)
-	s.log.Info("restore complete", "memories_queued", resp.MemoriesQueued,
+	s.log.Info("restore complete", "memories_queued", resp.MemoriesQueued, "expired_queued", expiredQueued,
 		"summaries_queued", resp.SummariesQueued,
 		"users_created", resp.UsersCreated, "users_skipped", resp.UsersSkipped,
 		"keys_created", resp.ApiKeysCreated, "keys_skipped", resp.ApiKeysSkipped)
@@ -458,6 +468,8 @@ func (s *Service) RestoreSelf(ctx context.Context, req *connect.Request[cortexv1
 	}
 
 	resp := &cortexv1.RestoreSelfResponse{}
+	now := time.Now()
+	expiredQueued := 0
 	for _, tb := range env.Tenants {
 		// Always publish with caller's ctx — NEVER with a per-tenant wrapped ctx.
 		// This is the tenant-scoping invariant for RestoreSelf.
@@ -469,6 +481,9 @@ func (s *Service) RestoreSelf(ctx context.Context, req *connect.Request[cortexv1
 				return nil, fmt.Errorf("re-queue memory %s: %w", r.ID, err)
 			}
 			resp.MemoriesQueued++
+			if r.Expired(now) {
+				expiredQueued++
+			}
 		}
 		for _, sum := range tb.Summaries {
 			if strings.TrimSpace(sum.Text) == "" {
@@ -481,8 +496,8 @@ func (s *Service) RestoreSelf(ctx context.Context, req *connect.Request[cortexv1
 		}
 	}
 	resp.Message = fmt.Sprintf(
-		"restore complete: %d memories and %d summaries queued into your tenant",
-		resp.MemoriesQueued, resp.SummariesQueued)
+		"restore complete: %d memories (%d "+restoredExpiredNote+") and %d summaries queued into your tenant",
+		resp.MemoriesQueued, expiredQueued, resp.SummariesQueued)
 	return connect.NewResponse(resp), nil
 }
 

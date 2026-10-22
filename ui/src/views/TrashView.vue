@@ -52,6 +52,7 @@
             <TableCell class="max-w-[480px]">
               <div class="truncate" :title="e.text">{{ truncate(e.text, 140) }}</div>
               <div class="font-mono text-xs text-muted-foreground">{{ e.id }}</div>
+              <ExpiryBadge v-if="e.validUntil" :valid-until="e.validUntil" class="mt-1" />
             </TableCell>
             <TableCell class="font-mono">{{ e.namespace || '(empty)' }}</TableCell>
             <TableCell class="text-sm text-muted-foreground whitespace-nowrap">{{ e.deletedAt ? formatTimestamp(e.deletedAt) : '—' }}</TableCell>
@@ -134,8 +135,10 @@ async function restore(e) {
   busy.value = true
   error.value = ''
   try {
-    await memoryClient.restoreFromTrash({ ids: [e.id] })
-    toast.success('Memory restored (queued for indexing)')
+    const res = await memoryClient.restoreFromTrash({ ids: [e.id] })
+    toast.success(Number(res.expiredQueued) > 0
+      ? 'Memory restored, but already expired (hidden until its expiry is changed)'
+      : 'Memory restored (queued for indexing)')
     await reload()
   } catch (err) {
     handleError(err)

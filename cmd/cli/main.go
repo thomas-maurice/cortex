@@ -1460,6 +1460,7 @@ func consolidateCmd() *cobra.Command {
 	var limit int
 	var maxDistance float32
 	var tags, anyTags, excludeTags []string
+	var includeExpired bool
 	cmd := &cobra.Command{
 		Use:   "consolidate <topic>",
 		Short: "Gather the cluster of memories about a topic, for review/merging",
@@ -1476,13 +1477,14 @@ func consolidateCmd() *cobra.Command {
 				return fmt.Errorf("topic must not be empty")
 			}
 			resp, err := client().Consolidate(cmd.Context(), connect.NewRequest(&cortexv1.ConsolidateRequest{
-				Topic:       topic,
-				Namespace:   namespace,
-				Limit:       int32(limit),
-				MaxDistance: maxDistance,
-				Tags:        tags,
-				AnyTags:     anyTags,
-				ExcludeTags: excludeTags,
+				Topic:          topic,
+				Namespace:      namespace,
+				Limit:          int32(limit),
+				MaxDistance:    maxDistance,
+				Tags:           tags,
+				AnyTags:        anyTags,
+				ExcludeTags:    excludeTags,
+				IncludeExpired: includeExpired,
 			}))
 			if err != nil {
 				return err
@@ -1505,6 +1507,7 @@ func consolidateCmd() *cobra.Command {
 	cmd.Flags().StringSliceVarP(&tags, "tag", "t", nil, "only consolidate memories with all of these tags (repeatable; omit = no tag filter)")
 	cmd.Flags().StringSliceVarP(&anyTags, "any-tag", "T", nil, "only consolidate memories with at least one of these tags (repeatable)")
 	cmd.Flags().StringSliceVarP(&excludeTags, "exclude-tag", "x", nil, "drop memories with this tag from the cluster (repeatable)")
+	cmd.Flags().BoolVar(&includeExpired, "include-expired", false, "also gather expired memories (skipped by default)")
 	return cmd
 }
 

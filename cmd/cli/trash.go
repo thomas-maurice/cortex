@@ -73,6 +73,9 @@ func trashRestoreCmd() *cobra.Command {
 				return err
 			}
 			fmt.Printf("restored %d memories (queued for indexing)\n", resp.Msg.GetQueued())
+			if n := resp.Msg.GetExpiredQueued(); n > 0 {
+				fmt.Printf("  %d of them already expired: hidden from search/list until their expiry is changed (cortex edit <id> --expires 7d | --no-expiry)\n", n)
+			}
 			return nil
 		},
 	}

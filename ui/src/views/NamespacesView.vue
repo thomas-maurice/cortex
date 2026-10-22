@@ -27,6 +27,7 @@
           <TableRow>
             <TableHead>Namespace</TableHead>
             <TableHead class="text-right">Memories</TableHead>
+            <TableHead class="text-right" title="Expired memories: hidden from search and recall, awaiting the sweep">Expired</TableHead>
             <TableHead class="text-right">Summaries</TableHead>
             <TableHead>Last activity</TableHead>
             <TableHead class="text-right" style="width: 1%">Actions</TableHead>
@@ -47,6 +48,7 @@
               <span v-else class="font-mono">{{ ns.name || '(empty)' }}</span>
             </TableCell>
             <TableCell class="text-right">{{ Number(ns.memoryCount) }}</TableCell>
+            <TableCell class="text-right text-muted-foreground">{{ Number(ns.expiredCount) || '—' }}</TableCell>
             <TableCell class="text-right">{{ Number(ns.summaryCount) }}</TableCell>
             <TableCell class="text-sm text-muted-foreground">{{ ns.lastUpdated ? formatTimestamp(ns.lastUpdated) : '—' }}</TableCell>
             <TableCell class="text-right whitespace-nowrap">
@@ -139,7 +141,7 @@ async function confirmRename(ns) {
 async function remove(ns) {
   // Bulk irreversible delete.
   const ok = await confirmDialog(
-    `Delete the entire "${ns.name}" namespace? ${Number(ns.memoryCount)} memories are moved to the trash ` +
+    `Delete the entire "${ns.name}" namespace? ${Number(ns.memoryCount) + Number(ns.expiredCount || 0)} memories are moved to the trash ` +
       `(restorable until the retention period expires); ${Number(ns.summaryCount)} summaries are permanently removed.`,
     { title: 'Delete namespace', actionLabel: 'Delete', destructive: true, typeToConfirm: ns.name },
   )
