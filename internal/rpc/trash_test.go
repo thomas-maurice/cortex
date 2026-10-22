@@ -44,6 +44,22 @@ func TestSweepTrashDisabledWhenRetentionZero(t *testing.T) {
 	assert.Zero(t, n, "retention 0 keeps the trash forever and must not even touch the store")
 }
 
+// publishedLinks reads every link message on the stream.
+func publishedLinks(t *testing.T, js jetstream.JetStream) []memory.LinkMsg {
+	t.Helper()
+	cons, err := js.OrderedConsumer(context.Background(), memory.StreamName, jetstream.OrderedConsumerConfig{FilterSubjects: []string{memory.SubjectLink}})
+	require.NoError(t, err)
+	batch, err := cons.Fetch(200, jetstream.FetchMaxWait(time.Second))
+	require.NoError(t, err)
+	var out []memory.LinkMsg
+	for m := range batch.Messages() {
+		var lm memory.LinkMsg
+		require.NoError(t, json.Unmarshal(m.Data(), &lm))
+		out = append(out, lm)
+	}
+	return out
+}
+
 // publishedIndex reads every index message on the stream.
 func publishedIndex(t *testing.T, js jetstream.JetStream) []memory.Record {
 	t.Helper()
@@ -222,6 +238,118 @@ func TestTrashRPCIntegration(t *testing.T) {
 			}
 		}
 		assert.True(t, found, "A-B link must be queued although neither is live yet")
+	})
+
+	pair := func(msgs []memory.LinkMsg, x, y string) (add, remove bool) {
+		for _, lm := range msgs {
+			if (lm.A == x && lm.B == y) || (lm.A == y && lm.B == x) {
+				add = add || lm.Op == memory.LinkOpAdd
+				remove = remove || lm.Op == memory.LinkOpRemove
+			}
+		}
+		return
+	}
+
+	t.Run("restoring A then B in separate requests restores the edge", func(t *testing.T) {
+		a := memory.Record{ID: uuid.NewString(), Text: "a2", Namespace: "ns", CreatedAt: time.Now().UTC()}
+		b := memory.Record{ID: uuid.NewString(), Text: "b2", Namespace: "ns", CreatedAt: time.Now().UTC()}
+		a.LinkedIDs, b.LinkedIDs = []string{b.ID}, []string{a.ID}
+		for _, r := range []memory.Record{a, b} {
+			require.NoError(t, ta.Upsert(ctx, r, vec))
+			require.NoError(t, del(alice, r.ID))
+		}
+		require.NoError(t, restore(alice, a.ID))
+		addNow, _ := pair(publishedLinks(t, js), a.ID, b.ID)
+		assert.False(t, addNow, "B is still in the trash: no link yet (the link queue must not be left waiting for days)")
+
+		// The worker would index A; simulate that so A is live when B is restored.
+		require.NoError(t, ta.Upsert(ctx, memory.Record{ID: a.ID, Text: "a2", Namespace: "ns", CreatedAt: a.CreatedAt}, vec))
+		require.NoError(t, restore(alice, b.ID))
+		addLater, _ := pair(publishedLinks(t, js), a.ID, b.ID)
+		assert.True(t, addLater, "restoring B re-links it to the live A")
+	})
+
+	t.Run("delete + restore keeps recall history", func(t *testing.T) {
+		accessed := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Second)
+		r := memory.Record{ID: uuid.NewString(), Text: "often recalled", Namespace: "ns", CreatedAt: time.Now().UTC(), AccessCount: 7, LastAccessedAt: accessed, Model: "m", Dims: 4}
+		require.NoError(t, ta.Upsert(ctx, r, vec))
+		require.NoError(t, del(alice, r.ID))
+		e, ok, err := ta.GetTrash(ctx, r.ID)
+		require.NoError(t, err)
+		require.True(t, ok)
+		assert.Equal(t, 7, e.AccessCount)
+		assert.True(t, accessed.Equal(e.LastAccessedAt))
+		assert.Equal(t, "m", e.Model)
+		require.NoError(t, restore(alice, r.ID))
+		var got *memory.Record
+		for _, p := range publishedIndex(t, js) {
+			if p.ID == r.ID {
+				got = &p
+			}
+		}
+		require.NotNil(t, got)
+		assert.Equal(t, 7, got.AccessCount, "a restore must not reset usage history")
+		assert.True(t, accessed.Equal(got.LastAccessedAt))
+	})
+
+	t.Run("delete reason is recorded and filterable", func(t *testing.T) {
+		x := memory.Record{ID: uuid.NewString(), Text: "stale one", Namespace: "reasons", CreatedAt: time.Now().UTC()}
+		y := memory.Record{ID: uuid.NewString(), Text: "plain one", Namespace: "reasons", CreatedAt: time.Now().UTC()}
+		for _, r := range []memory.Record{x, y} {
+			require.NoError(t, ta.Upsert(ctx, r, vec))
+		}
+		_, err := svc.Delete(alice, connect.NewRequest(&cortexv1.DeleteRequest{Id: x.ID, Reason: "stale-review"}))
+		require.NoError(t, err)
+		require.NoError(t, del(alice, y.ID))
+		r, err := svc.ListTrash(alice, connect.NewRequest(&cortexv1.ListTrashRequest{Namespace: "reasons", Reason: "stale-review"}))
+		require.NoError(t, err)
+		require.Len(t, r.Msg.Entries, 1)
+		assert.Equal(t, x.ID, r.Msg.Entries[0].Id)
+		_, err = svc.Delete(alice, connect.NewRequest(&cortexv1.DeleteRequest{Id: uuid.NewString(), Reason: "because"}))
+		require.Error(t, err)
+		assert.Equal(t, connect.CodeInvalidArgument, connectCode(t, err))
+
+		t.Run("bulk restore by filter reports counts", func(t *testing.T) {
+			// A third entry whose id is live again must be counted as failed, not abort the batch.
+			z := memory.Record{ID: uuid.NewString(), Text: "revived", Namespace: "reasons", CreatedAt: time.Now().UTC()}
+			require.NoError(t, ta.Upsert(ctx, z, vec))
+			require.NoError(t, del(alice, z.ID))
+			require.NoError(t, ta.Upsert(ctx, z, vec))
+			res, err := svc.RestoreFromTrash(alice, connect.NewRequest(&cortexv1.RestoreFromTrashRequest{All: true, Namespace: "reasons"}))
+			require.NoError(t, err)
+			assert.EqualValues(t, 2, res.Msg.Queued)
+			assert.EqualValues(t, 1, res.Msg.Failed)
+			require.Len(t, res.Msg.Failures, 1)
+			assert.Contains(t, res.Msg.Failures[0], z.ID)
+			lr, err := svc.ListTrash(alice, connect.NewRequest(&cortexv1.ListTrashRequest{Namespace: "reasons"}))
+			require.NoError(t, err)
+			require.Len(t, lr.Msg.Entries, 1)
+			assert.Equal(t, z.ID, lr.Msg.Entries[0].Id, "only the failed entry stays in the trash")
+			_, err = svc.PurgeTrash(alice, connect.NewRequest(&cortexv1.PurgeTrashRequest{Ids: []string{z.ID}}))
+			require.NoError(t, err)
+		})
+	})
+
+	t.Run("purge and sweep strip dangling links from neighbours", func(t *testing.T) {
+		n := memory.Record{ID: uuid.NewString(), Text: "neighbour", Namespace: "ns", CreatedAt: time.Now().UTC()}
+		p := memory.Record{ID: uuid.NewString(), Text: "to purge", Namespace: "ns", CreatedAt: time.Now().UTC(), LinkedIDs: []string{n.ID}}
+		n.LinkedIDs = []string{p.ID}
+		require.NoError(t, ta.Upsert(ctx, n, vec))
+		require.NoError(t, ta.Upsert(ctx, p, vec))
+		require.NoError(t, del(alice, p.ID))
+		_, err := svc.PurgeTrash(alice, connect.NewRequest(&cortexv1.PurgeTrashRequest{Ids: []string{p.ID}}))
+		require.NoError(t, err)
+		_, removed := pair(publishedLinks(t, js), n.ID, p.ID)
+		assert.True(t, removed, "purge queues a link REMOVE for the live neighbour")
+
+		// Sweep: an entry past retention is purged and its links stripped, in its own tenant.
+		s2 := memory.Record{ID: uuid.NewString(), Text: "to sweep", Namespace: "ns", CreatedAt: time.Now().UTC(), LinkedIDs: []string{n.ID}}
+		require.NoError(t, ta.PutTrashEntry(ctx, memory.TrashEntry{Record: s2, DeletedAt: time.Now().Add(-30 * 24 * time.Hour), Reason: "delete"}))
+		cnt, err := svc.SweepTrash(ctx)
+		require.NoError(t, err)
+		assert.Equal(t, 1, cnt)
+		_, removed = pair(publishedLinks(t, js), n.ID, s2.ID)
+		assert.True(t, removed)
 	})
 
 	t.Run("purge all", func(t *testing.T) {

@@ -1234,6 +1234,7 @@ func statusCmd() *cobra.Command {
 			fmt.Printf("weaviate %s\n", okStr(m.GetWeaviateOk()))
 			fmt.Printf("ollama   %s (model=%s dims=%d)\n", okStr(m.GetOllamaOk()), m.GetModel(), m.GetDims())
 			fmt.Printf("memories %d\n", m.GetMemoryCount())
+			fmt.Printf("trash    %d\n", m.GetTrashCount())
 			return nil
 		},
 	}

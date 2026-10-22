@@ -4,6 +4,7 @@ package memory
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -246,7 +247,29 @@ const (
 	TrashReasonDelete          = "delete"
 	TrashReasonSupersedes      = "supersedes:"
 	TrashReasonNamespaceDelete = "namespace-delete"
+	// Reasons a caller may pass to Delete (so mass deletions are filterable).
+	TrashReasonStaleReview     = "stale-review"
+	TrashReasonDuplicateReview = "duplicate-review"
 )
+
+// NormalizeDeleteReason maps a caller-supplied delete reason to one of the allowed
+// values ("" = "delete"); ok is false for anything outside the bounded set.
+func NormalizeDeleteReason(r string) (string, bool) {
+	switch r {
+	case "", TrashReasonDelete:
+		return TrashReasonDelete, true
+	case TrashReasonStaleReview, TrashReasonDuplicateReview:
+		return r, true
+	}
+	return "", false
+}
+
+// TrashReasonMatches reports whether an entry's reason satisfies a filter: empty
+// matches all, otherwise exact or a family prefix ("supersedes" matches
+// "supersedes:<id>").
+func TrashReasonMatches(reason, filter string) bool {
+	return filter == "" || reason == filter || strings.HasPrefix(reason, filter+":")
+}
 
 // TrashEntry is a soft-deleted Record plus when and why it was deleted.
 type TrashEntry struct {

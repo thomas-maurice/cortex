@@ -57,10 +57,19 @@ func trashProperties() []*models.Property {
 		{Name: "notDuplicateOf", DataType: []string{"text[]"}},
 		{Name: "deletedAt", DataType: []string{"date"}},
 		{Name: "reason", DataType: []string{"text"}},
+		// Every other Memory property that the worker does NOT recompute is kept so a
+		// restore does not reset history: accessCount/lastAccessedAt (recall usage),
+		// model/dims (display). dupCandidates (recomputed at index), indexedSeq and
+		// indexedStream (re-stamped by the worker from the new queue message) are
+		// deliberately NOT kept.
+		{Name: "accessCount", DataType: []string{"int"}},
+		{Name: "lastAccessedAt", DataType: []string{"date"}},
+		{Name: "model", DataType: []string{"text"}},
+		{Name: "dims", DataType: []string{"int"}},
 	}
 }
 
-var trashScanProps = []string{"memoryId", "text", "namespace", "tags", "source", "conversationId", "createdAt", "linkedIds", "notDuplicateOf", "deletedAt", "reason"}
+var trashScanProps = []string{"memoryId", "text", "namespace", "tags", "source", "conversationId", "createdAt", "linkedIds", "notDuplicateOf", "deletedAt", "reason", "accessCount", "lastAccessedAt", "model", "dims"}
 
 // ListAllTrash scans the Trash class without any tenant scope — the migrate-mt
 // snapshot, taken while the store is still non-MT (like ListAllRecords). Must not
@@ -119,6 +128,12 @@ func (ts *TenantStore) putTrash(ctx context.Context, rec memory.Record, reason s
 		"notDuplicateOf": nz(rec.NotDuplicateOf),
 		"deletedAt":      at.UTC().Format(time.RFC3339),
 		"reason":         reason,
+		"accessCount":    rec.AccessCount,
+		"model":          rec.Model,
+		"dims":           rec.Dims,
+	}
+	if !rec.LastAccessedAt.IsZero() {
+		props["lastAccessedAt"] = formatDate(rec.LastAccessedAt)
 	}
 	if !rec.CreatedAt.IsZero() {
 		props["createdAt"] = rec.CreatedAt.UTC().Format(time.RFC3339)
@@ -205,9 +220,16 @@ func (ts *TenantStore) PurgeTrash(ctx context.Context, namespace string) (int, e
 // PurgeTrashOlderThan permanently deletes entries deleted before cutoff and
 // returns how many were purged.
 func (ts *TenantStore) PurgeTrashOlderThan(ctx context.Context, cutoff time.Time) (int, error) {
+	purged, err := ts.PurgeTrashOlderThanEntries(ctx, cutoff)
+	return len(purged), err
+}
+
+// PurgeTrashOlderThanEntries is PurgeTrashOlderThan returning the purged entries
+// (so the caller can strip their now-dangling links).
+func (ts *TenantStore) PurgeTrashOlderThanEntries(ctx context.Context, cutoff time.Time) ([]memory.TrashEntry, error) {
 	entries, err := ts.ListTrash(ctx, "")
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	old := entries[:0]
 	for _, e := range entries {
@@ -220,39 +242,72 @@ func (ts *TenantStore) PurgeTrashOlderThan(ctx context.Context, cutoff time.Time
 			old = append(old, e)
 		}
 	}
-	return ts.purgeEntries(ctx, old)
+	return ts.PurgeEntries(ctx, old)
+}
+
+// CountTrash returns the number of entries in the tenant's trash (ids only scan).
+func (ts *TenantStore) CountTrash(ctx context.Context) (int, error) {
+	n := 0
+	err := ts.s.scanAll(ctx, memory.TrashClassName, ts.t, nil, func(graphql.SearchResult) { n++ })
+	if err != nil {
+		if isTenantNotFound(err) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("count trash: %w", err)
+	}
+	return n, nil
 }
 
 func (ts *TenantStore) purgeEntries(ctx context.Context, entries []memory.TrashEntry) (int, error) {
-	n := 0
+	purged, err := ts.PurgeEntries(ctx, entries)
+	return len(purged), err
+}
+
+// PurgeEntries permanently deletes the given trash entries and returns those that
+// were deleted (on error, the ones deleted before it).
+func (ts *TenantStore) PurgeEntries(ctx context.Context, entries []memory.TrashEntry) ([]memory.TrashEntry, error) {
+	done := make([]memory.TrashEntry, 0, len(entries))
 	for _, e := range entries {
 		if err := ts.DeleteTrash(ctx, e.ID); err != nil {
-			return n, err
+			return done, err
 		}
-		n++
+		done = append(done, e)
 	}
-	return n, nil
+	return done, nil
 }
 
 // PurgeExpiredTrash is the retention sweep: it purges, across EVERY tenant,
 // entries deleted before cutoff, and returns the total purged. A failure on one
 // tenant does not stop the others; the errors are joined.
 func (s *Store) PurgeExpiredTrash(ctx context.Context, cutoff time.Time) (int, error) {
+	purged, err := s.PurgeExpiredTrashEntries(ctx, cutoff)
+	n := 0
+	for _, es := range purged {
+		n += len(es)
+	}
+	return n, err
+}
+
+// PurgeExpiredTrashEntries is PurgeExpiredTrash returning the purged entries by
+// tenant (the tenant key is "" when multi-tenancy is off).
+func (s *Store) PurgeExpiredTrashEntries(ctx context.Context, cutoff time.Time) (map[string][]memory.TrashEntry, error) {
 	tenants := []string{""}
 	if s.multiTenant {
 		var err error
 		if tenants, err = s.ListTenants(ctx, memory.TrashClassName); err != nil {
-			return 0, err
+			return nil, err
 		}
 	}
-	total := 0
+	out := map[string][]memory.TrashEntry{}
 	var errs []error
 	for _, t := range tenants {
-		n, err := s.Tenant(t).PurgeTrashOlderThan(ctx, cutoff)
-		total += n
+		purged, err := s.Tenant(t).PurgeTrashOlderThanEntries(ctx, cutoff)
+		if len(purged) > 0 {
+			out[t] = purged
+		}
 		if err != nil {
 			errs = append(errs, fmt.Errorf("tenant %q: %w", t, err))
 		}
 	}
-	return total, errors.Join(errs...)
+	return out, errors.Join(errs...)
 }

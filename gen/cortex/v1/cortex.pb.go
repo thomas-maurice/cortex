@@ -1088,8 +1088,12 @@ func (x *ListResponse) GetMemories() []*Memory {
 }
 
 type DeleteRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Id    string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	// reason is recorded on the trash entry so mass deletions are filterable. Empty =
+	// "delete"; otherwise one of: delete, stale-review, duplicate-review (anything
+	// else is InvalidArgument).
+	Reason        string `protobuf:"bytes,2,opt,name=reason,proto3" json:"reason,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1127,6 +1131,13 @@ func (*DeleteRequest) Descriptor() ([]byte, []int) {
 func (x *DeleteRequest) GetId() string {
 	if x != nil {
 		return x.Id
+	}
+	return ""
+}
+
+func (x *DeleteRequest) GetReason() string {
+	if x != nil {
+		return x.Reason
 	}
 	return ""
 }
@@ -2201,6 +2212,7 @@ type StatusResponse struct {
 	MemoryCount   int64                  `protobuf:"varint,6,opt,name=memory_count,json=memoryCount,proto3" json:"memory_count,omitempty"` // total stored memories
 	Version       string                 `protobuf:"bytes,7,opt,name=version,proto3" json:"version,omitempty"`
 	ModelPresent  bool                   `protobuf:"varint,8,opt,name=model_present,json=modelPresent,proto3" json:"model_present,omitempty"` // true when the embedding model is pulled in Ollama
+	TrashCount    int64                  `protobuf:"varint,20,opt,name=trash_count,json=trashCount,proto3" json:"trash_count,omitempty"`      // soft-deleted memories awaiting restore/purge (caller's tenant)
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2289,6 +2301,13 @@ func (x *StatusResponse) GetModelPresent() bool {
 		return x.ModelPresent
 	}
 	return false
+}
+
+func (x *StatusResponse) GetTrashCount() int64 {
+	if x != nil {
+		return x.TrashCount
+	}
+	return 0
 }
 
 type DoctorRequest struct {
@@ -5860,10 +5879,13 @@ func (x *TrashEntry) GetReason() string {
 }
 
 type ListTrashRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Namespace     string                 `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"` // empty = all namespaces
-	Limit         int32                  `protobuf:"varint,2,opt,name=limit,proto3" json:"limit,omitempty"`        // 0 = default (100)
-	Offset        int32                  `protobuf:"varint,3,opt,name=offset,proto3" json:"offset,omitempty"`
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	Namespace string                 `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"` // empty = all namespaces
+	Limit     int32                  `protobuf:"varint,2,opt,name=limit,proto3" json:"limit,omitempty"`        // 0 = default (100)
+	Offset    int32                  `protobuf:"varint,3,opt,name=offset,proto3" json:"offset,omitempty"`
+	// reason filters on the deletion reason: exact ("delete", "stale-review",
+	// "namespace-delete") or a family ("supersedes" matches "supersedes:<id>").
+	Reason        string `protobuf:"bytes,4,opt,name=reason,proto3" json:"reason,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -5917,6 +5939,13 @@ func (x *ListTrashRequest) GetOffset() int32 {
 		return x.Offset
 	}
 	return 0
+}
+
+func (x *ListTrashRequest) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
 }
 
 type ListTrashResponse struct {
@@ -5980,8 +6009,14 @@ func (x *ListTrashResponse) GetRetentionSeconds() int64 {
 }
 
 type RestoreFromTrashRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Ids           []string               `protobuf:"bytes,1,rep,name=ids,proto3" json:"ids,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Ids   []string               `protobuf:"bytes,1,rep,name=ids,proto3" json:"ids,omitempty"` // explicit ids: validated all-or-nothing, max 1000
+	// all restores every entry matching the optional filters below (exclusive with
+	// ids). Unlike ids it is NOT all-or-nothing and has no id cap: each entry is
+	// restored independently and failures (e.g. the id is live again) are counted.
+	All           bool   `protobuf:"varint,2,opt,name=all,proto3" json:"all,omitempty"`
+	Namespace     string `protobuf:"bytes,3,opt,name=namespace,proto3" json:"namespace,omitempty"` // with all: only this namespace
+	Reason        string `protobuf:"bytes,4,opt,name=reason,proto3" json:"reason,omitempty"`       // with all: only this reason (see ListTrashRequest.reason)
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -6023,9 +6058,32 @@ func (x *RestoreFromTrashRequest) GetIds() []string {
 	return nil
 }
 
+func (x *RestoreFromTrashRequest) GetAll() bool {
+	if x != nil {
+		return x.All
+	}
+	return false
+}
+
+func (x *RestoreFromTrashRequest) GetNamespace() string {
+	if x != nil {
+		return x.Namespace
+	}
+	return ""
+}
+
+func (x *RestoreFromTrashRequest) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
 type RestoreFromTrashResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Queued        int32                  `protobuf:"varint,1,opt,name=queued,proto3" json:"queued,omitempty"`
+	Failed        int32                  `protobuf:"varint,2,opt,name=failed,proto3" json:"failed,omitempty"`    // entries skipped (bulk form only)
+	Failures      []string               `protobuf:"bytes,3,rep,name=failures,proto3" json:"failures,omitempty"` // first few "<id>: <why>" messages
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -6067,11 +6125,26 @@ func (x *RestoreFromTrashResponse) GetQueued() int32 {
 	return 0
 }
 
+func (x *RestoreFromTrashResponse) GetFailed() int32 {
+	if x != nil {
+		return x.Failed
+	}
+	return 0
+}
+
+func (x *RestoreFromTrashResponse) GetFailures() []string {
+	if x != nil {
+		return x.Failures
+	}
+	return nil
+}
+
 type PurgeTrashRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Ids           []string               `protobuf:"bytes,1,rep,name=ids,proto3" json:"ids,omitempty"`
 	All           bool                   `protobuf:"varint,2,opt,name=all,proto3" json:"all,omitempty"`            // purge every entry (exclusive with ids)
 	Namespace     string                 `protobuf:"bytes,3,opt,name=namespace,proto3" json:"namespace,omitempty"` // with all: restrict to this namespace (empty = every namespace)
+	Reason        string                 `protobuf:"bytes,4,opt,name=reason,proto3" json:"reason,omitempty"`       // with all: restrict to this reason (see ListTrashRequest.reason)
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -6123,6 +6196,13 @@ func (x *PurgeTrashRequest) GetAll() bool {
 func (x *PurgeTrashRequest) GetNamespace() string {
 	if x != nil {
 		return x.Namespace
+	}
+	return ""
+}
+
+func (x *PurgeTrashRequest) GetReason() string {
+	if x != nil {
+		return x.Reason
 	}
 	return ""
 }
@@ -6253,9 +6333,10 @@ const file_cortex_v1_cortex_proto_rawDesc = "" +
 	"\fexclude_tags\x18\x04 \x03(\tR\vexcludeTags\x12\x19\n" +
 	"\bany_tags\x18\x05 \x03(\tR\aanyTags\"=\n" +
 	"\fListResponse\x12-\n" +
-	"\bmemories\x18\x01 \x03(\v2\x11.cortex.v1.MemoryR\bmemories\"\x1f\n" +
+	"\bmemories\x18\x01 \x03(\v2\x11.cortex.v1.MemoryR\bmemories\"7\n" +
 	"\rDeleteRequest\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\tR\x02id\"(\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x16\n" +
+	"\x06reason\x18\x02 \x01(\tR\x06reason\"(\n" +
 	"\x0eDeleteResponse\x12\x16\n" +
 	"\x06status\x18\x01 \x01(\tR\x06status\"\x13\n" +
 	"\x11BackupSelfRequest\"v\n" +
@@ -6315,7 +6396,7 @@ const file_cortex_v1_cortex_proto_rawDesc = "" +
 	"\x11GetVersionRequest\".\n" +
 	"\x12GetVersionResponse\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\tR\aversion\"\x0f\n" +
-	"\rStatusRequest\"\xf3\x01\n" +
+	"\rStatusRequest\"\x94\x02\n" +
 	"\x0eStatusResponse\x12\x17\n" +
 	"\anats_ok\x18\x01 \x01(\bR\x06natsOk\x12\x1f\n" +
 	"\vweaviate_ok\x18\x02 \x01(\bR\n" +
@@ -6325,7 +6406,9 @@ const file_cortex_v1_cortex_proto_rawDesc = "" +
 	"\x04dims\x18\x05 \x01(\x05R\x04dims\x12!\n" +
 	"\fmemory_count\x18\x06 \x01(\x03R\vmemoryCount\x12\x18\n" +
 	"\aversion\x18\a \x01(\tR\aversion\x12#\n" +
-	"\rmodel_present\x18\b \x01(\bR\fmodelPresent\"\x0f\n" +
+	"\rmodel_present\x18\b \x01(\bR\fmodelPresent\x12\x1f\n" +
+	"\vtrash_count\x18\x14 \x01(\x03R\n" +
+	"trashCount\"\x0f\n" +
 	"\rDoctorRequest\"C\n" +
 	"\x05Check\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x0e\n" +
@@ -6559,23 +6642,30 @@ const file_cortex_v1_cortex_proto_rawDesc = "" +
 	"\n" +
 	"deleted_at\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\tdeletedAt\x12\x16\n" +
 	"\x06reason\x18\n" +
-	" \x01(\tR\x06reason\"^\n" +
+	" \x01(\tR\x06reason\"v\n" +
 	"\x10ListTrashRequest\x12\x1c\n" +
 	"\tnamespace\x18\x01 \x01(\tR\tnamespace\x12\x14\n" +
 	"\x05limit\x18\x02 \x01(\x05R\x05limit\x12\x16\n" +
-	"\x06offset\x18\x03 \x01(\x05R\x06offset\"\x87\x01\n" +
+	"\x06offset\x18\x03 \x01(\x05R\x06offset\x12\x16\n" +
+	"\x06reason\x18\x04 \x01(\tR\x06reason\"\x87\x01\n" +
 	"\x11ListTrashResponse\x12/\n" +
 	"\aentries\x18\x01 \x03(\v2\x15.cortex.v1.TrashEntryR\aentries\x12\x14\n" +
 	"\x05total\x18\x02 \x01(\x05R\x05total\x12+\n" +
-	"\x11retention_seconds\x18\x03 \x01(\x03R\x10retentionSeconds\"+\n" +
+	"\x11retention_seconds\x18\x03 \x01(\x03R\x10retentionSeconds\"s\n" +
 	"\x17RestoreFromTrashRequest\x12\x10\n" +
-	"\x03ids\x18\x01 \x03(\tR\x03ids\"2\n" +
+	"\x03ids\x18\x01 \x03(\tR\x03ids\x12\x10\n" +
+	"\x03all\x18\x02 \x01(\bR\x03all\x12\x1c\n" +
+	"\tnamespace\x18\x03 \x01(\tR\tnamespace\x12\x16\n" +
+	"\x06reason\x18\x04 \x01(\tR\x06reason\"f\n" +
 	"\x18RestoreFromTrashResponse\x12\x16\n" +
-	"\x06queued\x18\x01 \x01(\x05R\x06queued\"U\n" +
+	"\x06queued\x18\x01 \x01(\x05R\x06queued\x12\x16\n" +
+	"\x06failed\x18\x02 \x01(\x05R\x06failed\x12\x1a\n" +
+	"\bfailures\x18\x03 \x03(\tR\bfailures\"m\n" +
 	"\x11PurgeTrashRequest\x12\x10\n" +
 	"\x03ids\x18\x01 \x03(\tR\x03ids\x12\x10\n" +
 	"\x03all\x18\x02 \x01(\bR\x03all\x12\x1c\n" +
-	"\tnamespace\x18\x03 \x01(\tR\tnamespace\",\n" +
+	"\tnamespace\x18\x03 \x01(\tR\tnamespace\x12\x16\n" +
+	"\x06reason\x18\x04 \x01(\tR\x06reason\",\n" +
 	"\x12PurgeTrashResponse\x12\x16\n" +
 	"\x06purged\x18\x01 \x01(\x05R\x06purged*o\n" +
 	"\n" +

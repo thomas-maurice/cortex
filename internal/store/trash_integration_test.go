@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/weaviate/weaviate/entities/models"
 
 	"github.com/thomas-maurice/cortex/internal/memory"
 )
@@ -382,4 +383,64 @@ func TestPutTrashRejectsZeroTime(t *testing.T) {
 	st, _ := trashStore(t)
 	err := st.Tenant("tenant-a").putTrash(context.Background(), mkRec("ns", "x"), memory.TrashReasonDelete, time.Time{})
 	require.Error(t, err)
+}
+
+// Delete must carry the recall history (accessCount/lastAccessedAt) and display
+// provenance into the trash on BOTH read paths (REST get, gRPC list), or a restore
+// would make a heavily-used memory look never recalled.
+func TestTrashKeepsRecallHistory(t *testing.T) {
+	st, _ := trashStore(t)
+	ctx := context.Background()
+	ts := st.Tenant("tenant-a")
+	rec := mkRec("ns", "often recalled")
+	rec.AccessCount = 9
+	rec.LastAccessedAt = time.Now().UTC().Add(-3 * time.Hour).Truncate(time.Second)
+	rec.Model, rec.Dims = "m", 4
+	require.NoError(t, ts.Upsert(ctx, rec, trashVec))
+	require.NoError(t, ts.Delete(ctx, rec.ID))
+
+	got, ok, err := ts.GetTrash(ctx, rec.ID)
+	require.NoError(t, err)
+	require.True(t, ok)
+	list, err := ts.ListTrash(ctx, "")
+	require.NoError(t, err)
+	require.Len(t, list, 1)
+	for name, e := range map[string]memory.TrashEntry{"rest": got, "grpc": list[0]} {
+		assert.Equal(t, 9, e.AccessCount, name)
+		assert.True(t, rec.LastAccessedAt.Equal(e.LastAccessedAt), name)
+		assert.Equal(t, "m", e.Model, name)
+		assert.Equal(t, 4, e.Dims, name)
+	}
+	n, err := ts.CountTrash(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+}
+
+// A Trash class created before accessCount etc. existed gets them added by
+// EnsureSchema (ensureProps), so the upgrade needs no rebuild.
+func TestTrashSchemaUpgradeAddsHistoryProps(t *testing.T) {
+	st, mt := trashStore(t)
+	ctx := context.Background()
+	require.NoError(t, st.DeleteTrashClass(ctx))
+	old := trashClass(mt)
+	var props []*models.Property
+	for _, p := range old.Properties {
+		switch p.Name {
+		case "accessCount", "lastAccessedAt", "model", "dims":
+		default:
+			props = append(props, p)
+		}
+	}
+	old.Properties = props
+	require.NoError(t, st.client.Schema().ClassCreator().WithClass(old).Do(ctx))
+
+	require.NoError(t, st.EnsureSchema(ctx))
+	ts := st.Tenant("tenant-a")
+	rec := mkRec("ns", "x")
+	rec.AccessCount = 3
+	require.NoError(t, ts.putTrash(ctx, rec, memory.TrashReasonDelete, time.Now()))
+	e, ok, err := ts.GetTrash(ctx, rec.ID)
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Equal(t, 3, e.AccessCount)
 }

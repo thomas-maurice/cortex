@@ -130,7 +130,8 @@ type Service struct {
 	// can multiply the memory/Ollama cost of "fetch everything" RPCs.
 	backupGate, reindexGate, restoreGate, adminGate tenantGate
 	// scanGate: one in-flight DeleteNamespace / ListTrash / PurgeTrash(all) per
-	// tenant — each scans or buffers a whole namespace or trash.
+	// tenant — each scans or buffers a whole namespace or trash (DeleteNamespace and
+	// the bulk PurgeTrash/RestoreFromTrash forms; read-only ListTrash is not gated).
 	scanGate tenantGate
 	// afterGate, when non-nil, runs right after a gate is acquired; a non-nil
 	// return aborts the call. Test seam only (lets a test hold a call in flight).
@@ -533,11 +534,16 @@ func (s *Service) Delete(ctx context.Context, req *connect.Request[cortexv1.Dele
 	if err != nil {
 		return nil, err
 	}
+	reason, ok := memory.NormalizeDeleteReason(strings.TrimSpace(req.Msg.GetReason()))
+	if !ok {
+		return nil, connect.NewError(connect.CodeInvalidArgument,
+			fmt.Errorf("reason %q is not allowed (use delete, %s or %s)", req.Msg.GetReason(), memory.TrashReasonStaleReview, memory.TrashReasonDuplicateReview))
+	}
 	ts, err := s.tenantStore(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if err := ts.Delete(ctx, id); err != nil {
+	if err := ts.DeleteWithReason(ctx, id, reason); err != nil {
 		return nil, err
 	}
 	return connect.NewResponse(&cortexv1.DeleteResponse{Status: "deleted"}), nil
@@ -563,6 +569,9 @@ func (s *Service) Status(ctx context.Context, _ *connect.Request[cortexv1.Status
 		if ts, err := s.tenantStore(ctx); err == nil {
 			if c, err := ts.Count(ctx, ""); err == nil {
 				out.MemoryCount = int64(c)
+			}
+			if c, err := ts.CountTrash(ctx); err == nil {
+				out.TrashCount = int64(c)
 			}
 		}
 	}

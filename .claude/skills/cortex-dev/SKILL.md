@@ -214,8 +214,8 @@ should encode *why* the behaviour matters, not just what it does (Rule 9).
   delete, worker `supersedes` → reason `supersedes:<id>`, `DeleteNamespace` per memory →
   `namespace-delete`) copy the record into the `Trash` class (same tenant/id, no vector,
   `internal/store/trash.go`) BEFORE deleting; trash write failure = nothing deleted.
-  `Memory` has no deleted flag. Restore = `bus.PublishIndex` (+ `PublishLink` for live
-  endpoints) then drop the entry; never overwrites a live id. Retention: `TRASH_RETENTION`
+  `Memory` has no deleted flag. Entries keep accessCount/lastAccessedAt/model/dims (not dupCandidates/indexedSeq). Restore (ids, or `all`+namespace+reason bulk) = `bus.PublishIndex` (+ `PublishLink` for live
+  endpoints) then drop the entry; never overwrites a live id; purge/sweep queue link REMOVEs to neighbours; `Delete.reason` ∈ {delete, stale-review, duplicate-review}. Retention: `TRASH_RETENTION`
   (default 168h, 0 = forever) + hourly sweep in cmd/server (`Service.SweepTrash` →
   `Store.PurgeExpiredTrash`, all tenants). Trash is NOT in backups. `DeleteClass` leaves
   Trash alone (reindex rebuild keeps it); `DeleteAllClasses` also drops it (migrate-mt,

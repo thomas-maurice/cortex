@@ -327,6 +327,14 @@ func main() {
 	}, withTimeout(callTimeout, d.del))
 
 	mcp.AddTool(server, &mcp.Tool{
+		Name: "cortex_trash_list",
+		Description: "List deleted memories that can still be restored with cortex_trash_restore, newest deletion first " +
+			"(id, namespace, deletion time, reason, text excerpt). Read-only. Optionally filter by namespace; limit " +
+			"defaults to 20. Entries disappear once the server's retention period passes.",
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
+	}, withTimeout(callTimeout, d.trashList))
+
+	mcp.AddTool(server, &mcp.Tool{
 		Name: "cortex_trash_restore",
 		Description: "Undo a delete: restore a trashed memory by its ID (the ID you passed to cortex_memory_delete, or " +
 			"one of the `supersedes` sources of a consolidation). It is re-queued for indexing under the same ID, " +
@@ -691,6 +699,52 @@ func (d *deps) del(ctx context.Context, _ *mcp.CallToolRequest, in DeleteIn) (*m
 		return nil, DeleteOut{}, err
 	}
 	return text2result("deleted " + id), DeleteOut{Status: resp.Msg.GetStatus()}, nil
+}
+
+// ---- trash_list ----
+
+type TrashListIn struct {
+	Namespace string `json:"namespace,omitempty" jsonschema:"only this namespace; omit for all namespaces"`
+	Limit     int    `json:"limit,omitempty" jsonschema:"max entries (default 20)"`
+}
+
+type TrashListEntry struct {
+	ID        string `json:"id"`
+	Namespace string `json:"namespace"`
+	DeletedAt string `json:"deletedAt"`
+	Reason    string `json:"reason"`
+	Excerpt   string `json:"excerpt"`
+}
+
+type TrashListOut struct {
+	Entries []TrashListEntry `json:"entries"`
+	Total   int              `json:"total"`
+}
+
+func (d *deps) trashList(ctx context.Context, _ *mcp.CallToolRequest, in TrashListIn) (*mcp.CallToolResult, TrashListOut, error) {
+	limit := in.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	resp, err := d.client.ListTrash(ctx, connect.NewRequest(&cortexv1.ListTrashRequest{Namespace: strings.TrimSpace(in.Namespace), Limit: int32(limit)}))
+	if err != nil {
+		return nil, TrashListOut{}, err
+	}
+	out := TrashListOut{Total: int(resp.Msg.GetTotal())}
+	var sb strings.Builder
+	for _, e := range resp.Msg.GetEntries() {
+		text := strings.Join(strings.Fields(e.GetText()), " ")
+		if r := []rune(text); len(r) > 120 {
+			text = string(r[:120]) + "…"
+		}
+		when := e.GetDeletedAt().AsTime().UTC().Format(time.RFC3339)
+		out.Entries = append(out.Entries, TrashListEntry{ID: e.GetId(), Namespace: e.GetNamespace(), DeletedAt: when, Reason: e.GetReason(), Excerpt: text})
+		fmt.Fprintf(&sb, "%s [%s] deleted %s (%s): %s\n", e.GetId(), e.GetNamespace(), when, e.GetReason(), text)
+	}
+	if len(out.Entries) == 0 {
+		return text2result("trash is empty"), out, nil
+	}
+	return text2result(strings.TrimRight(sb.String(), "\n")), out, nil
 }
 
 // ---- trash_restore ----

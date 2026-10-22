@@ -94,9 +94,9 @@ func TestHeavyRPCsSingleFlightPerTenant(t *testing.T) {
 				return err
 			}
 		},
-		"ListTrash": func(s *Service) func(context.Context) error {
+		"RestoreTrashAll": func(s *Service) func(context.Context) error {
 			return func(ctx context.Context) error {
-				_, err := s.ListTrash(ctx, connect.NewRequest(&cortexv1.ListTrashRequest{}))
+				_, err := s.RestoreFromTrash(ctx, connect.NewRequest(&cortexv1.RestoreFromTrashRequest{All: true}))
 				return err
 			}
 		},

@@ -25,14 +25,14 @@ func trashCmd() *cobra.Command {
 }
 
 func trashLsCmd() *cobra.Command {
-	var namespace string
+	var namespace, reason string
 	var limit int
 	cmd := &cobra.Command{
-		Use:   "ls [-n namespace]",
+		Use:   "ls [-n namespace] [--reason r]",
 		Short: "List trashed memories, newest deletion first",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			resp, err := client().ListTrash(cmd.Context(), connect.NewRequest(&cortexv1.ListTrashRequest{Namespace: namespace, Limit: int32(limit)}))
+			resp, err := client().ListTrash(cmd.Context(), connect.NewRequest(&cortexv1.ListTrashRequest{Namespace: namespace, Reason: reason, Limit: int32(limit)}))
 			if err != nil {
 				return err
 			}
@@ -58,31 +58,47 @@ func trashLsCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVarP(&namespace, "namespace", "n", "", "only this namespace (default: all)")
+	cmd.Flags().StringVar(&reason, "reason", "", `only this deletion reason (e.g. delete, stale-review, namespace-delete, supersedes)`)
 	cmd.Flags().IntVarP(&limit, "limit", "l", 100, "max entries to list")
 	return cmd
 }
 
 func trashRestoreCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "restore <id>...",
+	var all bool
+	var namespace, reason string
+	cmd := &cobra.Command{
+		Use:   "restore <id>... | --all [-n namespace] [--reason r]",
 		Short: "Restore trashed memories (re-queued for indexing under the same id)",
-		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			resp, err := client().RestoreFromTrash(cmd.Context(), connect.NewRequest(&cortexv1.RestoreFromTrashRequest{Ids: args}))
+			if all == (len(args) > 0) {
+				return fmt.Errorf("give either ids or --all")
+			}
+			resp, err := client().RestoreFromTrash(cmd.Context(), connect.NewRequest(&cortexv1.RestoreFromTrashRequest{Ids: args, All: all, Namespace: namespace, Reason: reason}))
 			if err != nil {
 				return err
 			}
 			fmt.Printf("restored %d memories (queued for indexing)\n", resp.Msg.GetQueued())
+			if f := resp.Msg.GetFailed(); f > 0 {
+				fmt.Printf("%d could not be restored:\n", f)
+				for _, m := range resp.Msg.GetFailures() {
+					fmt.Println("  ", m)
+				}
+				return fmt.Errorf("%d entries failed", f)
+			}
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&all, "all", false, "restore every trashed memory matching the filters")
+	cmd.Flags().StringVarP(&namespace, "namespace", "n", "", "with --all: only this namespace")
+	cmd.Flags().StringVar(&reason, "reason", "", "with --all: only this deletion reason")
+	return cmd
 }
 
 func trashPurgeCmd() *cobra.Command {
 	var all, yes bool
-	var namespace string
+	var namespace, reason string
 	cmd := &cobra.Command{
-		Use:   "purge <id>... | --all [-n namespace] [--yes]",
+		Use:   "purge <id>... | --all [-n namespace] [--reason r] [--yes]",
 		Short: "Permanently delete trashed memories",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if all == (len(args) > 0) {
@@ -99,7 +115,7 @@ func trashPurgeCmd() *cobra.Command {
 					return fmt.Errorf("aborted")
 				}
 			}
-			resp, err := client().PurgeTrash(cmd.Context(), connect.NewRequest(&cortexv1.PurgeTrashRequest{Ids: args, All: all, Namespace: namespace}))
+			resp, err := client().PurgeTrash(cmd.Context(), connect.NewRequest(&cortexv1.PurgeTrashRequest{Ids: args, All: all, Namespace: namespace, Reason: reason}))
 			if err != nil {
 				return err
 			}
@@ -109,6 +125,7 @@ func trashPurgeCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&all, "all", false, "purge every trashed memory")
 	cmd.Flags().StringVarP(&namespace, "namespace", "n", "", "with --all: only this namespace")
+	cmd.Flags().StringVar(&reason, "reason", "", "with --all: only this deletion reason")
 	cmd.Flags().BoolVar(&yes, "yes", false, "skip the confirmation prompt")
 	return cmd
 }

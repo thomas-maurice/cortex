@@ -665,3 +665,19 @@ func TestSupersedesGoesToTrash(t *testing.T) {
 	assert.False(t, ok, "source is deleted from the live store")
 	assert.Equal(t, []string{victim + " supersedes:" + id}, s.fs.deleteReasons)
 }
+
+// Unlink/purge-time removals must tolerate a MISSING (valid-UUID) endpoint: the
+// edge is still cleared from the side that exists, and the message is acked (not
+// retried), so purging a trashed memory strips the dangling link on its neighbour.
+func TestLinkRemoveWithMissingEndpoint(t *testing.T) {
+	s := newStack(t, 1, time.Minute)
+	b, gone := uuid.NewString(), uuid.NewString()
+	seed(t, s, "", memory.Record{ID: b, Text: "b", LinkedIDs: []string{gone, "x"}})
+
+	rm := linkMsg(t, memory.LinkMsg{Op: memory.LinkOpRemove, A: gone, B: b})
+	handleLink(context.Background(), testLog, s.m, s.js, s.locker, s.stores, rm)
+	got, _ := s.fs.peek("", b)
+	assert.Equal(t, []string{"x"}, got.LinkedIDs)
+	assert.EqualValues(t, 1, rm.acked.Load())
+	assert.Zero(t, rm.nakked.Load())
+}

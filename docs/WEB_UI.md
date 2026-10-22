@@ -110,8 +110,9 @@ summaries are permanently removed.
 
 Table of soft-deleted memories (text excerpt, namespace, deleted-at, reason) newest
 first, with the server's retention shown. **Restore** re-queues a memory for indexing
-under its original id; **Purge** deletes one permanently; **Purge all** requires typing
-`purge`. Deleting from the Memories view / inspector says "moved to trash".
+under its original id; **Purge** deletes one permanently. The view pages (50/page), filters by
+namespace and reason, supports multi-select with **Restore selected** / **Purge selected**, and
+**Restore all (matching)** / **Purge all (matching)** (the latter requires typing `purge`). Deleting from the Memories view / inspector says "moved to trash".
 
 ### Indexing (`ui/src/views/QueueView.vue`)
 

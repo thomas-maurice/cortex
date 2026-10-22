@@ -168,7 +168,7 @@ The MCP client also stamps each save with the Claude Code session ID (read from
 
 Verify it's connected with `/mcp` inside Claude — you should see `cortex` with
 its tools: `cortex_memory_save`, `cortex_memory_search`, `cortex_memory_get`, `cortex_memory_delete`,
-`cortex_trash_restore`, `cortex_memory_link`, `cortex_memory_unlink`, `cortex_consolidate`,
+`cortex_trash_list`, `cortex_trash_restore`, `cortex_memory_link`, `cortex_memory_unlink`, `cortex_consolidate`,
 `cortex_review_candidates`, `cortex_dismiss_duplicate`, `cortex_session_summarize`,
 and `cortex_recall_session`.
 
@@ -469,6 +469,7 @@ The MCP server exposes these tools to Claude:
 | `cortex_memory_search` | **Hybrid** search (BM25 keyword + vector, blended by `SEARCH_ALPHA`, default 0.5) so exact tokens/codenames resolve, not just semantic matches. Args: `query`, `namespace?` (`*` = all namespaces), `limit?`, `tags?` (must have all), `excludeTags?`, `maxDistance?` (relevance cutoff). Each hit includes its `id`, any `linkedIds`, and any `dupCandidates` (flagged likely-duplicates — the output hints when consolidation would help). When **living memory** is enabled (`RERANK_WEIGHT`>0, off by default), search also re-orders results by recency-decayed usage and reinforces its top hit(s) — frequently-recalled memories float up over time. See [`docs/DESIGN.md`](docs/DESIGN.md#living-memory--decay--reinforcement-opt-in). |
 | `cortex_memory_get` | Fetch ONE memory by `id`, full text (follow `linkedIds` from search hits, or ids from `cortex_consolidate` / `cortex_review_candidates`). Same shape as a search hit; counts as delivered for session dedup so later searches stub it; does not reinforce. |
 | `cortex_memory_delete` | Delete a memory by `id` (get the `id` from a `cortex_memory_search` result first). The memory goes to the **trash** (restorable for `TRASH_RETENTION`, default 7 days), not into the void. |
+| `cortex_trash_list` | Read-only: list restorable deleted memories (id, namespace, deleted-at, reason, excerpt), newest first. Args: `namespace?`, `limit?` (default 20). |
 | `cortex_trash_restore` | Undo a delete: restore a trashed memory by `id` (re-queued for indexing under the same id; fails if the id is not in the trash or a live memory has it). |
 | `cortex_memory_link` | Explicitly link two related memories (bidirectional) so they connect in the graph. Args: `id`, `targetId` — from a prior search/recall, or an id just returned by `cortex_memory_save`. The edge is queued on the `memory.link` subject and applied once both endpoints are indexed (it waits for them), so out-of-order/just-saved ids link correctly. Claude is told to do this proactively when two memories are meaningfully related. |
 | `cortex_memory_unlink` | Remove the link between two memories (queued, applied asynchronously). Args: `id`, `targetId`. |
@@ -652,7 +653,7 @@ authenticate with `--token` / `CORTEX_AUTH_TOKEN`.
 | `cortex search "<q>" [-d 0.6] [-t tag] [-x tag]` | Semantic search with a relevance cutoff and tag filters. |
 | `cortex consolidate "<topic>" [-n '*'] [-l N] [-t tag] [-x tag]` | Print the cluster of memories about a topic + their manifest (read-only gather; the LLM does the merge). No tag flag = no tag filter (whole cluster). |
 | `cortex delete <id>` | Delete a memory by ID (moved to the trash). |
-| `cortex trash ls [-n ns]` / `trash restore <id>...` / `trash purge <id>... \| --all [-n ns] [--yes]` | Soft-delete trash: list trashed memories, restore them (re-queued for indexing, same id; rejected if a live memory has that id) or purge them permanently. |
+| `cortex trash ls [-n ns] [--reason r]` / `trash restore <id>... \| --all [-n ns] [--reason r]` / `trash purge <id>... \| --all [-n ns] [--reason r] [--yes]` | Soft-delete trash: list trashed memories, restore them (re-queued for indexing, same id, with their recall history; ids are rejected if a live memory has that id; `--all` restores every match independently and reports failures) or purge them permanently. `cortex status` shows the trash count. |
 | `cortex export -o backup.json` | Dump all memories (text + metadata, no vectors) to JSON. |
 | `cortex import backup.json` | Restore a dump into the target via its NATS ingest queue (worker re-embeds). Preserves ids/links; point `--server` at the target. See [scripts/prod-to-dev.sh](scripts/prod-to-dev.sh). |
 | `cortex reindex --yes` | Re-embed every memory through the worker (see below). |
@@ -760,6 +761,15 @@ the link queue only to endpoints that still exist, and a restore never overwrite
 live memory with the same id. Trash entries are purged after `TRASH_RETENTION` (server
 env; a Go duration such as `720h`, default `168h`, `0` keeps them forever; days like `30d` are NOT valid and an unparsable value stops the server at startup, since it controls permanent deletion) by an hourly sweep across all
 tenants (logged with the purged count), or explicitly with `cortex trash purge`.
+
+A restore keeps the memory's recall history (`accessCount`, `lastAccessedAt`) and
+`model`/`dims`; `dupCandidates` and the index sequence are recomputed by the worker and
+not kept. Links are re-applied only to endpoints that are live or restored in the same
+request; a linked memory still in the trash keeps the reciprocal edge on its own entry, so
+restoring it later re-links the pair. Purging (by id, `--all`, or the retention sweep) queues
+link removals so live neighbours do not keep dangling ids. `Delete` accepts an optional
+`reason` (`stale-review`, `duplicate-review`; default `delete`) so mass deletions can be
+filtered with `--reason`.
 
 Caveats: conversation summaries deleted by a namespace delete are NOT trashed; the
 trash is **not part of backups** (full/self backups cover live memories + summaries
