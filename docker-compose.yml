@@ -31,6 +31,9 @@ services:
       DEFAULT_VECTORIZER_MODULE: none
       ENABLE_MODULES: ""
       CLUSTER_HOSTNAME: cortex
+      # Schema is declared in code (EnsureSchema). Auto-schema would silently create
+      # a wrong-shaped class when a write lands mid reindex/migrate-mt rebuild.
+      AUTOSCHEMA_ENABLED: "false"
     volumes:
       - weaviate_data:/var/lib/weaviate
     restart: unless-stopped

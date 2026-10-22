@@ -58,6 +58,21 @@ direct.** Trade-off accepted: the MCP server and the worker both hold a Weaviate
 
 ## Data model
 
+**Auto-schema is disabled** (`AUTOSCHEMA_ENABLED=false` on Weaviate: compose, TrueNAS
+compose, CI, `scripts/wv-test.sh`). The schema is declared in code only
+(`memoryProperties` / `chunkProperties` / `summaryProperties` / `userProperties` /
+`apiKeyProperties`, applied by `EnsureSchema` / `EnsureIdentitySchema`, additive via
+`ensureProps`). Any new property a write path sets MUST be added to those lists, or
+the write fails. Why: reindex-with-rebuild and `migrate-mt` drop and recreate classes;
+with auto-schema on, a worker write landing in that window silently created `Memory`
+with an inferred, non-MT, word-tokenized schema and the server's recreate then failed
+"already exists". With it off the write errors and the worker's NAK/retry (2s delay,
+`MaxDeliver` 10 for index, so a window of ~20s) applies it after the schema is
+back; a rebuild that keeps the class missing for longer dead-letters those writes
+(requeue with `cortex dead --requeue`) — still far better than a silently wrong
+schema. Pinned by
+`internal/store/autoschema_integration_test.go`.
+
 Weaviate class `Memory`, `vectorizer: none`:
 
 | Property | Type | Notes |
