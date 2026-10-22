@@ -22,6 +22,7 @@ start() {
   docker run -d --name "$name" -p 127.0.0.1::8080 -p 127.0.0.1::50051 \
     -e AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED=true \
     -e PERSISTENCE_DATA_PATH=/var/lib/weaviate \
+    -e AUTOSCHEMA_ENABLED=false \
     -e DEFAULT_VECTORIZER_MODULE=none -e ENABLE_MODULES="" \
     "$IMAGE" >/dev/null
   local rest grpc

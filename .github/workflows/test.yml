@@ -19,6 +19,8 @@ jobs:
           PERSISTENCE_DATA_PATH: /var/lib/weaviate
           DEFAULT_VECTORIZER_MODULE: none
           ENABLE_MODULES: ""
+          # Schema is declared in code; auto-schema must stay off (see docs/DESIGN.md).
+          AUTOSCHEMA_ENABLED: "false"
         ports:
           - 8085:8080
           - 50055:50051

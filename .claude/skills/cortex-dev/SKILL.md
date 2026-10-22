@@ -166,6 +166,12 @@ should encode *why* the behaviour matters, not just what it does (Rule 9).
   (default true), set the SAME on worker (writes chunks) and server (searches them);
   false = pre-chunking whole-memory search. Delete / namespace-rename / -delete
   cascade to chunks. See docs/CHUNKING.md.
+- **Weaviate runs with `AUTOSCHEMA_ENABLED=false`** (compose, TrueNAS compose, CI,
+  `scripts/wv-test.sh`). Schema lives only in code: a new property written by ANY path
+  must be declared in `memoryProperties`/`chunkProperties`/`summaryProperties`/
+  `userProperties`/`apiKeyProperties` (ensureProps adds it to existing classes), else
+  the write fails. Why: a worker write during a reindex/migrate-mt class drop would
+  otherwise auto-create a wrong-shaped class. See `autoschema_integration_test.go`.
 - **Exact-match keys use `tokenization: field`.** `namespace`, `memoryId`,
   `conversationId`, `source` are field-tokenized — Weaviate's default *word*
   tokenization makes `Equal` fuzzy (`"demo"` matches `"demo-2"`; UUIDs match on

@@ -38,6 +38,18 @@ Full rationale in [`docs/DESIGN.md`](docs/DESIGN.md); background research in
   `qwen3-embedding:0.6b`. Needs **Ollama >= 0.3.4** (batched `/api/embed`; the
   bundled image is newer). See [Embedding model](#embedding-model) to choose another.
 
+- **Weaviate with `AUTOSCHEMA_ENABLED=false`** — the bundled compose files set it.
+  If you run your own Weaviate you MUST set it too. Cortex declares its whole schema
+  in code (`EnsureSchema`, run by server and worker at boot); Weaviate's auto-schema
+  would otherwise silently create a wrong-shaped `Memory` class (not multi-tenant,
+  word tokenization on exact-match keys) when a write lands while a reindex rebuild
+  or `migrate-mt` is dropping/recreating classes. With it off such a write just
+  fails and the worker retries it (2s apart, up to 10 attempts ≈ 20s); anything
+  still failing after that is dead-lettered and can be requeued with
+  `cortex dead --requeue`. **Upgrading:** the setting is read at Weaviate startup,
+  so recreate the Weaviate container (`docker compose up -d weaviate`) after
+  pulling the new compose file; existing data is unaffected.
+
 > If you already run Ollama natively on the host (port 11434), remove the
 > `ollama` service from `docker-compose.yml` and point `OLLAMA_URL` at your host
 > instance instead — Cortex talks to it over HTTP either way.
