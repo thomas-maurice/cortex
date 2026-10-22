@@ -16,8 +16,9 @@ import (
 // NamespaceStat aggregates one namespace's contents for the namespace admin view.
 type NamespaceStat struct {
 	Name         string
-	MemoryCount  int
+	MemoryCount  int // live memories (expired ones are in ExpiredCount)
 	SummaryCount int
+	ExpiredCount int
 	// LastUpdated is the most recent activity in the namespace: the newest memory
 	// createdAt or summary updatedAt. Zero when the namespace carries no timestamps.
 	LastUpdated time.Time
@@ -29,6 +30,7 @@ type NamespaceStat struct {
 // assumption Count and reindex already rely on.
 func (ts *TenantStore) ListNamespaces(ctx context.Context) ([]NamespaceStat, error) {
 	stats := map[string]*NamespaceStat{}
+	now := time.Now()
 	get := func(name string) *NamespaceStat {
 		st := stats[name]
 		if st == nil {
@@ -46,9 +48,13 @@ func (ts *TenantStore) ListNamespaces(ctx context.Context) ([]NamespaceStat, err
 		}
 	}
 
-	err := ts.s.scanAll(ctx, memory.ClassName, ts.t, []string{"namespace", "createdAt"}, func(r graphql.SearchResult) {
+	err := ts.s.scanAll(ctx, memory.ClassName, ts.t, []string{"namespace", "createdAt", "validUntil"}, func(r graphql.SearchResult) {
 		st := get(propString(r.Properties, "namespace"))
-		st.MemoryCount++
+		if expiredProp(r.Properties, now) {
+			st.ExpiredCount++
+		} else {
+			st.MemoryCount++
+		}
 		bump(st, propString(r.Properties, "createdAt"))
 	})
 	if err != nil && !isTenantNotFound(err) {

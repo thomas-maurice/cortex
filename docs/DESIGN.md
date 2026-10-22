@@ -168,7 +168,7 @@ is parsed strictly (Go duration, e.g. `720h`; `0` = forever; invalid = startup f
 
 Time-bound facts carry an optional `validUntil` (Weaviate `date`, declared in
 `memoryProperties`, added to existing classes by `ensureProps`; also on `Trash`, so a
-trash round-trip keeps it). It is part of the memory's content, hence index-owned (see
+trash round-trip keeps it). It is NOT index-owned after creation (see
 the field-ownership table); `memory.Record.ValidUntil` zero = never expires.
 
 **Semantics.** `Search`, `List`, `SearchSimilar`, `Consolidate` and recall (the hook
@@ -198,15 +198,28 @@ so a new caller is expiry-safe by default.
   link/dup-candidate neighbours (fetched by id, so `skipExpired` re-applies the check)
   unless `include_expired`, so an expired memory can't be merged and superseded by
   accident.
+- **Ownership: `SetValidUntil` is the only writer of an existing memory's expiry.** The
+  index path (`Upsert`) writes `validUntil` only when it CREATES the memory (a new save,
+  an import of a new id, a restore); `UpdateIndexFields` never touches it. Otherwise a
+  queued index message (reindex, an earlier text edit, a restore) carries an old snapshot
+  and would revert an expiry edit — clearing a "never expires" and getting the memory
+  swept, or the reverse. `UpdateMemory` therefore applies ANY expiry change
+  synchronously via `SetValidUntil`, before republishing, even when the text is re-queued
+  too (pinned by `TestQueuedIndexMessageCannotRevertExpiryEdit`). Consequence: importing
+  or reindexing over an EXISTING id does not change its stored expiry.
 - **Expiry-only edits never re-embed.** `UpdateMemory` with an expiry change and
-  text/tags/namespace absent or identical to the stored values is applied by
-  `TenantStore.SetValidUntil`: a single-property Weaviate merge (zero time = JSON null =
-  clear). It takes no distributed lock, deliberately: a merge is atomic per property and
-  a scalar replace has no read-modify-write to protect (unlike tag-array edits), so it
-  cannot clobber a concurrent link/reinforcement/tag merge (integration-tested). Known
-  limit, shared by every index-owned field: an index message already queued before the
-  edit carries the old expiry and overwrites it when it lands.
-  Any other edit republishes the record carrying the (possibly new) expiry.
+  text/tags/namespace absent or identical to the stored values stops after
+  `SetValidUntil` (status `updated`): a single-property Weaviate merge (zero time = JSON
+  null = clear). No distributed lock, deliberately: a merge is atomic per property and a
+  scalar replace has no read-modify-write to protect (unlike tag-array edits), so it
+  cannot clobber a concurrent link/reinforcement/tag merge (integration-tested).
+- **Counts.** `Status.memory_count` and `NamespaceInfo.memory_count` count LIVE memories
+  (what List/Search can return); `expired_count` reports the expired ones still stored.
+- **Restore policy.** `RestoreFromTrash` clears a lapsed expiry only for entries whose
+  reason is `expired` (else it would be hidden and re-swept at once); any other reason
+  keeps `validUntil` (a lapsed one is re-trashed as `expired` by the sweep after the
+  grace). `RestoreMemories` / `RestoreSelf` / `RestoreAll` keep `validUntil` as-is, never
+  reject a past one, and report how many restored records are already expired.
 - **Sweep.** Hourly in `cmd/server` (beside the trash sweep): `Store.SweepExpired` per
   tenant selects `validUntil < now - EXPIRY_GRACE` (server-side `<`, which excludes null),
   re-reads each candidate right before trashing (an extension made meanwhile wins) and
@@ -214,7 +227,7 @@ so a new caller is expiry-safe by default.
   oldest-expiry first in batches of 500 so a backlog drains; ids that fail (or were
   extended) are skipped on later rounds and the window widens by their count, so a
   persistently failing batch cannot starve the healthy memories behind it.
-  Counts are logged. Restoring from the trash drops a lapsed expiry.
+  Counts are logged.
 - **Validation** (server): `valid_until` must be in the future; `expires_in` accepts Go
   durations plus whole `d` days; both must be > 0 and <= 10 years; both at once is
   rejected.
@@ -386,7 +399,7 @@ integration test), which is why server-side merges need no KV lock.
 | `tags` | index (worker) AND server tag rename/delete (`RenameTag`/`DeleteTag`, merge of `tags` on the memory and its chunks) | writes |
 | `dupCandidates` | index (recomputed; server `DismissDuplicate` may prune) | writes, minus ids in the stored `notDuplicateOf` |
 | `indexedSeq` | index (worker) | writes |
-| `validUntil` (expiry) | index (worker) **and** server `UpdateMemory` expiry-only change (`SetValidUntil`, single-property merge) | writes (an index message without an expiry CLEARS it) |
+| `validUntil` (expiry) | server `SetValidUntil` (single-property merge); the index path writes it ONLY when it creates the memory | never writes (a queued reindex/edit/restore message must not revert an expiry edit) |
 | chunks (`MemoryChunk`) | index (worker) | replaced under the lock |
 | `linkedIds` | link consumer (`SetLinks`, under both ids' locks) | never writes |
 | `accessCount`, `lastAccessedAt` | server `Reinforce` (merge) | never writes |

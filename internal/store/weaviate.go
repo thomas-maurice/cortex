@@ -614,9 +614,6 @@ func indexOwnedProps(rec memory.Record) map[string]interface{} {
 		"dupCandidates":  dups,
 		"indexedSeq":     rec.IndexedSeq,
 		"indexedStream":  rec.IndexedStream,
-		// nil (never expires) is sent on the merge path so that dropping an expiry
-		// on edit clears the stored one rather than leaving it in place.
-		"validUntil": validUntilValue(rec.ValidUntil),
 	}
 }
 
@@ -635,8 +632,11 @@ func validUntilValue(t time.Time) interface{} {
 // memory use UpdateIndexFields.
 func (ts *TenantStore) Upsert(ctx context.Context, rec memory.Record, vector []float32) error {
 	props := indexOwnedProps(rec)
-	if rec.ValidUntil.IsZero() {
-		delete(props, "validUntil") // a create has nothing to clear; leave it absent
+	// validUntil is written ONLY here, on create: afterwards it belongs to
+	// SetValidUntil, so a queued index message (reindex, an earlier text edit, a
+	// restore) carrying an older snapshot can never revert an expiry edit.
+	if !rec.ValidUntil.IsZero() {
+		props["validUntil"] = validUntilValue(rec.ValidUntil)
 	}
 	props["linkedIds"] = rec.LinkedIDs
 	props["notDuplicateOf"] = rec.NotDuplicateOf
@@ -653,9 +653,10 @@ func (ts *TenantStore) Upsert(ctx context.Context, rec memory.Record, vector []f
 // UpdateIndexFields rewrites an EXISTING memory's index-owned fields and vector
 // via a Weaviate merge (PATCH) and nothing else. Index-owned: text, vector,
 // namespace, tags, source, createdAt, conversationId, model, dims, dupCandidates,
-// indexedSeq, indexedStream, validUntil. Deliberately NOT written, because other writers own them and a
-// queued index message only carries a stale snapshot:
+// indexedSeq, indexedStream. Deliberately NOT written, because other writers own
+// them and a queued index message only carries a stale snapshot:
 //
+//	validUntil                   server SetValidUntil (written by Upsert on create only)
 //	linkedIds                    link consumer (SetLinks)
 //	accessCount, lastAccessedAt  server Reinforce
 //	notDuplicateOf               server DismissDuplicate (SetNotDuplicateOf)
@@ -679,7 +680,7 @@ func (ts *TenantStore) UpdateIndexFields(ctx context.Context, rec memory.Record,
 	return nil
 }
 
-// SetValidUntil changes ONLY a memory's expiry (zero time = never expires) via a
+// SetValidUntil is the sole writer of an existing memory's expiry; it changes ONLY the expiry (zero time = never expires) via a
 // single-property Weaviate merge: no vector, no other field and no chunk is
 // touched, so an expiry change never re-embeds. A merge is atomic per property, so
 // it cannot clobber a concurrent tag/link/reinforcement merge, and being a scalar
@@ -948,8 +949,38 @@ func (ts *TenantStore) Reinforce(ctx context.Context, id string, count int, at t
 	return nil
 }
 
+// expiredProp reports whether a scanned result's validUntil has passed.
+func expiredProp(p map[string]any, now time.Time) bool {
+	vu := propString(p, "validUntil")
+	if vu == "" {
+		return false
+	}
+	t, err := time.Parse(time.RFC3339, vu)
+	return err == nil && !t.After(now)
+}
+
+// CountLiveExpired is Count split by expiry: live memories (what List/Search can
+// return) and expired ones still stored (hidden, awaiting the sweep).
+func (ts *TenantStore) CountLiveExpired(ctx context.Context) (live, expired int, err error) {
+	now := time.Now()
+	err = ts.s.scanAll(ctx, memory.ClassName, ts.t, []string{"validUntil"}, func(r graphql.SearchResult) {
+		if expiredProp(r.Properties, now) {
+			expired++
+		} else {
+			live++
+		}
+	})
+	if err != nil {
+		if isTenantNotFound(err) {
+			return 0, 0, nil
+		}
+		return 0, 0, fmt.Errorf("count query: %w", err)
+	}
+	return live, expired, nil
+}
+
 // Count returns the number of stored memories for this tenant, optionally scoped
-// to a namespace ("" counts all). There is no gRPC Aggregate in the stable
+// to a namespace ("" counts all, expired included — see CountLiveExpired). There is no gRPC Aggregate in the stable
 // client, so it cursor-scans the class and counts the rows (correct beyond the
 // 10000-result query cap). The cursor cannot be combined with a where filter, so
 // the namespace is matched in Go.

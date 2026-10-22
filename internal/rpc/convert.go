@@ -128,6 +128,7 @@ func namespaceStatToProto(st store.NamespaceStat) *cortexv1.NamespaceInfo {
 	ni := &cortexv1.NamespaceInfo{
 		Name:         st.Name,
 		MemoryCount:  int64(st.MemoryCount),
+		ExpiredCount: int64(st.ExpiredCount),
 		SummaryCount: int64(st.SummaryCount),
 	}
 	if !st.LastUpdated.IsZero() {

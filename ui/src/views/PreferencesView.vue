@@ -66,6 +66,7 @@
               <Tag class="size-3" />{{ t }}
             </Badge>
             <span v-if="m.createdAt">{{ formatDate(m.createdAt) }}</span>
+            <ExpiryBadge :valid-until="m.validUntil" />
           </div>
         </template>
       </CardContent>
@@ -85,6 +86,7 @@ import { confirmDialog } from '@/lib/confirm'
 import { toast } from 'vue-sonner'
 import { Loader2, Pencil, Plus, SlidersHorizontal, Tag, Trash2 } from 'lucide-vue-next'
 import { Alert, AlertDescription } from '@/components/ui/alert'
+import ExpiryBadge from '@/components/ExpiryBadge.vue'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -145,7 +147,7 @@ async function reload() {
   loading.value = true
   error.value = ''
   try {
-    const res = await memoryClient.list({ namespace: PREF_NAMESPACE, tags: [PREF_TAG], limit: 100 })
+    const res = await memoryClient.list({ namespace: PREF_NAMESPACE, tags: [PREF_TAG], limit: 100, includeExpired: true })
     prefs.value = res.memories
   } catch (e) {
     handleError(e)

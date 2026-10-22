@@ -164,7 +164,7 @@ func TestExpiryRPCIntegration(t *testing.T) {
 		assert.Less(t, hits[0].Distance, float32(0.01), "vector untouched")
 	})
 
-	t.Run("a real text edit republishes and carries the stored expiry", func(t *testing.T) {
+	t.Run("a real text edit republishes; the expiry is applied directly", func(t *testing.T) {
 		r := update(alice, &cortexv1.UpdateMemoryRequest{Text: "reworded"})
 		assert.Equal(t, "queued", r.Status)
 		var last memory.Record
@@ -178,11 +178,14 @@ func TestExpiryRPCIntegration(t *testing.T) {
 
 		r = update(alice, &cortexv1.UpdateMemoryRequest{Text: "reworded again", ClearValidUntil: true})
 		assert.Equal(t, "queued", r.Status)
-		for _, p := range publishedIndex(t, js) {
-			if p.ID == rec.ID && p.Text == "reworded again" {
-				assert.True(t, p.ValidUntil.IsZero(), "clear + text edit publishes no expiry so the worker clears it")
-			}
-		}
+		got, _, err := ta.Get(ctx, rec.ID)
+		require.NoError(t, err)
+		assert.True(t, got.ValidUntil.IsZero(), "the expiry change is applied synchronously, not via the queue, even when the text is re-queued")
+		r = update(alice, &cortexv1.UpdateMemoryRequest{Text: "reworded third", ExpiresIn: "5d"})
+		assert.Equal(t, "queued", r.Status)
+		got, _, _ = ta.Get(ctx, rec.ID)
+		assert.WithinDuration(t, time.Now().Add(120*time.Hour), got.ValidUntil, time.Minute)
+		update(alice, &cortexv1.UpdateMemoryRequest{ClearValidUntil: true})
 	})
 
 	t.Run("expired memories leave List unless include_expired; clearing restores them", func(t *testing.T) {
@@ -240,5 +243,72 @@ func TestExpiryRPCIntegration(t *testing.T) {
 			assert.Equal(t, "long gone", last.Text)
 			assert.True(t, last.ValidUntil.IsZero(), "else it would be hidden again and re-swept at once")
 		})
+	})
+
+	t.Run("restore policy: only 'expired' trash entries lose a lapsed expiry", func(t *testing.T) {
+		lapsed := time.Now().Add(-48 * time.Hour).UTC().Truncate(time.Second)
+		rec := memory.Record{ID: uuid.NewString(), Text: "explicitly deleted, expiry lapsed", Namespace: "ns", CreatedAt: time.Now().UTC(), ValidUntil: lapsed}
+		require.NoError(t, ta.Upsert(ctx, rec, vec))
+		_, err := svc.Delete(alice, connect.NewRequest(&cortexv1.DeleteRequest{Id: rec.ID}))
+		require.NoError(t, err)
+		tr, err := svc.ListTrash(alice, connect.NewRequest(&cortexv1.ListTrashRequest{}))
+		require.NoError(t, err)
+		var shown *cortexv1.TrashEntry
+		for _, e := range tr.Msg.Entries {
+			if e.Id == rec.ID {
+				shown = e
+			}
+		}
+		require.NotNil(t, shown)
+		assert.NotNil(t, shown.ValidUntil, "the trash entry exposes its expiry")
+		rr, err := svc.RestoreFromTrash(alice, connect.NewRequest(&cortexv1.RestoreFromTrashRequest{Ids: []string{rec.ID}}))
+		require.NoError(t, err)
+		assert.EqualValues(t, 1, rr.Msg.ExpiredQueued, "the user is told it comes back already expired (hidden)")
+		var last memory.Record
+		for _, p := range publishedIndex(t, js) {
+			if p.ID == rec.ID {
+				last = p
+			}
+		}
+		assert.True(t, lapsed.Equal(last.ValidUntil), "an explicit delete keeps validUntil; the sweep re-trashes it as expired")
+	})
+
+	t.Run("RestoreMemories keeps past expiries and reports them", func(t *testing.T) {
+		past := timestamppb.New(time.Now().Add(-time.Hour))
+		before := len(publishedIndex(t, js))
+		r, err := svc.RestoreMemories(alice, connect.NewRequest(&cortexv1.RestoreMemoriesRequest{Memories: []*cortexv1.Memory{
+			{Id: uuid.NewString(), Text: "already expired", ValidUntil: past},
+			{Id: uuid.NewString(), Text: "fine"},
+		}}))
+		require.NoError(t, err, "a restore must not reject a past valid_until")
+		assert.EqualValues(t, 2, r.Msg.Queued)
+		assert.EqualValues(t, 1, r.Msg.ExpiredQueued)
+		pub := publishedIndex(t, js)
+		assert.Len(t, pub, before+2)
+		found := false
+		for _, p := range pub {
+			if p.Text == "already expired" {
+				found = !p.ValidUntil.IsZero()
+			}
+		}
+		assert.True(t, found, "the lapsed expiry is carried as-is")
+	})
+
+	t.Run("Status counts live memories and reports expired separately", func(t *testing.T) {
+		require.NoError(t, ta.Upsert(ctx, memory.Record{ID: uuid.NewString(), Text: "stale", Namespace: "stat", CreatedAt: time.Now().UTC(), ValidUntil: time.Now().Add(-time.Hour).UTC()}, vec))
+		live, expired, err := ta.CountLiveExpired(ctx)
+		require.NoError(t, err)
+		assert.Positive(t, expired)
+		all, err := ta.Count(ctx, "")
+		require.NoError(t, err)
+		assert.Equal(t, all, live+expired)
+		ns, err := svc.ListNamespaces(alice, connect.NewRequest(&cortexv1.ListNamespacesRequest{}))
+		require.NoError(t, err)
+		for _, n := range ns.Msg.Namespaces {
+			if n.Name == "stat" {
+				assert.EqualValues(t, 0, n.MemoryCount)
+				assert.EqualValues(t, 1, n.ExpiredCount)
+			}
+		}
 	})
 }

@@ -226,10 +226,11 @@ func TestSetValidUntilIsMetadataOnly(t *testing.T) {
 	})
 }
 
-// validUntil is index-owned: a full (re-)index of an existing memory writes it
-// (so a text edit that also changes the expiry lands), and an index message that
-// carries no expiry clears it (so dropping the expiry on edit works).
-func TestUpdateIndexFieldsOwnsValidUntil(t *testing.T) {
+// validUntil is written by the index path only when it CREATES a memory. After
+// that SetValidUntil owns it: a queued index message (reindex, an earlier text
+// edit, a restore) carries an old snapshot of the expiry and must not revert an
+// expiry edit made since — in either direction (set -> cleared, cleared -> set).
+func TestQueuedIndexMessageCannotRevertExpiryEdit(t *testing.T) {
 	st, _ := trashStore(t)
 	tenant := "tenant-a"
 	ctx := context.Background()
@@ -243,15 +244,23 @@ func TestUpdateIndexFieldsOwnsValidUntil(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, until.Equal(got.ValidUntil), "create path persists the expiry")
 
-	rec.Text, rec.ValidUntil = "v2", until.Add(time.Hour)
-	require.NoError(t, ts.UpdateIndexFields(ctx, rec, vec))
+	// The user clears the expiry; a message queued BEFORE that (snapshot still
+	// carrying the old expiry) is then indexed.
+	require.NoError(t, ts.SetValidUntil(ctx, rec.ID, time.Time{}))
+	stale := rec
+	stale.Text = "v2 from a queued edit"
+	require.NoError(t, ts.UpdateIndexFields(ctx, stale, vec))
 	got, _, _ = ts.Get(ctx, rec.ID)
-	assert.True(t, until.Add(time.Hour).Equal(got.ValidUntil))
+	assert.Equal(t, "v2 from a queued edit", got.Text, "the queued edit itself still lands")
+	assert.True(t, got.ValidUntil.IsZero(), "but it must not resurrect the cleared expiry")
 
-	rec.ValidUntil = time.Time{}
-	require.NoError(t, ts.UpdateIndexFields(ctx, rec, vec))
+	// Opposite direction: user sets an expiry, a queued message with none arrives.
+	later := until.Add(5 * time.Hour)
+	require.NoError(t, ts.SetValidUntil(ctx, rec.ID, later))
+	stale.ValidUntil = time.Time{}
+	require.NoError(t, ts.UpdateIndexFields(ctx, stale, vec))
 	got, _, _ = ts.Get(ctx, rec.ID)
-	assert.True(t, got.ValidUntil.IsZero(), "an index message without an expiry clears it")
+	assert.True(t, later.Equal(got.ValidUntil), "a queued message without an expiry must not clear the edit")
 }
 
 // The sweep moves only memories expired for longer than the grace to Trash (reason
@@ -382,4 +391,37 @@ func TestSweepExpiredNotStarvedByFailures(t *testing.T) {
 		_, live, _ := ts.Get(ctx, id)
 		assert.True(t, live, "failed memory stays put")
 	}
+}
+
+// Counts must agree with what List/Search can return: expired memories are not
+// "stored memories" a user can see, so they are reported separately.
+func TestCountsSplitLiveAndExpired(t *testing.T) {
+	st, _ := trashStore(t)
+	ctx := context.Background()
+	ts := st.Tenant("tenant-a")
+	vec := []float32{1, 0, 0, 0}
+	now := time.Now()
+	for _, r := range []memory.Record{
+		expRec("a", "live", time.Time{}),
+		expRec("a", "future", now.Add(time.Hour)),
+		expRec("a", "gone", now.Add(-time.Hour)),
+		expRec("b", "gone too", now.Add(-time.Hour)),
+	} {
+		require.NoError(t, ts.Upsert(ctx, r, vec))
+	}
+	live, expired, err := ts.CountLiveExpired(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 2, live)
+	assert.Equal(t, 2, expired)
+
+	stats, err := ts.ListNamespaces(ctx)
+	require.NoError(t, err)
+	by := map[string]NamespaceStat{}
+	for _, s := range stats {
+		by[s.Name] = s
+	}
+	assert.Equal(t, 2, by["a"].MemoryCount)
+	assert.Equal(t, 1, by["a"].ExpiredCount)
+	assert.Equal(t, 0, by["b"].MemoryCount)
+	assert.Equal(t, 1, by["b"].ExpiredCount)
 }
