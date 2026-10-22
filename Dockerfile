@@ -9,7 +9,7 @@ RUN npm ci
 COPY ui/ ./
 RUN npm run build
 
-FROM golang:1.26-alpine AS build
+FROM golang:1.27-alpine AS build
 WORKDIR /src
 # VERSION is stamped into every binary's `main.version` so the image reports the
 # same version it is tagged with (passed by CI / `make image`; "dev" otherwise).
