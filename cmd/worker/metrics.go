@@ -38,12 +38,12 @@ func newMetrics(reg prometheus.Registerer) *metrics {
 		}, []string{"subject_kind", "outcome"}),
 		embedDur: f.NewHistogram(prometheus.HistogramOpts{
 			Name:    "cortex_embed_duration_seconds",
-			Help:    "Ollama embed call latency in seconds (retries included).",
+			Help:    "Ollama /api/embed request latency in seconds (one per request of up to 32 inputs, retries included).",
 			Buckets: prometheus.DefBuckets,
 		}),
 		embedErrs: f.NewCounter(prometheus.CounterOpts{
 			Name: "cortex_embed_errors_total",
-			Help: "Ollama embed calls that failed after retries.",
+			Help: "Ollama /api/embed requests that failed after retries.",
 		}),
 		indexDur: f.NewHistogram(prometheus.HistogramOpts{
 			Name:    "cortex_index_duration_seconds",

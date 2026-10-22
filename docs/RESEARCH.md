@@ -43,7 +43,7 @@ Takeaways for us:
 - `nomic-embed-text` is the default local text embedder: 768-dim, strong
   quality/size ratio, runs on CPU. Pull with `ollama pull nomic-embed-text`.
 - Ollama exposes `POST /api/embeddings {"model","prompt"}` → `{"embedding":[…]}`
-  (single) and a newer `/api/embed` (batch). We use the stable single endpoint.
+  (single, deprecated) and `/api/embed` (batch). We now use `/api/embed` (Ollama >= 0.3.4).
 - **Design choice:** we embed *ourselves* in the worker and store vectors into
   Weaviate with `vectorizer: none`, rather than letting Weaviate's
   `text2vec-ollama` module call Ollama. This keeps embedding logic in our Go

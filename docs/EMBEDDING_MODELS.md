@@ -4,8 +4,8 @@ The embedding model is the single biggest quality lever in Cortex: it decides
 how well "search by meaning" actually works. This doc evaluates the realistic
 Ollama options and explains how to switch.
 
-Cortex embeds **in the worker** (`internal/embed`) via Ollama's `/api/embeddings`
-and stores raw vectors in Weaviate (`vectorizer: none`). So "the model" is just
+Cortex embeds **in the worker** (`internal/embed`) via Ollama's batched `/api/embed`
+(**requires Ollama >= 0.3.4**; chunks are embedded up to 32 per request) and stores raw vectors in Weaviate (`vectorizer: none`). So "the model" is just
 the `OLLAMA_MODEL` env var — swapping it is a one-line change **plus a re-index**
 (see the gotcha at the bottom).
 

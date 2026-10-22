@@ -35,7 +35,8 @@ Full rationale in [`docs/DESIGN.md`](docs/DESIGN.md); background research in
   stack, so there's nothing to install separately, but Cortex **cannot save or
   search without it**, and you must pull an embedding model into it before use
   (`make model`, or `make bootstrap` which does it for you). Default model:
-  `qwen3-embedding:0.6b`. See [Embedding model](#embedding-model) to choose another.
+  `qwen3-embedding:0.6b`. Needs **Ollama >= 0.3.4** (batched `/api/embed`; the
+  bundled image is newer). See [Embedding model](#embedding-model) to choose another.
 
 > If you already run Ollama natively on the host (port 11434), remove the
 > `ollama` service from `docker-compose.yml` and point `OLLAMA_URL` at your host

@@ -639,13 +639,15 @@ func indexChunks(ctx context.Context, embedder *embed.Client, ts *store.TenantSt
 		return 0, ts.ReplaceChunks(ctx, rec, nil)
 	}
 	chunks := chunker.Split(rec.Text)
+	// One batched call (split internally at the client's cap) instead of a serial
+	// round-trip per chunk; vectors come back index-aligned with chunks.
+	vecs, err := embedder.EmbedBatch(ctx, chunks)
+	if err != nil {
+		return 0, fmt.Errorf("embed chunks: %w", err)
+	}
 	cvs := make([]store.ChunkVec, 0, len(chunks))
 	for i, ct := range chunks {
-		cvec, err := embedder.Embed(ctx, ct)
-		if err != nil {
-			return 0, fmt.Errorf("embed chunk %d: %w", i, err)
-		}
-		cvs = append(cvs, store.ChunkVec{Index: i, Text: ct, Vector: cvec})
+		cvs = append(cvs, store.ChunkVec{Index: i, Text: ct, Vector: vecs[i]})
 	}
 	if err := ts.ReplaceChunks(ctx, rec, cvs); err != nil {
 		return 0, err
