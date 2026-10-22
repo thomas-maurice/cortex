@@ -160,7 +160,7 @@ source later re-applies ITS trashed links to still-existing endpoints (so it is 
 back to its old neighbours), while the merged memory keeps the links it inherited.
 
 **What else a merge carries** (`internal/merge`, shared by the worker and the
-`MergeInto` RPC): `accessCount` = sum and `lastAccessedAt` = max (server-owned; written
+`MergeInto` RPC): `accessCount` = sum and `lastAccessedAt` = max, and likewise `useCount` = sum / `lastUsedAt` = max via `RecordUse` (stale review's usage signal; server-owned; written
 via `Reinforce`; summed, so a crash between carry and delete can over-count once);
 `notDuplicateOf` = union of the sources' dismissals, with each counterpart C rewritten
 source -> merged so reviewed pairs stay dismissed; `createdAt` = oldest of the merged
@@ -473,7 +473,7 @@ integration test), which is why server-side merges need no KV lock.
 | chunks (`MemoryChunk`) | index (worker) | replaced under the lock |
 | `linkedIds` | link consumer (`SetLinks`, under both ids' locks) | never writes |
 | `accessCount`, `lastAccessedAt` | server `Reinforce` (merge) | never writes |
-| `useCount`, `lastUsedAt` | server `RecordUse` (merge; actual-use tracking for stale review, independent of reinforcement) | never writes on an existing memory (a CREATE from import/restore carries them) |
+| `useCount`, `lastUsedAt` | server `RecordUse` (merge; actual-use tracking for stale review, independent of reinforcement) | never writes on an existing memory (a CREATE from import/restore carries them); the merge carry-over (`internal/merge`) sums them onto the survivor, like `accessCount` |
 | `notDuplicateOf` | server `DismissDuplicate` (merge) | never writes |
 
 `RecordUse` read-modify-writes `useCount` under an in-process per-(tenant,id) striped

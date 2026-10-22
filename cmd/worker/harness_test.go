@@ -185,6 +185,10 @@ func (ft *fakeTenant) Reinforce(_ context.Context, id string, count int, at time
 	return ft.mergeField(id, "reinforce", func(o *memory.Record) { o.AccessCount = count; o.LastAccessedAt = at })
 }
 
+func (ft *fakeTenant) RecordUse(_ context.Context, id string, count int, at time.Time) error {
+	return ft.mergeField(id, "record-use", func(o *memory.Record) { o.UseCount = count; o.LastUsedAt = at })
+}
+
 func (ft *fakeTenant) SetNotDuplicateOf(_ context.Context, id string, ids []string) error {
 	return ft.mergeField(id, "set-notdup", func(o *memory.Record) { o.NotDuplicateOf = slices.Clone(ids) })
 }

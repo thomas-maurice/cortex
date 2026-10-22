@@ -624,6 +624,7 @@ type tenantStore interface {
 	// Reinforce and SetNotDuplicateOf are server-owned fields; the worker only
 	// touches them to carry a superseded memory's stats/dismissals (internal/merge).
 	Reinforce(ctx context.Context, id string, count int, at time.Time) error
+	RecordUse(ctx context.Context, id string, count int, at time.Time) error
 	SetNotDuplicateOf(ctx context.Context, id string, ids []string) error
 	// SetValidUntil is the sole writer of an existing memory's expiry; the worker
 	// only uses it so a merge of time-bound memories inherits the latest expiry.

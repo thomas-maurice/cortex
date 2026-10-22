@@ -24,6 +24,7 @@ import (
 type Store interface {
 	Get(ctx context.Context, id string) (memory.Record, bool, error)
 	Reinforce(ctx context.Context, id string, count int, at time.Time) error
+	RecordUse(ctx context.Context, id string, count int, at time.Time) error
 	SetNotDuplicateOf(ctx context.Context, id string, ids []string) error
 }
 
@@ -265,6 +266,22 @@ func Carry(ctx context.Context, st Store, keepID, sourceID string, siblings []st
 		}
 		if err := st.Reinforce(ctx, keepID, count, at); err != nil {
 			return fmt.Errorf("carry access stats: %w", err)
+		}
+	}
+
+	// Usage statistics (stale review's actual-use signal; server-owned like the
+	// access stats, same rules): sum of counts, latest use. Without this a merged
+	// memory whose sources were heavily used would look unused and be flagged.
+	uses, usedAt := keep.UseCount+src.UseCount, keep.LastUsedAt
+	if src.LastUsedAt.After(usedAt) {
+		usedAt = src.LastUsedAt
+	}
+	if uses != keep.UseCount || !usedAt.Equal(keep.LastUsedAt) {
+		if usedAt.IsZero() {
+			usedAt = time.Now().UTC()
+		}
+		if err := st.RecordUse(ctx, keepID, uses, usedAt); err != nil {
+			return fmt.Errorf("carry usage stats: %w", err)
 		}
 	}
 	return nil
