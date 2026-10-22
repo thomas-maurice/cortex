@@ -29,6 +29,12 @@ const router = createRouter({
       meta: { requiresAuth: true },
     },
     {
+      path: '/recall-preview',
+      name: 'recall-preview',
+      component: () => import('@/views/RecallPreviewView.vue'),
+      meta: { requiresAuth: true },
+    },
+    {
       path: '/sessions',
       name: 'sessions',
       component: () => import('@/views/SessionsView.vue'),
@@ -38,6 +44,18 @@ const router = createRouter({
       path: '/namespaces',
       name: 'namespaces',
       component: () => import('@/views/NamespacesView.vue'),
+      meta: { requiresAuth: true },
+    },
+    {
+      path: '/tags',
+      name: 'tags',
+      component: () => import('@/views/TagsView.vue'),
+      meta: { requiresAuth: true },
+    },
+    {
+      path: '/trash',
+      name: 'trash',
+      component: () => import('@/views/TrashView.vue'),
       meta: { requiresAuth: true },
     },
     {

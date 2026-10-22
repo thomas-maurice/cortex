@@ -39,9 +39,9 @@ func TestScanAllPagesEveryRow(t *testing.T) {
 	st, err := New(rest, grpc)
 	require.NoError(t, err)
 	st.SetMultiTenant(mt)
-	_ = st.DeleteClass(ctx)
+	_ = st.DeleteAllClasses(ctx)
 	require.NoError(t, st.EnsureSchema(ctx))
-	t.Cleanup(func() { _ = st.DeleteClass(ctx) })
+	t.Cleanup(func() { _ = st.DeleteAllClasses(ctx) })
 
 	ts := st.Tenant("user-scan")
 	other := st.Tenant("user-other")

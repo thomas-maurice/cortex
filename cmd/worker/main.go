@@ -81,8 +81,8 @@ func envBool(key string, def bool) bool {
 // lockBucket KV bucket. The 60s TTL only reclaims a crashed holder's lock
 // (no lease refresh); the indexedSeq guard is the backstop if a holder outlives it.
 const (
-	lockBucket = "cortex_locks"
-	lockTTL    = 60 * time.Second
+	lockBucket = dlock.DefaultBucket
+	lockTTL    = dlock.DefaultTTL
 	// ackWait is set explicitly on both consumers; the pool sends InProgress every
 	// keepaliveInterval (5s) for a message's whole life, far inside it.
 	ackWait = 30 * time.Second
@@ -608,7 +608,7 @@ type tenantStore interface {
 	Upsert(ctx context.Context, rec memory.Record, vector []float32) error
 	UpdateIndexFields(ctx context.Context, rec memory.Record, vector []float32) error
 	ReplaceChunks(ctx context.Context, rec memory.Record, chunks []store.ChunkVec) error
-	Delete(ctx context.Context, id string) error
+	DeleteWithReason(ctx context.Context, id, reason string) error
 	GetSummarySeq(ctx context.Context, conversationID string) (seq uint64, stream int64, err error)
 	UpsertSummary(ctx context.Context, sum memory.Summary, vector []float32) error
 	SearchMemoryVectors(ctx context.Context, vec []float32, opts store.SearchOpts) ([]memory.Hit, error)
@@ -830,11 +830,12 @@ func planSupersedes(recID string, supersedes []string) []string {
 // a failure here leaves stale sources behind (the pre-merge state) rather than
 // losing the merged content. Best-effort and non-fatal: a missing/already-gone
 // source is logged and skipped, so a redelivery that re-runs this (sources
-// already deleted) is harmless. ts is scoped to the record's tenant so the
+// already deleted) is harmless. Sources go to the Trash (reason supersedes:<id>),
+// so a bad consolidation is recoverable. ts is scoped to the record's tenant so the
 // deletes only affect the correct tenant's data in multi-tenant mode.
 func applySupersedes(ctx context.Context, log *slog.Logger, ts tenantStore, rec memory.Record) {
 	for _, id := range planSupersedes(rec.ID, rec.Supersedes) {
-		if err := ts.Delete(ctx, id); err != nil {
+		if err := ts.DeleteWithReason(ctx, id, memory.TrashReasonSupersedes+rec.ID); err != nil {
 			log.Warn("supersede delete failed, skipping", "id", rec.ID, "superseded", id, "err", err)
 			continue
 		}
@@ -945,10 +946,17 @@ func commitIndex(ctx context.Context, log *slog.Logger, locker *dlock.Locker, ts
 		return false, nil
 	}
 	rec.IndexedSeq, rec.IndexedStream = seq, stream
+	rec.Tags = memory.NormalizeTags(rec.Tags) // backstop for producers that skip it (import/restore)
 	if exists {
 		// Dedup candidates were computed before the lock from the message's
 		// snapshot of notDuplicateOf; honour dismissals made since.
 		rec.DupCandidates = withoutIDs(rec.DupCandidates, stored.NotDuplicateOf)
+		// The message does not intend to change tags: keep the stored ones (a tag
+		// rename/delete may have landed since it was published). Chunks below use
+		// rec.Tags, so they follow.
+		if rec.KeepTags {
+			rec.Tags = stored.Tags
+		}
 		err = ts.UpdateIndexFields(hctx, rec, vec)
 	} else {
 		err = ts.Upsert(hctx, rec, vec)

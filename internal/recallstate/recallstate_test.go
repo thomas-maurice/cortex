@@ -126,3 +126,24 @@ func TestPathShapedSessionIDIsSafe(t *testing.T) {
 	require.Len(t, entries, 1, "nothing outside the database file")
 	assert.Equal(t, "cortex.db", entries[0].Name())
 }
+
+// Inspecting a session (hook recall --dry-run) must never create or modify the
+// state db: the real hook owns it.
+func TestLoadReadOnlyNeverWrites(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sub", "state.db")
+	st := LoadReadOnly(path, "s1")
+	assert.False(t, st.Seen("a"))
+	_, err := os.Stat(filepath.Dir(path))
+	assert.True(t, os.IsNotExist(err), "no db or directory may be created")
+
+	Load(path, "s1").Add("a")
+	before, err := os.ReadFile(path)
+	require.NoError(t, err)
+	ro := LoadReadOnly(path, "s1")
+	assert.True(t, ro.Seen("a"))
+	ro.Add("b") // must be a no-op
+	after, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, before, after)
+	assert.False(t, LoadReadOnly(path, "s1").Seen("b"))
+}

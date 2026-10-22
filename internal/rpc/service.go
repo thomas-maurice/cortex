@@ -12,15 +12,18 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"connectrpc.com/connect"
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	cortexv1 "github.com/thomas-maurice/cortex/gen/cortex/v1"
 	"github.com/thomas-maurice/cortex/gen/cortex/v1/cortexv1connect"
 	"github.com/thomas-maurice/cortex/internal/bus"
+	"github.com/thomas-maurice/cortex/internal/dlock"
 	"github.com/thomas-maurice/cortex/internal/embed"
 	"github.com/thomas-maurice/cortex/internal/identity"
 	"github.com/thomas-maurice/cortex/internal/memory"
@@ -100,6 +103,9 @@ type Config struct {
 	// (CORTEX_S3_* / AWS_*). When S3.Enabled every successful full backup is also
 	// uploaded. Credentials live in memory only — never persisted or exposed.
 	S3 S3Config
+	// TrashRetention is how long soft-deleted memories stay restorable before the
+	// periodic sweep purges them (TRASH_RETENTION; 0 = keep forever).
+	TrashRetention time.Duration
 }
 
 // Service implements the MemoryService Connect handler. It is the single owner
@@ -126,6 +132,19 @@ type Service struct {
 	// restore per tenant, and one admin bulk operation server-wide, so no tenant
 	// can multiply the memory/Ollama cost of "fetch everything" RPCs.
 	backupGate, reindexGate, restoreGate, adminGate tenantGate
+	// previewGate: one in-flight PreviewRecall per tenant (each fans out to many
+	// embeds + searches).
+	previewGate tenantGate
+	// tagGate: one in-flight tag rename/delete per tenant (each scans the tenant).
+	tagGate tenantGate
+	// locker is the per-memory KV lock shared with the worker (see memoryLocker);
+	// created lazily so NewService stays infallible. Tests may preset it.
+	lockerMu sync.Mutex
+	locker   *dlock.Locker
+	// scanGate: one in-flight DeleteNamespace / ListTrash / PurgeTrash(all) per
+	// tenant — each scans or buffers a whole namespace or trash (DeleteNamespace and
+	// the bulk PurgeTrash/RestoreFromTrash forms; read-only ListTrash is not gated).
+	scanGate tenantGate
 	// afterGate, when non-nil, runs right after a gate is acquired; a non-nil
 	// return aborts the call. Test seam only (lets a test hold a call in flight).
 	afterGate func() error
@@ -247,7 +266,7 @@ func (s *Service) Save(ctx context.Context, req *connect.Request[cortexv1.SaveRe
 		ID:             uuid.NewString(),
 		Text:           text,
 		Namespace:      ns,
-		Tags:           req.Msg.GetTags(),
+		Tags:           memory.NormalizeTags(req.Msg.GetTags()),
 		Source:         src,
 		CreatedAt:      time.Now().UTC(),
 		ConversationID: req.Msg.GetConversationId(),
@@ -308,7 +327,11 @@ func (s *Service) UpdateMemory(ctx context.Context, req *connect.Request[cortexv
 
 	rec.Text = text
 	if req.Msg.GetReplaceTags() {
-		rec.Tags = req.Msg.GetTags()
+		rec.Tags = memory.NormalizeTags(req.Msg.GetTags())
+	} else {
+		// Text/namespace-only edit: the worker keeps whatever tags are stored when
+		// it commits, so a tag rename that lands while this is queued is not undone.
+		rec.KeepTags = true
 	}
 	if ns := strings.TrimSpace(req.Msg.GetNamespace()); ns != "" {
 		rec.Namespace = ns
@@ -337,6 +360,21 @@ func (s *Service) searchStore(ctx context.Context, ts *store.TenantStore, vec []
 	return ts.SearchMemoryVectors(ctx, vec, opts)
 }
 
+// hybridSearchOpts builds the store options of a free-text search (hybrid
+// BM25+vector, living-memory rerank per config). Search and PreviewRecall share
+// it so a recall preview ranks exactly like the search the hook issues.
+func (s *Service) hybridSearchOpts(query, reqNamespace string, limit int32, maxDistance float32) store.SearchOpts {
+	return store.SearchOpts{
+		Namespace:          resolveNamespace(reqNamespace, s.cfg.DefaultNamespace),
+		Limit:              clampProtoInt(limit),
+		MaxDistance:        maxDistance,
+		Query:              query, // enables hybrid (BM25 + vector) so exact tokens resolve
+		Alpha:              s.cfg.SearchAlpha,
+		RerankWeight:       s.cfg.RerankWeight,
+		RerankHalfLifeDays: s.cfg.RerankHalfLifeDays,
+	}
+}
+
 func (s *Service) Search(ctx context.Context, req *connect.Request[cortexv1.SearchRequest]) (*connect.Response[cortexv1.SearchResponse], error) {
 	query := strings.TrimSpace(req.Msg.GetQuery())
 	if query == "" {
@@ -351,19 +389,12 @@ func (s *Service) Search(ctx context.Context, req *connect.Request[cortexv1.Sear
 	if err != nil {
 		return nil, err
 	}
-	hits, err := s.searchStore(ctx, ts, vec, store.SearchOpts{
-		Namespace:          resolveNamespace(req.Msg.GetNamespace(), s.cfg.DefaultNamespace),
-		Limit:              clampProtoInt(req.Msg.GetLimit()),
-		MaxDistance:        req.Msg.GetMaxDistance(),
-		Autocut:            clampProtoInt(req.Msg.GetAutocut()),
-		IncludeTags:        req.Msg.GetTags(),
-		AnyTags:            req.Msg.GetAnyTags(),
-		ExcludeTags:        req.Msg.GetExcludeTags(),
-		Query:              query, // enables hybrid (BM25 + vector) so exact tokens resolve
-		Alpha:              s.cfg.SearchAlpha,
-		RerankWeight:       s.cfg.RerankWeight,
-		RerankHalfLifeDays: s.cfg.RerankHalfLifeDays,
-	})
+	opts := s.hybridSearchOpts(query, req.Msg.GetNamespace(), req.Msg.GetLimit(), req.Msg.GetMaxDistance())
+	opts.Autocut = clampProtoInt(req.Msg.GetAutocut())
+	opts.IncludeTags = req.Msg.GetTags()
+	opts.AnyTags = req.Msg.GetAnyTags()
+	opts.ExcludeTags = req.Msg.GetExcludeTags()
+	hits, err := s.searchStore(ctx, ts, vec, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -527,11 +558,16 @@ func (s *Service) Delete(ctx context.Context, req *connect.Request[cortexv1.Dele
 	if err != nil {
 		return nil, err
 	}
+	reason, ok := memory.NormalizeDeleteReason(strings.TrimSpace(req.Msg.GetReason()))
+	if !ok {
+		return nil, connect.NewError(connect.CodeInvalidArgument,
+			fmt.Errorf("reason %q is not allowed (use delete, %s or %s)", req.Msg.GetReason(), memory.TrashReasonStaleReview, memory.TrashReasonDuplicateReview))
+	}
 	ts, err := s.tenantStore(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if err := ts.Delete(ctx, id); err != nil {
+	if err := ts.DeleteWithReason(ctx, id, reason); err != nil {
 		return nil, err
 	}
 	return connect.NewResponse(&cortexv1.DeleteResponse{Status: "deleted"}), nil
@@ -557,6 +593,9 @@ func (s *Service) Status(ctx context.Context, _ *connect.Request[cortexv1.Status
 		if ts, err := s.tenantStore(ctx); err == nil {
 			if c, err := ts.Count(ctx, ""); err == nil {
 				out.MemoryCount = int64(c)
+			}
+			if c, err := ts.CountTrash(ctx); err == nil {
+				out.TrashCount = int64(c)
 			}
 		}
 	}
@@ -691,6 +730,7 @@ func (s *Service) Reindex(ctx context.Context, req *connect.Request[cortexv1.Rei
 	// re-stamps provenance. PublishIndex stamps the tenant from context so the
 	// worker's store ops land in the same tenant.
 	for _, r := range recs {
+		r.KeepTags = true // a rename/delete landing mid-reindex must not be undone by this snapshot
 		if err := bus.PublishIndex(ctx, s.js, r); err != nil {
 			return nil, fmt.Errorf("republish %s: %w", r.ID, err)
 		}
@@ -1303,6 +1343,11 @@ func (s *Service) DeleteNamespace(ctx context.Context, req *connect.Request[cort
 	if ns == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("namespace must not be empty"))
 	}
+	release, err := s.gated(ctx, &s.scanGate, false, scanBusyMsg)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	ts, err := s.tenantStore(ctx)
 	if err != nil {
 		return nil, err
@@ -1315,6 +1360,180 @@ func (s *Service) DeleteNamespace(ctx context.Context, req *connect.Request[cort
 		MemoriesDeleted:  int32(mem),
 		SummariesDeleted: int32(sum),
 	}), nil
+}
+
+// maxTagLen caps the length (in runes) of a tag a rename may CREATE.
+const maxTagLen = 128
+
+// preferenceTag is the tag that drives the cortex-prefs SessionStart hook.
+const preferenceTag = "preference"
+
+// memoryLocker returns the per-memory lock func for the caller's tenant. It takes
+// the SAME dlock key the worker's index/link commits take (kind "mem", tenant =
+// the authenticated user id, "" without identity: exactly what bus.PublishIndex
+// stamps), so a tag rewrite cannot interleave with an index commit of that memory.
+func (s *Service) memoryLocker(ctx context.Context) (store.MemoryLocker, error) {
+	s.lockerMu.Lock()
+	if s.locker == nil {
+		if s.js == nil {
+			s.lockerMu.Unlock()
+			return nil, connect.NewError(connect.CodeUnavailable, errors.New("lock service unavailable"))
+		}
+		l, err := dlock.New(ctx, s.js, dlock.DefaultBucket, dlock.DefaultTTL, "server")
+		if err != nil {
+			s.lockerMu.Unlock()
+			return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("lock service: %w", err))
+		}
+		s.locker = l
+	}
+	l := s.locker
+	s.lockerMu.Unlock()
+	tenant := gateKey(ctx)
+	return func(ctx context.Context, id string) (context.Context, func(), error) {
+		return l.AcquireAll(ctx, []string{dlock.Key("mem", tenant, id)}, l.Wait())
+	}, nil
+}
+
+// ListTags aggregates the caller's tags with memory counts and last activity.
+// Deliberately not gated: read-only, streamed scan with O(distinct tags) memory,
+// like ListTrash/ListNamespaces (see docs/DESIGN.md, tag management).
+func (s *Service) ListTags(ctx context.Context, req *connect.Request[cortexv1.ListTagsRequest]) (*connect.Response[cortexv1.ListTagsResponse], error) {
+	ts, err := s.tenantStore(ctx)
+	if err != nil {
+		return nil, err
+	}
+	stats, err := ts.ListTags(ctx, strings.TrimSpace(req.Msg.GetNamespace()))
+	if err != nil {
+		return nil, err
+	}
+	out := &cortexv1.ListTagsResponse{Tags: make([]*cortexv1.TagInfo, 0, len(stats))}
+	for _, st := range stats {
+		ti := &cortexv1.TagInfo{Name: st.Name, MemoryCount: int64(st.MemoryCount)}
+		if !st.LastActivity.IsZero() {
+			ti.LastActivity = timestamppb.New(st.LastActivity)
+		}
+		out.Tags = append(out.Tags, ti)
+	}
+	return connect.NewResponse(out), nil
+}
+
+// guardPreferenceTag rejects touching the reserved `preference` tag unless the
+// caller explicitly confirmed. Rejecting (rather than a UI-only prompt) means a
+// script or an LLM calling the RPC cannot silently empty the standing
+// preferences the SessionStart hook injects into every session.
+func guardPreferenceTag(confirm bool, tags ...string) error {
+	if confirm {
+		return nil
+	}
+	for _, t := range tags {
+		if strings.EqualFold(strings.TrimSpace(t), preferenceTag) {
+			return connect.NewError(connect.CodeFailedPrecondition, errors.New(`the "preference" tag drives the cortex-prefs session hook; set confirm_preference (CLI: --yes / UI: confirm) to change it`))
+		}
+	}
+	return nil
+}
+
+// rejectDuringBulkRewrite refuses a tag rename/delete while a reindex or restore
+// is republishing this tenant's memories (or an admin restore/migrate is running
+// server-wide): those queue point-in-time snapshots of every memory, the widest
+// window in which a queued message could carry pre-rename tags.
+func (s *Service) rejectDuringBulkRewrite(ctx context.Context) error {
+	key := gateKey(ctx)
+	if s.reindexGate.Held(key) || s.restoreGate.Held(key) || s.adminGate.Held(adminGateKey) {
+		return connect.NewError(connect.CodeFailedPrecondition, errors.New("a reindex or restore is in progress; its queued snapshots would undo the tag change. Wait for it to finish (watch the Indexing queue) and retry"))
+	}
+	return nil
+}
+
+// partialErr keeps the error's Connect code (Internal when it has none) and puts
+// the number of memories ALREADY changed in the message: a failed bulk op is
+// partially applied, and the caller must know to re-run it (it is idempotent).
+func partialErr(op string, changed int, err error) error {
+	code := connect.CodeInternal
+	var ce *connect.Error
+	if errors.As(err, &ce) {
+		code = ce.Code()
+	}
+	return connect.NewError(code, fmt.Errorf("%s failed after updating %d memories (safe to re-run): %w", op, changed, err))
+}
+
+// RenameTag replaces a tag with another across the caller's memories and their
+// chunks. Metadata-only (tags are never embedded); renaming into an existing tag
+// merges. Each memory is rewritten under its per-memory lock so a concurrent
+// index commit cannot lose either change.
+func (s *Service) RenameTag(ctx context.Context, req *connect.Request[cortexv1.RenameTagRequest]) (*connect.Response[cortexv1.RenameTagResponse], error) {
+	// from is matched EXACTLY (tags are stored as written, so "k8s " is not
+	// "k8s"); only the new name is trimmed, like every tag write.
+	from := req.Msg.GetFrom()
+	to := strings.TrimSpace(req.Msg.GetTo())
+	ns := strings.TrimSpace(req.Msg.GetNamespace())
+	if from == "" || to == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("from and to must not be empty"))
+	}
+	if utf8.RuneCountInString(to) > maxTagLen {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("tag must be at most %d characters", maxTagLen))
+	}
+	if from == to {
+		return connect.NewResponse(&cortexv1.RenameTagResponse{}), nil
+	}
+	if err := guardPreferenceTag(req.Msg.GetConfirmPreference(), from, to); err != nil {
+		return nil, err
+	}
+	if err := s.rejectDuringBulkRewrite(ctx); err != nil {
+		return nil, err
+	}
+	release, err := s.gated(ctx, &s.tagGate, false, "a tag rename/delete is already running for this account; try again when it finishes")
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	ts, err := s.tenantStore(ctx)
+	if err != nil {
+		return nil, err
+	}
+	lock, err := s.memoryLocker(ctx)
+	if err != nil {
+		return nil, err
+	}
+	n, err := ts.RenameTag(ctx, from, to, ns, lock)
+	if err != nil {
+		return nil, partialErr("rename tag", n, err)
+	}
+	return connect.NewResponse(&cortexv1.RenameTagResponse{MemoriesUpdated: int32(n)}), nil
+}
+
+// DeleteTag removes a tag from the caller's memories (and chunks); the memories
+// are kept. Same locking and gating as RenameTag.
+func (s *Service) DeleteTag(ctx context.Context, req *connect.Request[cortexv1.DeleteTagRequest]) (*connect.Response[cortexv1.DeleteTagResponse], error) {
+	tag := req.Msg.GetTag() // exact match, see RenameTag
+	ns := strings.TrimSpace(req.Msg.GetNamespace())
+	if tag == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("tag must not be empty"))
+	}
+	if err := guardPreferenceTag(req.Msg.GetConfirmPreference(), tag); err != nil {
+		return nil, err
+	}
+	if err := s.rejectDuringBulkRewrite(ctx); err != nil {
+		return nil, err
+	}
+	release, err := s.gated(ctx, &s.tagGate, false, "a tag rename/delete is already running for this account; try again when it finishes")
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	ts, err := s.tenantStore(ctx)
+	if err != nil {
+		return nil, err
+	}
+	lock, err := s.memoryLocker(ctx)
+	if err != nil {
+		return nil, err
+	}
+	n, err := ts.DeleteTag(ctx, tag, ns, lock)
+	if err != nil {
+		return nil, partialErr("delete tag", n, err)
+	}
+	return connect.NewResponse(&cortexv1.DeleteTagResponse{MemoriesUpdated: int32(n)}), nil
 }
 
 // linkEndpoints validates two distinct, existing memory ids and returns both
@@ -1382,7 +1601,8 @@ func removeString(xs []string, v string) []string {
 //  2. Snapshot: list every memory and summary from the non-MT store and write a
 //     backup JSON file (reusing writeBackup) — the safety net before anything
 //     destructive.
-//  3. Drop the three non-MT classes + recreate them with MT enabled (EnsureSchema
+//  3. Drop the non-MT classes (incl. Trash, whose entries are snapshotted and
+//     re-written into the target tenant) + recreate them with MT enabled (EnsureSchema
 //     in MT mode; the store was booted with SetMultiTenant(true)).
 //  4. Re-import every snapshotted memory into the bootstrap tenant via
 //     PublishIndex and every summary via PublishSummary. The worker re-embeds and
@@ -1438,20 +1658,41 @@ func (s *Service) MigrateMT(ctx context.Context, _ *connect.Request[cortexv1.Mig
 		return nil, fmt.Errorf("snapshot summaries: %w", err)
 	}
 
+	// The trash (soft-deleted memories) is converted too, not dropped: snapshot it
+	// while it is still non-MT. When the server booted in MT mode EnsureSchema
+	// already created Trash as MT (empty, nothing to carry over).
+	var trash []memory.TrashEntry
+	if trashMT, err := s.store.IsClassMultiTenant(ctx, memory.TrashClassName); err != nil {
+		return nil, fmt.Errorf("check trash MT status: %w", err)
+	} else if exists, err := s.store.ClassExists(ctx, memory.TrashClassName); err != nil {
+		return nil, fmt.Errorf("check trash class: %w", err)
+	} else if exists && !trashMT {
+		if trash, err = s.store.ListAllTrash(ctx); err != nil {
+			return nil, fmt.Errorf("snapshot trash: %w", err)
+		}
+	}
+
 	// Write the backup before anything destructive. Uses the same cortex export
 	// JSON format so the backup can be imported with `cortex import` if needed.
 	backupPath, err := s.writeBackup(recs)
 	if err != nil {
 		return nil, fmt.Errorf("write backup before migration: %w", err)
 	}
+	// The backup above holds memories only; park the trash next to it BEFORE the
+	// drop so a failure re-writing it afterwards cannot lose it.
+	trashPath, err := writeTrashSidecar(backupPath, trash)
+	if err != nil {
+		return nil, fmt.Errorf("write trash backup before migration: %w", err)
+	}
 	s.log.Info("migrate-mt: snapshot complete",
-		"memories", len(recs), "summaries", len(sums), "backup", backupPath)
+		"memories", len(recs), "summaries", len(sums), "trash", len(trash), "backup", backupPath, "trash_backup", trashPath)
 
-	// Drop the three non-MT classes and recreate them with MT enabled.
+	// Drop the non-MT classes (Trash included, its entries are re-written below)
+	// and recreate them with MT enabled.
 	// The store was booted with SetMultiTenant(true), so EnsureSchema creates
 	// MT classes. WARNING: DeleteClass is irreversible; the backup is the
 	// recovery path.
-	if err := s.store.DeleteClass(ctx); err != nil {
+	if err := s.store.DeleteAllClasses(ctx); err != nil {
 		return nil, fmt.Errorf("drop non-MT classes: %w", err)
 	}
 	if err := s.store.EnsureSchema(ctx); err != nil {
@@ -1490,9 +1731,25 @@ func (s *Service) MigrateMT(ctx context.Context, _ *connect.Request[cortexv1.Mig
 		summariesQueued++
 	}
 
+	// Carry the trash over LAST and non-fatally: memories and summaries are already
+	// re-queued, so a trash failure must not abort the (one-shot, un-re-runnable)
+	// migration. Entries go in directly (not via the index path: no vector, and
+	// they keep deletedAt/reason). Failures are logged and counted; the sidecar
+	// file holds every entry.
+	tts := s.store.Tenant(targetTenant)
+	trashFailed := 0
+	for _, e := range trash {
+		if err := tts.PutTrashEntry(ctx, e); err != nil {
+			trashFailed++
+			s.log.Error("migrate-mt: trash entry not migrated", "id", e.ID, "trash_backup", trashPath, "err", err)
+		}
+	}
+
 	s.log.Info("migrate-mt: re-import queued",
 		"memories_queued", memoriesQueued,
 		"summaries_queued", summariesQueued,
+		"trash_migrated", len(trash)-trashFailed,
+		"trash_failed", trashFailed,
 		"tenant", targetTenant,
 	)
 
@@ -1503,12 +1760,51 @@ func (s *Service) MigrateMT(ctx context.Context, _ *connect.Request[cortexv1.Mig
 		MemoriesQueued:    int32(memoriesQueued),
 		SummariesQueued:   int32(summariesQueued),
 		Tenant:            targetTenant,
+		TrashMigrated:     int32(len(trash) - trashFailed),
 		Message: fmt.Sprintf(
-			"migration complete: %d memories and %d summaries queued for re-import into tenant %q; "+
-				"backup at %s; chunks will regenerate as the worker processes the queue",
-			memoriesQueued, summariesQueued, targetTenant, backupPath,
+			"migration complete: %d memories and %d summaries queued for re-import into tenant %q "+
+				"(%d trash entries carried over%s); backup at %s; chunks will regenerate as the worker processes the queue%s",
+			memoriesQueued, summariesQueued, targetTenant, len(trash)-trashFailed, trashNote(trashPath), backupPath,
+			trashFailureNote(trashFailed, trashPath),
 		),
 	}), nil
+}
+
+// writeTrashSidecar writes the snapshotted trash entries to
+// "<backup-name>.trash.json" next to the migration backup (same JSON style; the
+// records' fields plus deletedAt/reason, so `cortex import` can re-create them as
+// live memories). Returns "" when there is no trash to save.
+func writeTrashSidecar(backupPath string, trash []memory.TrashEntry) (string, error) {
+	if len(trash) == 0 {
+		return "", nil
+	}
+	path := strings.TrimSuffix(backupPath, ".json") + ".trash.json"
+	data, err := json.MarshalIndent(trash, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+// trashFailureNote warns that some trash entries were not migrated and where the
+// full copy is. Importing the sidecar restores them as LIVE memories (deletedAt
+// and reason are lost).
+func trashFailureNote(failed int, sidecar string) string {
+	if failed == 0 {
+		return ""
+	}
+	return fmt.Sprintf("; WARNING: %d trash entries could NOT be migrated (see server log) — all are saved in %s; "+
+		"`cortex import %s` restores them as LIVE memories (deletedAt/reason are lost)", failed, sidecar, sidecar)
+}
+
+func trashNote(path string) string {
+	if path == "" {
+		return ""
+	}
+	return "; saved to " + path
 }
 
 // writeBackup snapshots records (text + metadata, no vectors) to a timestamped
@@ -1526,7 +1822,7 @@ func (s *Service) writeBackup(recs []memory.Record) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	if err := os.WriteFile(path, data, 0o600); err != nil {
 		return "", fmt.Errorf("write backup: %w", err)
 	}
 	s.log.Info("wrote reindex backup", "path", path, "count", len(recs))

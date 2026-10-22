@@ -172,7 +172,7 @@ should encode *why* the behaviour matters, not just what it does (Rule 9).
   cascade to chunks. `store.Search` keeps each parent's winning chunk as `memory.Hit.Match` (chunk index, text, rune offsets via `chunk.Locate`; proto `Hit.match`; none for fallback hits) — surfaced by the UI (highlight), CLI and MCP (`matched`; stubs carry the excerpt instead of the 120-char prefix). See docs/CHUNKING.md.
 - **Weaviate runs with `AUTOSCHEMA_ENABLED=false`** (compose, TrueNAS compose, CI,
   `scripts/wv-test.sh`). Schema lives only in code: a new property written by ANY path
-  must be declared in `memoryProperties`/`chunkProperties`/`summaryProperties`/
+  must be declared in `memoryProperties`/`chunkProperties`/`summaryProperties`/`trashProperties`/
   `userProperties`/`apiKeyProperties` (ensureProps adds it to existing classes), else
   the write fails. Why: a worker write during a reindex/migrate-mt class drop would
   otherwise auto-create a wrong-shaped class. See `autoschema_integration_test.go`.
@@ -206,17 +206,31 @@ should encode *why* the behaviour matters, not just what it does (Rule 9).
   NATS via `internal/natstest`; `cmd/worker` has a multi-replica convergence sim.
 - **Idempotent ids.** Object id = a UUID; the worker upserts by id, so
   redelivery/retry/reindex overwrites rather than duplicates.
-- Two Weaviate classes: `Memory` and `ConversationSummary` (one per
-  conversation, upserted). A namespace conceptually spans **both** — anything that
+- Weaviate classes: `Memory`, `MemoryChunk`, `Trash` and `ConversationSummary` (one
+  summary per conversation, upserted). A namespace conceptually spans **both** — anything that
   renames/deletes a namespace must touch both classes or it orphans summaries.
 
+- **Deletes are soft (Trash class).** `TenantStore.Delete`/`DeleteWithReason` (explicit
+  delete, worker `supersedes` → reason `supersedes:<id>`, `DeleteNamespace` per memory →
+  `namespace-delete`) copy the record into the `Trash` class (same tenant/id, no vector,
+  `internal/store/trash.go`) BEFORE deleting; trash write failure = nothing deleted.
+  `Memory` has no deleted flag. Entries keep accessCount/lastAccessedAt/model/dims (not dupCandidates/indexedSeq). Restore (ids, or `all`+namespace+reason bulk) = `bus.PublishIndex` (+ `PublishLink` for live
+  endpoints) then drop the entry; never overwrites a live id; purge/sweep queue link REMOVEs to neighbours; `Delete.reason` ∈ {delete, stale-review, duplicate-review}. Retention: `TRASH_RETENTION`
+  (default 168h, 0 = forever) + hourly sweep in cmd/server (`Service.SweepTrash` →
+  `Store.PurgeExpiredTrash`, all tenants). Trash is NOT in backups. `DeleteClass` leaves
+  Trash alone (reindex rebuild keeps it); `DeleteAllClasses` also drops it (migrate-mt,
+  which snapshots + converts the trash into the admin tenant; tests use it for a clean
+  slate). `TRASH_RETENTION` is parsed strictly (bad value = server exits). DropTenant wipes
+  the user's trash deliberately. Summaries are not trashed.
 - **Observability** lives in `internal/obs` (shared registry, `/healthz` `/readyz` `/metrics`
   handlers, `obs.Serve` for the dedicated metrics listeners, dependency probes reusing `Store.Ready` / `Embedder.Reachable`). Server RPC metrics are
   a Connect interceptor + a scrape-time queue collector in `internal/rpc/metrics.go`; worker metrics
   are `cmd/worker/metrics.go` (passed explicitly, nil-safe; embed latency via `embed.Client.SetObserver`).
   Never put user input, tenant ids or namespaces in metric labels. See README "Observability".
 
-Package map: `internal/rpc` (service + auth/JWT/login + client), `internal/store`
+**Recall preview** (`PreviewRecall` RPC, `internal/rpc/recall.go`, UI `/recall-preview` = `RecallPreviewView.vue`): dry-runs the hook for a prompt — injected hits + near misses (reason `over_max_distance`/`over_limit`) + skip reason. Injected set = the exact hook search (limit L, cutoff D); near misses come from a second no-cutoff search (limit L+5), so their distances can differ slightly (hybrid fusion is normalised over the fetched pool). Optional request fields unset = hook defaults. Never reinforces; session dedup is NOT simulated (client-local). Integration test needs the MT recipe in §3 (uses a fake Ollama httptest server).
+
+Package map: `internal/recall` (hook query logic, shared by hook + server), `internal/rpc` (service + auth/JWT/login + client), `internal/store`
 (Weaviate schema/queries), `internal/bus` (NATS), `internal/embed` (Ollama),
 `internal/memory` (shared model + stream/class names), `internal/config` (viper).
 UI in `ui/src/views/*.vue` wired through `ui/src/router/index.js` + the navbar in
@@ -289,7 +303,8 @@ and scripting without going through Claude. Global flags: `--server`
 | `list [-n '*'] [-l N] [-t tag] [-T anyTag] [-x excludeTag]` | List newest-first with tag/namespace filters. |
 | `get <id> [--json]` | Show one memory by id (full text + linked ids) via the `GetMemory` RPC (tenant-scoped; NotFound for unknown/other-tenant ids; no reinforcement). Same RPC backs the `cortex_memory_get` MCP tool, which also marks the id delivered in recallstate. |
 | `search "<q>" [-n '*'] [-l N] [-d 0.6] [--autocut N] [-t/-T/-x tag] [--reinforce]` | Hybrid (BM25+vector) semantic search. `-d` = distance cutoff. CLI does NOT reinforce by default. |
-| `delete <id>` | Delete one memory by id. |
+| `delete <id>` | Delete one memory by id (soft: moved to the `Trash` class, see §4). |
+| `trash ls [-n ns]` / `trash restore <id>...` / `trash purge <id>... \| --all [-n ns] [--yes]` | Soft-delete trash (`ListTrash`/`RestoreFromTrash`/`PurgeTrash` RPCs; `cmd/cli/trash.go`). |
 | `export [-n '*'] [-o file]` | Dump memories (text+metadata, no vectors) to JSON (stdout by default). |
 | `import <file> [--batch N]` | Restore a dump via the NATS ingest queue (worker re-embeds). Preserves ids/links. **This is how you load seed data** — point `--server` at the target. |
 | `reindex [-n '*'] [--yes]` | Server snapshots then republishes all memories for re-embed. `--yes` allows a destructive class rebuild on an embedding-dimension change. |
@@ -308,13 +323,14 @@ and scripting without going through Claude. Global flags: `--server`
 | `summarize "<text>" --conversation <id> [-n ns]` | Save/update a conversation summary (one per conversation). |
 | `summaries [-n '*'] [-l N]` | List conversation summaries, newest-updated first. |
 | `recall "<q>" [-n '*'] [--fact-limit N] [-d D]` | Recall the best-matching past session: its summary + facts. |
-| `hook recall [--timeout 5s] [-n '*'] [-l 3] [-d 0.5] [--min-chars 12] [--max-chars 1500] [--max-query-chunks 4]` | Claude Code **UserPromptSubmit** hook endpoint (`cmd/cli/hook.go`): reads the hook event JSON on stdin, semantically searches memories for the prompt (long prompts split into ~512-token chunks via `internal/chunk`, sampled to the cap, searched concurrently, merged by best distance) and prints a `<cortex-recall>` block on stdout for context injection. Fail-open: ANY error/timeout → no output, exit 0. No reinforcement unless `--reinforce`. **Session dedup is shared with the MCP server** via `internal/recallstate`: a single bbolt db (`~/.cache/cortex/cortex.db`, `--state-db` to override; one bucket per conversation id with a `recalled` sub-bucket + `lastSeen` stamp; idle convos auto-pruned at 7 days, `cortex state` to manage by hand; intended to also hold future per-convo state). The db is NEVER held open — bbolt's flock is exclusive per open handle, so every op is open(500ms lock timeout, 3 attempts ~250ms apart)→txn→close, letting concurrent MCPs/hooks interleave. A memory delivered to a session's context once (hook injection or search result) is stubbed to ~120 chars on later `cortex_memory_search` calls (`fresh=true` bypasses, for post-compaction re-fetch); hook↔MCP sharing needs the real session id in the MCP env (`CORTEX_CONVERSATION_ID`/`CLAUDE_CODE_SESSION_ID`), else the MCP dedups in-process only. The MCP server also now ships a base "RECALL FIRST" instructions block (cmd/mcp/main.go), with the upgrade notice appended to it. |
+| `hook recall [--timeout 5s] [-n '*'] [-l 3] [-d 0.5] [--min-chars 12] [--max-chars 1500] [--max-query-chunks 4]` | Claude Code **UserPromptSubmit** hook endpoint (`cmd/cli/hook.go`): reads the hook event JSON on stdin, semantically searches memories for the prompt (long prompts split into ~512-token chunks via `internal/chunk`, sampled to the cap, searched concurrently, merged by best distance) and prints a `<cortex-recall>` block on stdout for context injection. Fail-open: ANY error/timeout → no output, exit 0. No reinforcement unless `--reinforce`. **Session dedup is shared with the MCP server** via `internal/recallstate`: a single bbolt db (`~/.cache/cortex/cortex.db`, `--state-db` to override; one bucket per conversation id with a `recalled` sub-bucket + `lastSeen` stamp; idle convos auto-pruned at 7 days, `cortex state` to manage by hand; intended to also hold future per-convo state). The query logic (skip rules, chunk sampling, concurrent search, merge-by-best-distance, limit/cutoff) lives in `internal/recall`, shared with the server's `PreviewRecall` RPC; `cmd/cli/hook.go` only adds the RPC searcher, session dedup and output. **`--dry-run [--prompt]`** calls `PreviewRecall` (hook JSON or raw text on stdin) and prints injected hits + near misses; it never writes recallstate (a session id from the event JSON/`--session-id` is read via `recallstate.LoadReadOnly` to flag already-injected hits). The injected block is built by `recall.FormatBlock` (hook + `PreviewRecall.injected_block`, with per-hit `truncated`/`text_chars` for `--max-chars`). The db is NEVER held open — bbolt's flock is exclusive per open handle, so every op is open(500ms lock timeout, 3 attempts ~250ms apart)→txn→close, letting concurrent MCPs/hooks interleave. A memory delivered to a session's context once (hook injection or search result) is stubbed to ~120 chars on later `cortex_memory_search` calls (`fresh=true` bypasses, for post-compaction re-fetch); hook↔MCP sharing needs the real session id in the MCP env (`CORTEX_CONVERSATION_ID`/`CLAUDE_CODE_SESSION_ID`), else the MCP dedups in-process only. The MCP server also now ships a base "RECALL FIRST" instructions block (cmd/mcp/main.go), with the upgrade notice appended to it. |
 | `candidates [-n '*'] [-l N]` | List memories flagged as likely duplicates. `candidates dismiss <id> <target-id>` marks a pair NOT duplicates. |
 | `consolidate "<topic>" [-n '*'] [-l N] [-d D] [-t/-T/-x tag]` | Print the cluster of memories about a topic + manifest (read-only gather; the LLM merges). No tag flag = whole cluster, not "untagged only". |
 | `state ls \| show <convo> \| clear <convo> \| purge [--older-than 168h]` | Inspect/maintain the LOCAL per-conversation bbolt state db (recall dedup): list convos (last-seen + recalled count), show delivered memory ids, drop one convo, purge idle ones. Local-only, no RPC (`cmd/cli/state.go` + `internal/recallstate`). |
 | `config init [--force]` / `config show` | Scaffold / print the effective `cortex.yaml`. |
 | `onboard [--force]` | Interactive first-run: prompts for server URL + API token (the only non-default values), writes `cortex.yaml` with defaults for everything else. Shares the config template with `config init`; token read no-echo. |
 | `hash-password` | Print an argon2id hash for `CORTEX_UI_PASSWORD`. |
+| `tags [-n ns]` / `tags rename <from> <to> [-n ns] [--yes]` / `tags delete <tag> [-n ns] [--yes]` | Tag management (`internal/store/tags.go`, `cmd/cli/tags.go`, **Tags** UI view). Rename into an existing tag merges (dedup). Metadata-only merge of `tags` on the memory AND its chunks; each memory is rewritten under the worker's per-memory `dlock` key after re-reading its tags. Single-flight per tenant; refused while a reindex/restore gate is held. `from`/`tag` match EXACTLY (only `to` is trimmed); tags are normalised on write (`memory.NormalizeTags`). Producers that republish stored tags (`UpdateMemory` w/o replace_tags, `Reindex`) set `Record.KeepTags` so the worker keeps stored tags (never reintroduce tags from those snapshots). Read-only MCP tool `cortex_tags_list`. The `preference` tag needs `--yes`/`confirm_preference`. Summaries have no tags. |
 
 There is **no** namespace-management CLI command — rename/delete a namespace is a
 UI feature (the **Namespaces** view), backed by the `ListNamespaces` /

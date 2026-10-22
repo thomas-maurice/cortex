@@ -88,6 +88,30 @@ func TestHeavyRPCsSingleFlightPerTenant(t *testing.T) {
 				return err
 			}
 		},
+		"PreviewRecall": func(s *Service) func(context.Context) error {
+			return func(ctx context.Context) error {
+				_, err := s.PreviewRecall(ctx, connect.NewRequest(&cortexv1.PreviewRecallRequest{Prompt: "a prompt long enough to search"}))
+				return err
+			}
+		},
+		"DeleteNamespace": func(s *Service) func(context.Context) error {
+			return func(ctx context.Context) error {
+				_, err := s.DeleteNamespace(ctx, connect.NewRequest(&cortexv1.DeleteNamespaceRequest{Namespace: "ns"}))
+				return err
+			}
+		},
+		"RestoreTrashAll": func(s *Service) func(context.Context) error {
+			return func(ctx context.Context) error {
+				_, err := s.RestoreFromTrash(ctx, connect.NewRequest(&cortexv1.RestoreFromTrashRequest{All: true}))
+				return err
+			}
+		},
+		"PurgeTrashAll": func(s *Service) func(context.Context) error {
+			return func(ctx context.Context) error {
+				_, err := s.PurgeTrash(ctx, connect.NewRequest(&cortexv1.PurgeTrashRequest{All: true}))
+				return err
+			}
+		},
 		"RestoreSelf": func(s *Service) func(context.Context) error {
 			return func(ctx context.Context) error {
 				_, err := s.RestoreSelf(ctx, connect.NewRequest(&cortexv1.RestoreSelfRequest{Data: []byte("{}")}))

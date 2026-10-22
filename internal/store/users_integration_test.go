@@ -27,7 +27,7 @@ func TestUserAndApiKeyCRUD(t *testing.T) {
 	ctx := context.Background()
 	st, err := New(rest, grpc)
 	require.NoError(t, err)
-	_ = st.DeleteClass(ctx)
+	_ = st.DeleteAllClasses(ctx)
 	require.NoError(t, st.EnsureIdentitySchema(ctx))
 	t.Cleanup(func() {
 		_ = st.client.Schema().ClassDeleter().WithClassName("User").Do(ctx)

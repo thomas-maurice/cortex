@@ -177,3 +177,46 @@ func TestSearchMatchedExcerpt(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, out.Hits[0].Matched)
 }
+
+type tagsClient struct {
+	cortexv1connect.MemoryServiceClient
+	gotNS string
+}
+
+func (f *tagsClient) ListTags(_ context.Context, r *connect.Request[cortexv1.ListTagsRequest]) (*connect.Response[cortexv1.ListTagsResponse], error) {
+	f.gotNS = r.Msg.GetNamespace()
+	return connect.NewResponse(&cortexv1.ListTagsResponse{Tags: []*cortexv1.TagInfo{
+		{Name: "k8s", MemoryCount: 5}, {Name: "kubernetes", MemoryCount: 2},
+	}}), nil
+}
+
+// cortex_tags_list is registered, read-only, and returns tag + count so the
+// model reuses existing spellings; destructive tag tools must NOT exist.
+func TestTagsListTool(t *testing.T) {
+	fc := &tagsClient{}
+	d := &deps{client: fc, seen: map[string]bool{}}
+	srv := mcp.NewServer(&mcp.Implementation{Name: "t", Version: "0"}, nil)
+	addTagsTool(srv, d, time.Second)
+
+	ct, st := mcp.NewInMemoryTransports()
+	ctx := context.Background()
+	ss, err := srv.Connect(ctx, st, nil)
+	require.NoError(t, err)
+	defer func() { _ = ss.Close() }()
+	cs, err := mcp.NewClient(&mcp.Implementation{Name: "c", Version: "0"}, nil).Connect(ctx, ct, nil)
+	require.NoError(t, err)
+	defer func() { _ = cs.Close() }()
+
+	tools, err := cs.ListTools(ctx, nil)
+	require.NoError(t, err)
+	require.Len(t, tools.Tools, 1)
+	assert.Equal(t, "cortex_tags_list", tools.Tools[0].Name)
+
+	res, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "cortex_tags_list", Arguments: map[string]any{"namespace": " proj "}})
+	require.NoError(t, err)
+	require.False(t, res.IsError)
+	assert.Equal(t, "proj", fc.gotNS)
+	b, err := json.Marshal(res.StructuredContent)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"tags":[{"tag":"k8s","count":5},{"tag":"kubernetes","count":2}]}`, string(b))
+}

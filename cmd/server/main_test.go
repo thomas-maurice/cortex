@@ -227,3 +227,21 @@ func TestMaxRequestBytesFromEnv(t *testing.T) {
 		assert.Equal(t, 256<<20, maxRequestBytesFromEnv(), bad)
 	}
 }
+
+// TRASH_RETENTION controls permanent deletion, so a malformed value must be an
+// error (server refuses to start), never a silent fallback to the default.
+func TestParseTrashRetention(t *testing.T) {
+	d, err := parseTrashRetention("")
+	require.NoError(t, err)
+	assert.Equal(t, 168*time.Hour, d)
+	d, err = parseTrashRetention("720h")
+	require.NoError(t, err)
+	assert.Equal(t, 720*time.Hour, d)
+	d, err = parseTrashRetention("0")
+	require.NoError(t, err)
+	assert.Zero(t, d, "0 keeps the trash forever")
+	for _, bad := range []string{"30d", "abc", "-1h", "7"} {
+		_, err := parseTrashRetention(bad)
+		assert.Error(t, err, "%q", bad)
+	}
+}

@@ -48,7 +48,12 @@ function settle(result) {
   settleConfirm(result)
 }
 
+// The Action/Cancel buttons are reka-ui DialogClose components: their own
+// onClick closes the dialog (update:open=false) BEFORE our @click runs, so
+// settling here synchronously would resolve every confirm as false. Defer to
+// a microtask: a button click settles first (making this a no-op), while a
+// genuine dismiss (Esc, overlay click) still resolves false.
 function dismiss() {
-  settleConfirm(false)
+  queueMicrotask(() => settleConfirm(false))
 }
 </script>

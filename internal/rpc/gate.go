@@ -43,6 +43,14 @@ func (g *tenantGate) TryAcquire(key string) (release func(), ok bool) {
 	}, true
 }
 
+// Held reports whether key is currently held, without taking it.
+func (g *tenantGate) Held(key string) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	_, busy := g.held[key]
+	return busy
+}
+
 // adminGateKey is the single server-wide key for the admin-only heavy RPCs.
 const adminGateKey = "server"
 
