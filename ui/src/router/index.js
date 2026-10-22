@@ -29,6 +29,12 @@ const router = createRouter({
       meta: { requiresAuth: true },
     },
     {
+      path: '/recall-preview',
+      name: 'recall-preview',
+      component: () => import('@/views/RecallPreviewView.vue'),
+      meta: { requiresAuth: true },
+    },
+    {
       path: '/sessions',
       name: 'sessions',
       component: () => import('@/views/SessionsView.vue'),

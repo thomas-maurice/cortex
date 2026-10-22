@@ -121,6 +121,33 @@ func Load(path, sessionID string) *State {
 	return s
 }
 
+// LoadReadOnly is Load for inspection (e.g. `hook recall --dry-run`): it NEVER
+// writes or creates anything. A missing database, bucket, lock timeout or empty
+// path/session yields an empty state.
+func LoadReadOnly(path, sessionID string) *State {
+	s := &State{path: "", session: sessionID, ids: map[string]bool{}} // path "" = Add is a no-op
+	if path == "" || sessionID == "" {
+		return s
+	}
+	if _, err := os.Stat(path); err != nil {
+		return s
+	}
+	db, err := bolt.Open(path, 0o600, &bolt.Options{Timeout: openTimeout, ReadOnly: true})
+	if err != nil {
+		return s
+	}
+	defer func() { _ = db.Close() }()
+	_ = db.View(func(tx *bolt.Tx) error {
+		if convo := tx.Bucket([]byte(sessionID)); convo != nil {
+			if rec := convo.Bucket([]byte(recalledBucket)); rec != nil {
+				return rec.ForEach(func(k, _ []byte) error { s.ids[string(k)] = true; return nil })
+			}
+		}
+		return nil
+	})
+	return s
+}
+
 // Seen reports whether id was already delivered to this session.
 func (s *State) Seen(id string) bool { return s.ids[id] }
 

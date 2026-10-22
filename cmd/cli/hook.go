@@ -14,18 +14,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math"
 	"os"
-	"sort"
-	"strings"
-	"sync"
 	"time"
 
 	"connectrpc.com/connect"
 	"github.com/spf13/cobra"
 
 	cortexv1 "github.com/thomas-maurice/cortex/gen/cortex/v1"
-	"github.com/thomas-maurice/cortex/internal/chunk"
+	"github.com/thomas-maurice/cortex/gen/cortex/v1/cortexv1connect"
+	"github.com/thomas-maurice/cortex/internal/recall"
 	"github.com/thomas-maurice/cortex/internal/recallstate"
 )
 
@@ -43,115 +40,6 @@ func parseHookEvent(r io.Reader) (hookEvent, error) {
 		return hookEvent{}, fmt.Errorf("decode hook input: %w", err)
 	}
 	return ev, nil
-}
-
-// shouldRecall reports whether a prompt is worth searching for. Slash commands
-// are harness directives, and very short prompts ("fix it", "yes") are
-// continuations that embed poorly and need no recall.
-func shouldRecall(prompt string, minChars int) bool {
-	p := strings.TrimSpace(prompt)
-	if strings.HasPrefix(p, "/") || strings.HasPrefix(p, "!") {
-		return false
-	}
-	return len(p) >= minChars
-}
-
-// selectChunks bounds how many query chunks a long prompt costs: the first and
-// last chunks are always kept (the actual ask usually lives at one end of a
-// prompt full of pasted material), with the middle sampled evenly.
-func selectChunks(chunks []string, max int) []string {
-	if max <= 0 || len(chunks) <= max {
-		return chunks
-	}
-	if max == 1 {
-		return chunks[:1]
-	}
-	picked := make([]string, 0, max)
-	seen := map[int]bool{}
-	for i := range max {
-		idx := int(math.Round(float64(i) * float64(len(chunks)-1) / float64(max-1)))
-		if !seen[idx] {
-			seen[idx] = true
-			picked = append(picked, chunks[idx])
-		}
-	}
-	return picked
-}
-
-// mergeHits folds per-chunk result lists into one ranking: best (lowest)
-// distance wins per memory, sorted ascending, capped at limit. The first and
-// last chunks hold the prompt's actual ask far more often than sampled middles,
-// so each of their best hits is guaranteed a slot — otherwise a prompt full of
-// pasted logs recalls only what the logs resemble and drops what was asked.
-func mergeHits(lists [][]*cortexv1.Hit, limit int) []*cortexv1.Hit {
-	best := map[string]*cortexv1.Hit{}
-	for _, hits := range lists {
-		for _, h := range hits {
-			id := h.GetMemory().GetId()
-			if cur, ok := best[id]; !ok || h.GetDistance() < cur.GetDistance() {
-				best[id] = h
-			}
-		}
-	}
-	merged := make([]*cortexv1.Hit, 0, len(best))
-	for _, h := range best {
-		merged = append(merged, h)
-	}
-	sort.Slice(merged, func(i, j int) bool { return merged[i].GetDistance() < merged[j].GetDistance() })
-	if limit <= 0 || len(merged) <= limit {
-		return merged
-	}
-
-	sel := map[string]bool{}
-	if len(lists) > 1 {
-		// Last chunk first: in chat the ask most often trails the pasted material.
-		for _, l := range [][]*cortexv1.Hit{lists[len(lists)-1], lists[0]} {
-			var top *cortexv1.Hit
-			for _, h := range l {
-				if top == nil || h.GetDistance() < top.GetDistance() {
-					top = h
-				}
-			}
-			if top != nil && len(sel) < limit {
-				sel[top.GetMemory().GetId()] = true
-			}
-		}
-	}
-	for _, h := range merged {
-		if len(sel) >= limit {
-			break
-		}
-		sel[h.GetMemory().GetId()] = true
-	}
-	out := merged[:0]
-	for _, h := range merged {
-		if sel[h.GetMemory().GetId()] {
-			out = append(out, h)
-		}
-	}
-	return out
-}
-
-// formatRecall renders hits as the context block injected into the prompt. Each
-// memory carries its id so the model can edit/link/delete it, and the preamble
-// warns that matches are semantic and possibly stale.
-func formatRecall(hits []*cortexv1.Hit, maxChars int) string {
-	if len(hits) == 0 {
-		return ""
-	}
-	var b strings.Builder
-	b.WriteString("<cortex-recall>\n")
-	b.WriteString("Memories auto-recalled from Cortex for this prompt (semantic matches — possibly stale or irrelevant; verify before relying on them). Use cortex_memory_search for more.\n")
-	for _, h := range hits {
-		m := h.GetMemory()
-		text := strings.TrimSpace(m.GetText())
-		if maxChars > 0 && len(text) > maxChars {
-			text = text[:maxChars] + "… [truncated]"
-		}
-		fmt.Fprintf(&b, "\n### [%s] dist=%.2f id=%s\n%s\n", m.GetNamespace(), h.GetDistance(), m.GetId(), text)
-	}
-	b.WriteString("</cortex-recall>\n")
-	return b.String()
 }
 
 func hookCmd() *cobra.Command {
@@ -175,6 +63,10 @@ func hookRecallCmd() *cobra.Command {
 		reinforce      bool
 		stateDB        string
 		maxQueryChunks int
+		dryRun         bool
+		dryPrompt      string
+		drySession     string
+		dryBlock       bool
 	)
 	cmd := &cobra.Command{
 		Use:   "recall",
@@ -186,78 +78,92 @@ func hookRecallCmd() *cobra.Command {
 			"Cortex server never delays or blocks the prompt.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if dryRun {
+				if !cmd.Flags().Changed("timeout") {
+					timeout = dryRunDefaultTimeout
+				}
+				return runRecallDryRun(cmd, recallDryRunOpts{
+					prompt: dryPrompt, sessionID: drySession, showBlock: dryBlock, stateDB: stateDB, namespace: namespace, timeout: timeout,
+					params: recall.Params{Limit: limit, MaxDistance: maxDistance, MinChars: minChars, MaxQueryChunks: maxQueryChunks, MaxChars: maxChars},
+				})
+			}
 			ev, err := parseHookEvent(cmd.InOrStdin())
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "cortex hook recall:", err)
 				return nil
 			}
-			if !shouldRecall(ev.Prompt, minChars) {
-				return nil
-			}
-
 			ctx, cancel := context.WithTimeout(cmd.Context(), timeout)
 			defer cancel()
-
-			// Long prompts (pasted logs, diffs) embed as one diluted blob, so
-			// they are split into worker-sized chunks and each chunk searched
-			// separately; queries beyond --max-query-chunks are sampled, not all
-			// run. A short prompt yields a single chunk = a single search.
-			queries := []string{strings.TrimSpace(ev.Prompt)}
-			if ck, err := chunk.New(chunk.DefaultMaxTokens, 0); err == nil {
-				queries = selectChunks(ck.Split(queries[0]), maxQueryChunks)
-			}
-
-			c := client()
-			lists := make([][]*cortexv1.Hit, len(queries))
-			var wg sync.WaitGroup
-			for i, q := range queries {
-				wg.Add(1)
-				go func(i int, q string) {
-					defer wg.Done()
-					resp, err := c.Search(ctx, connect.NewRequest(&cortexv1.SearchRequest{
-						Query:       q,
-						Namespace:   namespace,
-						Limit:       int32(limit),
-						MaxDistance: maxDistance,
-						// Auto-injection is not the agent choosing to recall, so it
-						// does not feed the living-memory signal unless --reinforce
-						// opts in.
-						NoReinforce: !reinforce,
-					}))
-					if err != nil {
-						fmt.Fprintln(os.Stderr, "cortex hook recall:", err)
-						return
-					}
-					lists[i] = resp.Msg.GetHits()
-				}(i, q)
-			}
-			wg.Wait()
-
-			seen := recallstate.Load(stateDB, ev.SessionID)
-			var fresh []*cortexv1.Hit
-			var freshIDs []string
-			for _, h := range mergeHits(lists, limit) {
-				if id := h.GetMemory().GetId(); !seen.Seen(id) {
-					fresh = append(fresh, h)
-					freshIDs = append(freshIDs, id)
-				}
-			}
-			if len(fresh) == 0 {
-				return nil
-			}
-			_, _ = fmt.Fprint(cmd.OutOrStdout(), formatRecall(fresh, maxChars))
-			seen.Add(freshIDs...)
+			s := &rpcSearcher{c: client(), namespace: namespace, reinforce: reinforce}
+			runRecall(ctx, cmd.OutOrStdout(), s, ev,
+				recall.Params{Limit: limit, MaxDistance: maxDistance, MinChars: minChars, MaxQueryChunks: maxQueryChunks},
+				maxChars, stateDB)
 			return nil
 		},
 	}
 	cmd.Flags().DurationVar(&timeout, "timeout", 5*time.Second, "hard deadline for the whole hook; on expiry it exits silently rather than delay the prompt")
 	cmd.Flags().StringVarP(&namespace, "namespace", "n", "*", `namespace to search; default "*" recalls across all projects`)
-	cmd.Flags().IntVarP(&limit, "limit", "l", 3, "max memories injected per prompt")
-	cmd.Flags().Float32VarP(&maxDistance, "max-distance", "d", 0.5, "relevance cutoff; stricter than interactive search so silence is the common case")
-	cmd.Flags().IntVar(&minChars, "min-chars", 12, "skip prompts shorter than this (short continuations need no recall)")
-	cmd.Flags().IntVar(&maxChars, "max-chars", 1500, "truncate each injected memory to this many characters (0 = no cap)")
+	cmd.Flags().IntVarP(&limit, "limit", "l", recall.DefaultLimit, "max memories injected per prompt")
+	cmd.Flags().Float32VarP(&maxDistance, "max-distance", "d", recall.DefaultMaxDistance, "relevance cutoff; stricter than interactive search so silence is the common case")
+	cmd.Flags().IntVar(&minChars, "min-chars", recall.DefaultMinChars, "skip prompts shorter than this (short continuations need no recall)")
+	cmd.Flags().IntVar(&maxChars, "max-chars", recall.DefaultMaxChars, "truncate each injected memory to this many characters (0 = no cap)")
 	cmd.Flags().BoolVar(&reinforce, "reinforce", false, "count injections as recalls for the living-memory signal")
 	cmd.Flags().StringVar(&stateDB, "state-db", recallstate.DefaultPath(), "bbolt database for per-session dedup state, shared with the MCP server (empty disables dedup)")
-	cmd.Flags().IntVar(&maxQueryChunks, "max-query-chunks", 4, "long prompts are split into ~512-token chunks searched concurrently; beyond this many, chunks are sampled (first + last + evenly spaced middles). 0 = search every chunk")
+	cmd.Flags().IntVar(&maxQueryChunks, "max-query-chunks", recall.DefaultMaxQueryChunks, "long prompts are split into ~512-token chunks searched concurrently; beyond this many, chunks are sampled (first + last + evenly spaced middles). 0 = search every chunk")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "preview what the hook WOULD inject (server-side PreviewRecall) and print a table (--timeout defaults to 30s here; --limit 0 previews with 50); the prompt comes from --prompt or stdin (raw text or hook-event JSON); writes no recall state")
+	cmd.Flags().StringVar(&drySession, "session-id", "", "with --dry-run: session whose local recall state marks already-injected memories (default: session_id of hook-event JSON on stdin); read-only")
+	cmd.Flags().BoolVar(&dryBlock, "show-block", false, "with --dry-run: also print the exact <cortex-recall> block the hook would inject")
+	cmd.Flags().StringVar(&dryPrompt, "prompt", "", "with --dry-run: the prompt to preview (default: read stdin)")
 	return cmd
+}
+
+// rpcSearcher is the hook's recall.Searcher: one Search RPC per query chunk.
+type rpcSearcher struct {
+	c         cortexv1connect.MemoryServiceClient
+	namespace string
+	reinforce bool
+}
+
+func (r *rpcSearcher) Search(ctx context.Context, query string, limit int, maxDistance float32) ([]*cortexv1.Hit, error) {
+	resp, err := r.c.Search(ctx, connect.NewRequest(&cortexv1.SearchRequest{
+		Query:       query,
+		Namespace:   r.namespace,
+		Limit:       int32(limit),
+		MaxDistance: maxDistance,
+		// Auto-injection is not the agent choosing to recall, so it does not feed
+		// the living-memory signal unless --reinforce opts in.
+		NoReinforce: !r.reinforce,
+	}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetHits(), nil
+}
+
+// runRecall is the hook proper: skip rules, query (shared with the server's
+// PreviewRecall via internal/recall), then per-session dedup and output. It is
+// fail-open: search errors are logged to stderr and never returned.
+func runRecall(ctx context.Context, out io.Writer, s recall.Searcher, ev hookEvent, p recall.Params, maxChars int, stateDB string) {
+	if !recall.ShouldRecall(ev.Prompt, p.MinChars) {
+		return
+	}
+	res := recall.Run(ctx, s, ev.Prompt, p)
+	for _, err := range res.Errs {
+		fmt.Fprintln(os.Stderr, "cortex hook recall:", err)
+	}
+
+	seen := recallstate.Load(stateDB, ev.SessionID)
+	var fresh []*cortexv1.Hit
+	var freshIDs []string
+	for _, m := range res.Injected {
+		if id := m.Hit.GetMemory().GetId(); !seen.Seen(id) {
+			fresh = append(fresh, m.Hit)
+			freshIDs = append(freshIDs, id)
+		}
+	}
+	if len(fresh) == 0 {
+		return
+	}
+	_, _ = fmt.Fprint(out, recall.FormatBlock(fresh, maxChars))
+	seen.Add(freshIDs...)
 }

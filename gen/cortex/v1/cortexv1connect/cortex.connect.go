@@ -43,6 +43,9 @@ const (
 	// MemoryServiceSearchSimilarProcedure is the fully-qualified name of the MemoryService's
 	// SearchSimilar RPC.
 	MemoryServiceSearchSimilarProcedure = "/cortex.v1.MemoryService/SearchSimilar"
+	// MemoryServicePreviewRecallProcedure is the fully-qualified name of the MemoryService's
+	// PreviewRecall RPC.
+	MemoryServicePreviewRecallProcedure = "/cortex.v1.MemoryService/PreviewRecall"
 	// MemoryServiceListProcedure is the fully-qualified name of the MemoryService's List RPC.
 	MemoryServiceListProcedure = "/cortex.v1.MemoryService/List"
 	// MemoryServiceGetMemoryProcedure is the fully-qualified name of the MemoryService's GetMemory RPC.
@@ -187,6 +190,12 @@ type MemoryServiceClient interface {
 	// that memory's stored vector — it never re-embeds. Use it for "more like this
 	// one" instead of feeding a memory's own text back through Search.
 	SearchSimilar(context.Context, *connect.Request[v1.SearchSimilarRequest]) (*connect.Response[v1.SearchSimilarResponse], error)
+	// PreviewRecall dry-runs the Claude Code UserPromptSubmit recall hook for a
+	// prompt: which memories WOULD be injected, which just missed (and why), and
+	// whether the prompt would be skipped. Same query logic as `cortex hook recall`
+	// (internal/recall). Tenant-scoped; never reinforces. Per-session dedup is
+	// client-local state and is NOT simulated.
+	PreviewRecall(context.Context, *connect.Request[v1.PreviewRecallRequest]) (*connect.Response[v1.PreviewRecallResponse], error)
 	// List returns stored memories newest-first, without a vector query.
 	List(context.Context, *connect.Request[v1.ListRequest]) (*connect.Response[v1.ListResponse], error)
 	// GetMemory fetches ONE memory by id (full record, tenant-scoped). Use it to
@@ -398,6 +407,12 @@ func NewMemoryServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			httpClient,
 			baseURL+MemoryServiceSearchSimilarProcedure,
 			connect.WithSchema(memoryServiceMethods.ByName("SearchSimilar")),
+			connect.WithClientOptions(opts...),
+		),
+		previewRecall: connect.NewClient[v1.PreviewRecallRequest, v1.PreviewRecallResponse](
+			httpClient,
+			baseURL+MemoryServicePreviewRecallProcedure,
+			connect.WithSchema(memoryServiceMethods.ByName("PreviewRecall")),
 			connect.WithClientOptions(opts...),
 		),
 		list: connect.NewClient[v1.ListRequest, v1.ListResponse](
@@ -697,6 +712,7 @@ type memoryServiceClient struct {
 	updateMemory            *connect.Client[v1.UpdateMemoryRequest, v1.UpdateMemoryResponse]
 	search                  *connect.Client[v1.SearchRequest, v1.SearchResponse]
 	searchSimilar           *connect.Client[v1.SearchSimilarRequest, v1.SearchSimilarResponse]
+	previewRecall           *connect.Client[v1.PreviewRecallRequest, v1.PreviewRecallResponse]
 	list                    *connect.Client[v1.ListRequest, v1.ListResponse]
 	getMemory               *connect.Client[v1.GetMemoryRequest, v1.GetMemoryResponse]
 	delete                  *connect.Client[v1.DeleteRequest, v1.DeleteResponse]
@@ -765,6 +781,11 @@ func (c *memoryServiceClient) Search(ctx context.Context, req *connect.Request[v
 // SearchSimilar calls cortex.v1.MemoryService.SearchSimilar.
 func (c *memoryServiceClient) SearchSimilar(ctx context.Context, req *connect.Request[v1.SearchSimilarRequest]) (*connect.Response[v1.SearchSimilarResponse], error) {
 	return c.searchSimilar.CallUnary(ctx, req)
+}
+
+// PreviewRecall calls cortex.v1.MemoryService.PreviewRecall.
+func (c *memoryServiceClient) PreviewRecall(ctx context.Context, req *connect.Request[v1.PreviewRecallRequest]) (*connect.Response[v1.PreviewRecallResponse], error) {
+	return c.previewRecall.CallUnary(ctx, req)
 }
 
 // List calls cortex.v1.MemoryService.List.
@@ -1022,6 +1043,12 @@ type MemoryServiceHandler interface {
 	// that memory's stored vector — it never re-embeds. Use it for "more like this
 	// one" instead of feeding a memory's own text back through Search.
 	SearchSimilar(context.Context, *connect.Request[v1.SearchSimilarRequest]) (*connect.Response[v1.SearchSimilarResponse], error)
+	// PreviewRecall dry-runs the Claude Code UserPromptSubmit recall hook for a
+	// prompt: which memories WOULD be injected, which just missed (and why), and
+	// whether the prompt would be skipped. Same query logic as `cortex hook recall`
+	// (internal/recall). Tenant-scoped; never reinforces. Per-session dedup is
+	// client-local state and is NOT simulated.
+	PreviewRecall(context.Context, *connect.Request[v1.PreviewRecallRequest]) (*connect.Response[v1.PreviewRecallResponse], error)
 	// List returns stored memories newest-first, without a vector query.
 	List(context.Context, *connect.Request[v1.ListRequest]) (*connect.Response[v1.ListResponse], error)
 	// GetMemory fetches ONE memory by id (full record, tenant-scoped). Use it to
@@ -1229,6 +1256,12 @@ func NewMemoryServiceHandler(svc MemoryServiceHandler, opts ...connect.HandlerOp
 		MemoryServiceSearchSimilarProcedure,
 		svc.SearchSimilar,
 		connect.WithSchema(memoryServiceMethods.ByName("SearchSimilar")),
+		connect.WithHandlerOptions(opts...),
+	)
+	memoryServicePreviewRecallHandler := connect.NewUnaryHandler(
+		MemoryServicePreviewRecallProcedure,
+		svc.PreviewRecall,
+		connect.WithSchema(memoryServiceMethods.ByName("PreviewRecall")),
 		connect.WithHandlerOptions(opts...),
 	)
 	memoryServiceListHandler := connect.NewUnaryHandler(
@@ -1529,6 +1562,8 @@ func NewMemoryServiceHandler(svc MemoryServiceHandler, opts ...connect.HandlerOp
 			memoryServiceSearchHandler.ServeHTTP(w, r)
 		case MemoryServiceSearchSimilarProcedure:
 			memoryServiceSearchSimilarHandler.ServeHTTP(w, r)
+		case MemoryServicePreviewRecallProcedure:
+			memoryServicePreviewRecallHandler.ServeHTTP(w, r)
 		case MemoryServiceListProcedure:
 			memoryServiceListHandler.ServeHTTP(w, r)
 		case MemoryServiceGetMemoryProcedure:
@@ -1648,6 +1683,10 @@ func (UnimplementedMemoryServiceHandler) Search(context.Context, *connect.Reques
 
 func (UnimplementedMemoryServiceHandler) SearchSimilar(context.Context, *connect.Request[v1.SearchSimilarRequest]) (*connect.Response[v1.SearchSimilarResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cortex.v1.MemoryService.SearchSimilar is not implemented"))
+}
+
+func (UnimplementedMemoryServiceHandler) PreviewRecall(context.Context, *connect.Request[v1.PreviewRecallRequest]) (*connect.Response[v1.PreviewRecallResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cortex.v1.MemoryService.PreviewRecall is not implemented"))
 }
 
 func (UnimplementedMemoryServiceHandler) List(context.Context, *connect.Request[v1.ListRequest]) (*connect.Response[v1.ListResponse], error) {

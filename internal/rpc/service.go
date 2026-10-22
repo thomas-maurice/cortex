@@ -132,6 +132,9 @@ type Service struct {
 	// restore per tenant, and one admin bulk operation server-wide, so no tenant
 	// can multiply the memory/Ollama cost of "fetch everything" RPCs.
 	backupGate, reindexGate, restoreGate, adminGate tenantGate
+	// previewGate: one in-flight PreviewRecall per tenant (each fans out to many
+	// embeds + searches).
+	previewGate tenantGate
 	// tagGate: one in-flight tag rename/delete per tenant (each scans the tenant).
 	tagGate tenantGate
 	// locker is the per-memory KV lock shared with the worker (see memoryLocker);
@@ -357,6 +360,21 @@ func (s *Service) searchStore(ctx context.Context, ts *store.TenantStore, vec []
 	return ts.SearchMemoryVectors(ctx, vec, opts)
 }
 
+// hybridSearchOpts builds the store options of a free-text search (hybrid
+// BM25+vector, living-memory rerank per config). Search and PreviewRecall share
+// it so a recall preview ranks exactly like the search the hook issues.
+func (s *Service) hybridSearchOpts(query, reqNamespace string, limit int32, maxDistance float32) store.SearchOpts {
+	return store.SearchOpts{
+		Namespace:          resolveNamespace(reqNamespace, s.cfg.DefaultNamespace),
+		Limit:              clampProtoInt(limit),
+		MaxDistance:        maxDistance,
+		Query:              query, // enables hybrid (BM25 + vector) so exact tokens resolve
+		Alpha:              s.cfg.SearchAlpha,
+		RerankWeight:       s.cfg.RerankWeight,
+		RerankHalfLifeDays: s.cfg.RerankHalfLifeDays,
+	}
+}
+
 func (s *Service) Search(ctx context.Context, req *connect.Request[cortexv1.SearchRequest]) (*connect.Response[cortexv1.SearchResponse], error) {
 	query := strings.TrimSpace(req.Msg.GetQuery())
 	if query == "" {
@@ -371,19 +389,12 @@ func (s *Service) Search(ctx context.Context, req *connect.Request[cortexv1.Sear
 	if err != nil {
 		return nil, err
 	}
-	hits, err := s.searchStore(ctx, ts, vec, store.SearchOpts{
-		Namespace:          resolveNamespace(req.Msg.GetNamespace(), s.cfg.DefaultNamespace),
-		Limit:              clampProtoInt(req.Msg.GetLimit()),
-		MaxDistance:        req.Msg.GetMaxDistance(),
-		Autocut:            clampProtoInt(req.Msg.GetAutocut()),
-		IncludeTags:        req.Msg.GetTags(),
-		AnyTags:            req.Msg.GetAnyTags(),
-		ExcludeTags:        req.Msg.GetExcludeTags(),
-		Query:              query, // enables hybrid (BM25 + vector) so exact tokens resolve
-		Alpha:              s.cfg.SearchAlpha,
-		RerankWeight:       s.cfg.RerankWeight,
-		RerankHalfLifeDays: s.cfg.RerankHalfLifeDays,
-	})
+	opts := s.hybridSearchOpts(query, req.Msg.GetNamespace(), req.Msg.GetLimit(), req.Msg.GetMaxDistance())
+	opts.Autocut = clampProtoInt(req.Msg.GetAutocut())
+	opts.IncludeTags = req.Msg.GetTags()
+	opts.AnyTags = req.Msg.GetAnyTags()
+	opts.ExcludeTags = req.Msg.GetExcludeTags()
+	hits, err := s.searchStore(ctx, ts, vec, opts)
 	if err != nil {
 		return nil, err
 	}

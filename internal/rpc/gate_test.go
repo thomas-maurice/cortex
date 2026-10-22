@@ -88,6 +88,12 @@ func TestHeavyRPCsSingleFlightPerTenant(t *testing.T) {
 				return err
 			}
 		},
+		"PreviewRecall": func(s *Service) func(context.Context) error {
+			return func(ctx context.Context) error {
+				_, err := s.PreviewRecall(ctx, connect.NewRequest(&cortexv1.PreviewRecallRequest{Prompt: "a prompt long enough to search"}))
+				return err
+			}
+		},
 		"DeleteNamespace": func(s *Service) func(context.Context) error {
 			return func(ctx context.Context) error {
 				_, err := s.DeleteNamespace(ctx, connect.NewRequest(&cortexv1.DeleteNamespaceRequest{Namespace: "ns"}))
