@@ -150,7 +150,59 @@ func (ts *TenantStore) mutateTag(ctx context.Context, tag, namespace string, loc
 			changed++
 		}
 	}
+	// Trash entries keep their tags and restore republishes them, so a rename or
+	// delete must reach them too, or a restore would resurrect the old (or a
+	// deleted, e.g. `preference`) tag. Not counted in the returned total, which
+	// stays the number of live memories changed.
+	if err := ts.mutateTrashTags(ctx, tag, namespace, lock, fn); err != nil {
+		return changed, err
+	}
 	return changed, nil
+}
+
+// mutateTrashTags is mutateTag's pass over the tenant's Trash class: same exact
+// match, namespace scope and lock-then-re-read discipline, tags merged on the
+// Trash object only (trash entries have no chunks).
+func (ts *TenantStore) mutateTrashTags(ctx context.Context, tag, namespace string, lock MemoryLocker, fn func([]string) []string) error {
+	var ids []string
+	err := ts.s.scanAll(ctx, memory.TrashClassName, ts.t, []string{"namespace", "tags"}, func(r graphql.SearchResult) {
+		if matchesNamespace(namespace, propString(r.Properties, "namespace")) &&
+			slices.Contains(propStrings(r.Properties, "tags"), tag) {
+			ids = append(ids, r.ID)
+		}
+	})
+	if err != nil {
+		if isTenantNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("scan trash for tag %q: %w", tag, err)
+	}
+	for _, id := range ids {
+		if err := ts.mutateTrashEntryTags(ctx, id, tag, namespace, lock, fn); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (ts *TenantStore) mutateTrashEntryTags(ctx context.Context, id, tag, namespace string, lock MemoryLocker, fn func([]string) []string) error {
+	if lock != nil {
+		hctx, release, err := lock(ctx, id)
+		if err != nil {
+			return fmt.Errorf("lock trash entry %s: %w", id, err)
+		}
+		defer release()
+		ctx = hctx
+	}
+	e, found, err := ts.GetTrash(ctx, id)
+	if err != nil {
+		return fmt.Errorf("read trash entry %s: %w", id, err)
+	}
+	// Restored, purged or retagged since the scan: nothing to do.
+	if !found || !slices.Contains(e.Tags, tag) || !matchesNamespace(namespace, e.Namespace) {
+		return nil
+	}
+	return ts.mergeTags(ctx, memory.TrashClassName, id, fn(e.Tags))
 }
 
 func (ts *TenantStore) mutateMemoryTags(ctx context.Context, id, tag, namespace string, lock MemoryLocker, fn func([]string) []string) (bool, error) {

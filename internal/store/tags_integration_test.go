@@ -354,3 +354,45 @@ func TestTagOpsMatchExactly(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, n)
 }
+
+// Restore republishes the tags stored on the Trash entry, so a rename/delete that
+// skipped the trash would resurrect the old tag (or a deleted one such as
+// `preference`) the moment a memory is restored. Also pins that the namespace
+// scope and exact matching apply to trash entries like they do to memories.
+func TestTagOpsReachTrashEntries(t *testing.T) {
+	st, _ := trashStore(t)
+	ctx := context.Background()
+	ts := st.Tenant("tenant-a")
+
+	trashed := func(ns string, tags []string) string {
+		id := putTagged(t, ts, ns, tags, trashVec)
+		require.NoError(t, ts.Delete(ctx, id))
+		return id
+	}
+	trashTags := func(id string) []string {
+		e, ok, err := ts.GetTrash(ctx, id)
+		require.NoError(t, err)
+		require.True(t, ok)
+		out := append([]string{}, e.Tags...)
+		sort.Strings(out)
+		return out
+	}
+
+	inNS := trashed("ns", []string{"k8s", "keep", "kubernetes"})
+	otherNS := trashed("other", []string{"k8s"})
+	exact := trashed("ns", []string{"K8s"})
+	live := putTagged(t, ts, "ns", []string{"k8s"}, trashVec)
+
+	n, err := ts.RenameTag(ctx, "k8s", "kubernetes", "ns", nil)
+	require.NoError(t, err)
+	assert.Equal(t, 1, n, "return value counts live memories only")
+	assert.Equal(t, []string{"keep", "kubernetes"}, trashTags(inNS), "renamed and merged (deduped) in the trash")
+	assert.Equal(t, []string{"k8s"}, trashTags(otherNS), "namespace scope applies to the trash")
+	assert.Equal(t, []string{"K8s"}, trashTags(exact), "matching is exact in the trash too")
+	assert.Equal(t, []string{"kubernetes"}, sortedTags(t, ts, live))
+
+	pref := trashed("ns", []string{"preference", "x"})
+	_, err = ts.DeleteTag(ctx, "preference", "*", nil)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"x"}, trashTags(pref), "deleted tag must not come back on restore")
+}

@@ -345,6 +345,16 @@ overwritten with the scan's stale tag list. Cost is one lock round-trip per
 affected memory; calls are single-flight per tenant (`tagGate`). Residual limit,
 same as namespace rename: an index message queued BEFORE the rename but processed
 after it carries the old tags and restores them (it can be re-run).
+The same exact-match rename/delete is applied to the tenant's **Trash** entries
+(metadata merge on the Trash object, same namespace scope and lock-then-re-read), so
+restoring a trashed memory (which republishes the tags stored on its entry) does not
+resurrect a renamed-away or deleted tag; the returned count stays live memories only.
+`RestoreFromTrash` itself does not take the memory lock or `tagGate`: a restore that
+read its entry just before a rename can still republish the old tags (same class of
+residual as the queued-message limit above).
+`ListTags` is deliberately **not** gated: it is read-only, streams a cursor scan into a
+small per-tag map (memory stays O(distinct tags)), and matches the ungated read-only
+scans (`ListTrash`, `ListNamespaces`, `Status`); only writers/buffering scans are gated.
 The reserved `preference` tag (drives the cortex-prefs hook) is rejected by
 `RenameTag`/`DeleteTag` unless `confirm_preference` is set, so no caller can
 silently empty the standing preferences.

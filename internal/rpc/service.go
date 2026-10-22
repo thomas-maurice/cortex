@@ -1384,6 +1384,8 @@ func (s *Service) memoryLocker(ctx context.Context) (store.MemoryLocker, error) 
 }
 
 // ListTags aggregates the caller's tags with memory counts and last activity.
+// Deliberately not gated: read-only, streamed scan with O(distinct tags) memory,
+// like ListTrash/ListNamespaces (see docs/DESIGN.md, tag management).
 func (s *Service) ListTags(ctx context.Context, req *connect.Request[cortexv1.ListTagsRequest]) (*connect.Response[cortexv1.ListTagsResponse], error) {
 	ts, err := s.tenantStore(ctx)
 	if err != nil {
