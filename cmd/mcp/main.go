@@ -139,6 +139,13 @@ type deps struct {
 	// to filter searches.
 	autoSaveTags []string
 
+	// Background RecordUse bookkeeping, per deps (not package globals, so tests
+	// don't share slots): useSem bounds in-flight goroutines (lazily created),
+	// useWG lets tests wait for them deterministically.
+	useSemOnce sync.Once
+	useSem     chan struct{}
+	useWG      sync.WaitGroup
+
 	// Session-scoped recall dedup: a memory whose full text was already delivered
 	// to this session's context (by an earlier search, or by the `cortex hook
 	// recall` prompt hook) is returned as a short stub instead of repeated in
@@ -696,7 +703,10 @@ const recordUseBatch = 100
 // recordUseSlots bounds concurrent background RecordUse goroutines.
 const recordUseSlots = 4
 
-var recordUseSem = make(chan struct{}, recordUseSlots)
+func (d *deps) recordUseSem() chan struct{} {
+	d.useSemOnce.Do(func() { d.useSem = make(chan struct{}, recordUseSlots) })
+	return d.useSem
+}
 
 // recordUse tells the server these memories were delivered with FULL text into
 // the model's context (stale review's "use" signal). Fire-and-forget on its own
@@ -707,15 +717,18 @@ func (d *deps) recordUse(source string, ids []string) {
 	}
 	// Bounded: when a slow server has recordUseSlots calls in flight, drop this
 	// record (best-effort signal) rather than pile up goroutines.
+	sem := d.recordUseSem()
 	select {
-	case recordUseSem <- struct{}{}:
+	case sem <- struct{}{}:
 	default:
 		return
 	}
 	ids = append([]string(nil), ids...)
-	client := d.client // read now: the goroutine must not touch d
+	client := d.client // read now: the goroutine must not touch d's other fields
+	d.useWG.Add(1)
 	go func() {
-		defer func() { <-recordUseSem }()
+		defer d.useWG.Done()
+		defer func() { <-sem }()
 		for start := 0; start < len(ids); start += recordUseBatch {
 			end := min(start+recordUseBatch, len(ids))
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
