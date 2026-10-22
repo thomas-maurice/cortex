@@ -315,6 +315,7 @@ and scripting without going through Claude. Global flags: `--server`
 | `config init [--force]` / `config show` | Scaffold / print the effective `cortex.yaml`. |
 | `onboard [--force]` | Interactive first-run: prompts for server URL + API token (the only non-default values), writes `cortex.yaml` with defaults for everything else. Shares the config template with `config init`; token read no-echo. |
 | `hash-password` | Print an argon2id hash for `CORTEX_UI_PASSWORD`. |
+| `tags [-n ns]` / `tags rename <from> <to> [-n ns] [--yes]` / `tags delete <tag> [-n ns] [--yes]` | Tag management (`internal/store/tags.go`, `cmd/cli/tags.go`, **Tags** UI view). Rename into an existing tag merges (dedup). Metadata-only merge of `tags` on the memory AND its chunks; each memory is rewritten under the worker's per-memory `dlock` key after re-reading its tags. Single-flight per tenant. The `preference` tag needs `--yes`/`confirm_preference`. Summaries have no tags. |
 
 There is **no** namespace-management CLI command — rename/delete a namespace is a
 UI feature (the **Namespaces** view), backed by the `ListNamespaces` /

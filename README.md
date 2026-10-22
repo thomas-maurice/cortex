@@ -192,6 +192,11 @@ port as the Connect API; open the server's address in a browser. Views:
   counts and last activity. **Rename** a namespace (a metadata-only move — nothing
   is re-embedded; both memories and summaries move) or **delete** an entire
   namespace (typed confirmation, removes its memories and summaries).
+- **Tags** — every tag with its memory count and last activity, a filter box,
+  and **rename / merge** (renaming into an existing tag dedups) or **delete**
+  (removes the tag, never the memories). Click a tag to open Memories filtered by
+  it. Metadata-only: memories and their search chunks are re-tagged in place, no
+  re-embed. The reserved `preference` tag needs an explicit confirmation.
 - **Preferences** — standing, cross-project preferences: the memories in the
   `global` namespace tagged `preference`. Add / edit / delete them here without
   touching namespace or tags (both are managed for you). These are what the
@@ -646,6 +651,7 @@ authenticate with `--token` / `CORTEX_AUTH_TOKEN`.
 | `cortex search "<q>" [-d 0.6] [-t tag] [-x tag]` | Semantic search with a relevance cutoff and tag filters. |
 | `cortex consolidate "<topic>" [-n '*'] [-l N] [-t tag] [-x tag]` | Print the cluster of memories about a topic + their manifest (read-only gather; the LLM does the merge). No tag flag = no tag filter (whole cluster). |
 | `cortex delete <id>` | Delete a memory by ID. |
+| `cortex tags [-n ns]` | List tags with memory counts and last activity. `tags rename <from> <to> [-n ns]` fixes drift (`k8s` / `kubernetes`; merges into an existing tag), `tags delete <tag> [-n ns] [--yes]` removes a tag from every memory. Touching the reserved `preference` tag needs `--yes`. |
 | `cortex export -o backup.json` | Dump all memories (text + metadata, no vectors) to JSON. |
 | `cortex import backup.json` | Restore a dump into the target via its NATS ingest queue (worker re-embeds). Preserves ids/links; point `--server` at the target. See [scripts/prod-to-dev.sh](scripts/prod-to-dev.sh). |
 | `cortex reindex --yes` | Re-embed every memory through the worker (see below). |
@@ -964,7 +970,7 @@ internal/
   embed/           Ollama embeddings client
   store/           Weaviate: schema, upsert, chunk-based gRPC search, links, delete
   rpc/             Connect service impl, auth (token+JWT), login, JWT, client helper
-ui/                embedded Vue 3 SPA (Memories, Graph, Explore, Sessions, Namespaces, Preferences, Backup, Indexing, Status)
+ui/                embedded Vue 3 SPA (Memories, Graph, Explore, Sessions, Namespaces, Tags, Preferences, Backup, Indexing, Status)
 testdata/          fake seed memories for a dev stack (cortex import format)
 docker-compose.yml   nats + weaviate + ollama + worker + server
 deploy/truenas/      TrueNAS Scale compose (non-root, host bind mounts, Traefik h2c)

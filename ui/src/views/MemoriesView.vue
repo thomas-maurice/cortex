@@ -114,7 +114,7 @@
 <script setup>
 import { timestampDate } from '@bufbuild/protobuf/wkt'
 import { ref, onMounted, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { Code, ConnectError } from '@connectrpc/connect'
 import { toast } from 'vue-sonner'
 import { memoryClient } from '@/utils/connect'
@@ -147,11 +147,14 @@ import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 
 const router = useRouter()
+const route = useRoute()
 const auth = useAuthStore()
 
-const namespace = ref('*')
+// ?tag=… (repeatable) and ?namespace=… preselect filters, e.g. from the Tags view.
+const qTags = [route.query.tag].flat().filter((t) => typeof t === 'string' && t)
+const namespace = ref(typeof route.query.namespace === 'string' && route.query.namespace ? route.query.namespace : '*')
 const query = ref('')
-const activeTags = ref([])
+const activeTags = ref(qTags)
 const memories = ref([])
 const loading = ref(false)
 const error = ref('')
@@ -177,6 +180,15 @@ function handleError(e) {
   error.value = e.message || 'Request failed'
 }
 
+// Weaviate's `tags` is word-tokenized, so its tag filter is fuzzy (case/token
+// matches); the Tags view counts exact tags. Re-filter to exact, case-sensitive
+// equality so a tag filter shows the same memories the Tags view counted.
+function exactTagMatch(list) {
+  return activeTags.value.length
+    ? list.filter((m) => activeTags.value.every((t) => (m.tags || []).includes(t)))
+    : list
+}
+
 async function reload() {
   loading.value = true
   error.value = ''
@@ -185,10 +197,10 @@ async function reload() {
       // noReinforce: browsing in the UI must not count as a recall — only the
       // agent's (MCP) searches feed the living-memory usage signal.
       const res = await memoryClient.search({ query: query.value, namespace: namespace.value, limit: 50, tags: activeTags.value, noReinforce: true })
-      memories.value = res.hits.map((h) => ({ ...h.memory, _distance: h.distance }))
+      memories.value = exactTagMatch(res.hits.map((h) => ({ ...h.memory, _distance: h.distance })))
     } else {
       const res = await memoryClient.list({ namespace: namespace.value, limit: 50, tags: activeTags.value })
-      memories.value = res.memories
+      memories.value = exactTagMatch(res.memories)
     }
   } catch (e) {
     handleError(e)

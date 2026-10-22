@@ -81,8 +81,8 @@ func envBool(key string, def bool) bool {
 // lockBucket KV bucket. The 60s TTL only reclaims a crashed holder's lock
 // (no lease refresh); the indexedSeq guard is the backstop if a holder outlives it.
 const (
-	lockBucket = "cortex_locks"
-	lockTTL    = 60 * time.Second
+	lockBucket = dlock.DefaultBucket
+	lockTTL    = dlock.DefaultTTL
 	// ackWait is set explicitly on both consumers; the pool sends InProgress every
 	// keepaliveInterval (5s) for a message's whole life, far inside it.
 	ackWait = 30 * time.Second

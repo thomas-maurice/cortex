@@ -279,13 +279,38 @@ integration test), which is why server-side merges need no KV lock.
 
 | Field | Owner / writer | Index path on an existing memory |
 |-------|----------------|----------------------------------|
-| `text`, vector, `namespace`, `tags`, `source`, `createdAt`, `conversationId`, `model`, `dims` | index (worker) | writes |
+| `text`, vector, `namespace`, `source`, `createdAt`, `conversationId`, `model`, `dims` | index (worker) | writes |
+| `tags` | index (worker) AND server tag rename/delete (`RenameTag`/`DeleteTag`, merge of `tags` on the memory and its chunks) | writes |
 | `dupCandidates` | index (recomputed; server `DismissDuplicate` may prune) | writes, minus ids in the stored `notDuplicateOf` |
 | `indexedSeq` | index (worker) | writes |
 | chunks (`MemoryChunk`) | index (worker) | replaced under the lock |
 | `linkedIds` | link consumer (`SetLinks`, under both ids' locks) | never writes |
 | `accessCount`, `lastAccessedAt` | server `Reinforce` (merge) | never writes |
 | `notDuplicateOf` | server `DismissDuplicate` (merge) | never writes |
+
+`tags` has two writers. Tag rename/delete is a read-modify-write of a field the
+index path also rewrites, so the server takes the SAME per-memory KV lock the
+worker holds (`dlock.Key("mem", tenant, id)` in `cortex_locks`; `dlock.DefaultBucket`/
+`DefaultTTL` are shared so the bucket config cannot drift), RE-READS the memory's
+tags under the lock, and merges only `tags` (memory + its chunks, no vector, no
+re-embed). A concurrent index commit therefore serialises with it instead of being
+overwritten with the scan's stale tag list. Cost is one lock round-trip per
+affected memory; calls are single-flight per tenant (`tagGate`). Residual limit,
+same as namespace rename: an index message queued BEFORE the rename but processed
+after it carries the old tags and restores them (it can be re-run).
+The reserved `preference` tag (drives the cortex-prefs hook) is rejected by
+`RenameTag`/`DeleteTag` unless `confirm_preference` is set, so no caller can
+silently empty the standing preferences.
+
+Chunks are patched BEFORE the memory: the memory's tags are what a retry uses to
+find work, so a failed chunk merge leaves the memory un-renamed and a re-run
+repairs both (the ops are idempotent); a failed call reports how many memories
+were already changed. Note the server-side tag filter is FUZZY: `tags` is a
+word-tokenized `text[]`, so `ContainsAll`/`ContainsAny` also match case/token
+variants (`K8s` vs `k8s`). The Tags view and tag rename/delete compare exactly (in
+Go), and the Memories view re-filters results to exact tags. Making the server
+filter exact needs `tokenization: field` on `tags`, i.e. a class rebuild (planned
+follow-up).
 
 Known limits: `namespace` is also merged by namespace rename (an edit queued
 before a rename can restore the old name); and with several SERVER replicas,

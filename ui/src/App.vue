@@ -53,6 +53,7 @@
             <DropdownMenuContent align="start">
               <DropdownMenuItem as-child><router-link :to="{ name: 'sessions' }">Sessions</router-link></DropdownMenuItem>
               <DropdownMenuItem as-child><router-link :to="{ name: 'namespaces' }">Namespaces</router-link></DropdownMenuItem>
+              <DropdownMenuItem as-child><router-link :to="{ name: 'tags' }">Tags</router-link></DropdownMenuItem>
               <DropdownMenuItem as-child><router-link :to="{ name: 'preferences' }">Preferences</router-link></DropdownMenuItem>
               <DropdownMenuItem as-child><router-link :to="{ name: 'backup' }">Backup</router-link></DropdownMenuItem>
             </DropdownMenuContent>
@@ -181,7 +182,7 @@ const coreNav = [
 
 // Route names grouped under each nav dropdown, so the toggle shows an active
 // state when one of its children is the current route.
-const organizeRoutes = ['sessions', 'namespaces', 'preferences', 'backup']
+const organizeRoutes = ['sessions', 'namespaces', 'tags', 'preferences', 'backup']
 const systemRoutes = ['status', 'queue', 'apikeys', 'users']
 
 // Flat list for the mobile sheet, honoring the same role/MT gates as the
@@ -191,6 +192,7 @@ const mobileItems = computed(() => {
     ...coreNav,
     { name: 'sessions', label: 'Sessions' },
     { name: 'namespaces', label: 'Namespaces' },
+    { name: 'tags', label: 'Tags' },
     { name: 'preferences', label: 'Preferences' },
     { name: 'backup', label: 'Backup' },
     { name: 'status', label: 'Status' },

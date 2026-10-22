@@ -90,6 +90,7 @@ user/pass check for a user store and emit per-user claims.
 | `/explore` | **Explore** — query → relevance cloud | `Search` |
 | `/sessions` | **Sessions** — conversation summaries (edit in place) | `ListSummaries`, `SummarizeSession` |
 | `/namespaces` | **Namespaces** — per-namespace counts; rename / delete a whole namespace | `ListNamespaces`, `RenameNamespace`, `DeleteNamespace` |
+| `/tags` | **Tags** — per-tag counts + last activity; rename / merge / delete; click opens Memories filtered by the tag (`/memories?tag=…&namespace=…`) | `ListTags`, `RenameTag`, `DeleteTag` |
 | `/preferences` | **Preferences** — `global` + `preference` memories, edit/add/delete | `List`, `Save`, `UpdateMemory`, `Delete` |
 | `/backup` | **Backup** — export / import memories (JSON, no vectors) | `List`, `RestoreMemories` |
 | `/queue` | **Indexing** — live index-queue counts + dead letters; auto-refreshes | `IndexQueue`, `Dead` |
@@ -103,6 +104,19 @@ activity. **Rename** is inline and metadata-only — the server PATCHes the
 nothing is re-embedded; renaming into an existing namespace merges the two.
 **Delete** removes an entire namespace's memories and summaries and is guarded by
 a typed confirmation (you must type the namespace name).
+
+### Tags (`ui/src/views/TagsView.vue`)
+
+A table of every tag (exact, case-sensitive: `k8s` and `K8s` are separate rows)
+with its memory count and last activity (newest memory), a filter box and an
+optional namespace scope. **Rename** is inline; when the target already exists the
+view says so and the button becomes **Merge** (memories carrying both end up with
+the tag once). **Delete** removes the tag from every memory but keeps the
+memories. Both are metadata-only (memories *and* their search chunks are patched,
+nothing is re-embedded). The reserved `preference` tag (it drives the
+standing-preferences hook) is refused by the server unless `confirm_preference`
+is set; the UI asks for explicit confirmation first. Clicking a tag opens
+Memories with that tag pre-selected (`?tag=` / `?namespace=` query params).
 
 ### Indexing (`ui/src/views/QueueView.vue`)
 
@@ -190,7 +204,7 @@ ui/
     utils/connect.js       typed Connect client (createClient; attaches the JWT)
     utils/api.js           /auth/login client
     views/                 LoginView, MemoriesView, GraphView, ExploreView,
-                           SessionsView, NamespacesView, PreferencesView,
+                           SessionsView, NamespacesView, TagsView, PreferencesView,
                            BackupView, QueueView (Indexing), StatusView
 internal/rpc/
   jwt.go                   HS256 issue/parse
