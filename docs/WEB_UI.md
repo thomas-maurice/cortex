@@ -85,7 +85,7 @@ user/pass check for a user store and emit per-user claims.
 
 | Route | View | RPCs used |
 |-------|------|-----------|
-| `/` | **Memories** — search/list (search hits on long memories show a highlighted `matched:` excerpt; the inspector highlights the matched span in the full text), add (New Memory form), delete | `Search`, `List`, `Save`, `Delete` |
+| `/` | **Memories** — search/list (search hits on long memories show a highlighted `matched:` excerpt; the inspector highlights the matched span in the full text), add (New Memory form, expiry picker), delete, *Include expired* toggle | `Search`, `List`, `Save`, `Delete` |
 | `/graph` | **Graph** — memory map + explicit links | `List`, `Search`, `Link`, `Unlink` |
 | `/explore` | **Explore** — query → relevance cloud | `Search` |
 | `/recall-preview` | **Recall preview** — what would the recall hook inject for a prompt? | `PreviewRecall` |
@@ -107,6 +107,19 @@ nothing is re-embedded; renaming into an existing namespace merges the two.
 **Delete** removes an entire namespace and is guarded by a typed confirmation (you
 must type the namespace name): its memories are moved to the trash (restorable), its
 summaries are permanently removed.
+
+### Expiry (`ExpiryPicker.vue`, `ExpiryBadge.vue`, `lib/expiry.js`)
+
+Time-bound facts get an expiry. The picker (New memory form; the inspector's edit mode)
+offers *Never expires / 1 day / 1 week / 1 month / Custom date* (a custom date means end
+of that local day; the edit mode adds *Keep current*, the default when a memory already
+expires, so an unrelated edit never changes the expiry). Presets are sent as
+`expiresIn`, a custom date as `validUntil`, "never" on an expiring memory as
+`clearValidUntil`. An expiry-only edit is applied directly by the server (no re-embed)
+and toasts "Updated". Memories carry an "expires in 3d" badge (or a red "expired" one).
+Expired memories are hidden by the server; the Memories view's *Include expired* switch
+sets `includeExpired` on `Search`/`List`. Expired memories are moved to the Trash (reason
+`expired`) by the server's hourly sweep after `EXPIRY_GRACE`.
 
 ### Trash (`ui/src/views/TrashView.vue`)
 
@@ -235,6 +248,7 @@ ui/
     gen/cortex/v1/cortex_pb.ts  GENERATED messages + MemoryService descriptor
     utils/connect.js       typed Connect client (createClient; attaches the JWT)
     utils/api.js           /auth/login client
+    components/Expiry*.vue expiry picker + badge (helpers in lib/expiry.js)
     views/                 LoginView, MemoriesView, GraphView, ExploreView,
                            RecallPreviewView,
                            SessionsView, NamespacesView, TagsView, TrashView, PreferencesView,

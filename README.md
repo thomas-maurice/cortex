@@ -208,6 +208,9 @@ port as the Connect API; open the server's address in a browser. Views:
   (`host:<hostname>`, the static `save.tags` from the config) are not special: after
   a rename or delete they come back on every NEW save, so rename them in the config
   too. A rename/delete is refused while a reindex or restore is running.
+- **Expiry** — New memory and the inspector's edit mode have an expiry picker
+  (never / 1 day / 1 week / 1 month / custom date); memories show an "expires in 3d"
+  or "expired" badge, and the Memories view has an *Include expired memories* toggle.
 - **Trash** — every deleted memory (explicit delete, `supersedes`, namespace delete)
   lands here first. List with deletion time and reason, **restore** (re-queued for
   indexing under the same id), **purge** one or all (confirm dialogs). Entries
@@ -258,6 +261,11 @@ See [docs/WEB_UI.md](docs/WEB_UI.md) for the full architecture (embed/build
 pipeline, auth flow, every view, and the memory-linking model).
 
 ## Using it well — memory hygiene
+
+- **Give time-bound facts an expiry.** "Deploy freeze until Friday" or "I'm on the
+  staging cluster this week" stop being true, and a stale memory is the main way a
+  memory system misleads the model. Save them with `expiresIn` (MCP) /
+  `--expires 7d` (CLI) — see [Expiry](#expiry-for-time-bound-facts).
 
 The system is only as useful as what Claude puts in it. Two habits matter:
 
@@ -486,8 +494,8 @@ The MCP server exposes these tools to Claude:
 
 | Tool | What it does |
 |------|--------------|
-| `cortex_memory_save` | Queue a memory for indexing. Args: `text`, `namespace?`, `tags?`, `linkTo?` (ids to bidirectionally link this memory to — queued and applied once both ends are indexed, so targets need not exist yet), `supersedes?` (ids this memory replaces — the worker deletes them once this one is indexed). Returns its `id`. |
-| `cortex_memory_search` | **Hybrid** search (BM25 keyword + vector, blended by `SEARCH_ALPHA`, default 0.5) so exact tokens/codenames resolve, not just semantic matches. Args: `query`, `namespace?` (`*` = all namespaces), `limit?`, `tags?` (must have all), `excludeTags?`, `maxDistance?` (relevance cutoff). Each hit includes its `id`, any `linkedIds`, `matched` (for long, chunk-indexed memories: the excerpt that matched the query; omitted when it is the whole text), and any `dupCandidates` (flagged likely-duplicates — the output hints when consolidation would help). When **living memory** is enabled (`RERANK_WEIGHT`>0, off by default), search also re-orders results by recency-decayed usage and reinforces its top hit(s) — frequently-recalled memories float up over time. See [`docs/DESIGN.md`](docs/DESIGN.md#living-memory--decay--reinforcement-opt-in). |
+| `cortex_memory_save` | Queue a memory for indexing. Args: `text`, `namespace?`, `tags?`, `expiresIn?` (e.g. `"7d"`, `"36h"` — set it for TIME-BOUND facts; the memory stops being recalled once it lapses), `linkTo?` (ids to bidirectionally link this memory to — queued and applied once both ends are indexed, so targets need not exist yet), `supersedes?` (ids this memory replaces — the worker deletes them once this one is indexed). Returns its `id`. |
+| `cortex_memory_search` | **Hybrid** search (BM25 keyword + vector, blended by `SEARCH_ALPHA`, default 0.5) so exact tokens/codenames resolve, not just semantic matches. Args: `query`, `namespace?` (`*` = all namespaces), `limit?`, `tags?` (must have all), `excludeTags?`, `maxDistance?` (relevance cutoff), `includeExpired?` (also return expired memories; hidden by default). Each hit includes its `id`, any `linkedIds`, `matched` (for long, chunk-indexed memories: the excerpt that matched the query; omitted when it is the whole text), and any `dupCandidates` (flagged likely-duplicates — the output hints when consolidation would help). When **living memory** is enabled (`RERANK_WEIGHT`>0, off by default), search also re-orders results by recency-decayed usage and reinforces its top hit(s) — frequently-recalled memories float up over time. See [`docs/DESIGN.md`](docs/DESIGN.md#living-memory--decay--reinforcement-opt-in). |
 | `cortex_tags_list` | **Read-only** tag listing (`namespace?`): each tag in use with its memory count, most used first. Call it before saving to REUSE an existing tag instead of inventing `k8s`/`kubernetes` variants. Rename/delete are intentionally not exposed over MCP (use the CLI/UI). |
 | `cortex_memory_get` | Fetch ONE memory by `id`, full text (follow `linkedIds` from search hits, or ids from `cortex_consolidate` / `cortex_review_candidates`). Same shape as a search hit; counts as delivered for session dedup so later searches stub it; does not reinforce. |
 | `cortex_memory_delete` | Delete a memory by `id` (get the `id` from a `cortex_memory_search` result first). The memory goes to the **trash** (restorable for `TRASH_RETENTION`, default 7 days), not into the void. |
@@ -669,10 +677,11 @@ authenticate with `--token` / `CORTEX_AUTH_TOKEN`.
 
 | Command | What it does |
 |---------|--------------|
-| `cortex save "<text>" -n <ns> -t tag [-S <id>]` | Queue a memory (server publishes to NATS). `-S/--supersedes` lists ids this memory replaces (deleted after indexing). |
-| `cortex list -n '*' [-t tag] [-x tag]` | List memories newest-first; filter by namespace/tags. |
+| `cortex save "<text>" -n <ns> -t tag [-S <id>] [--expires 7d]` | Queue a memory (server publishes to NATS). `-S/--supersedes` lists ids this memory replaces (deleted after indexing). `--expires` (`7d`, `36h`) makes it a time-bound fact that stops being recalled after that long. |
+| `cortex edit <id> ["<text>"] [--expires 7d \| --no-expiry]` | Edit a memory's text (re-embedded) and/or its expiry. The text may be omitted when only the expiry changes: that is applied directly, with no re-embedding. |
+| `cortex list -n '*' [-t tag] [-x tag] [--include-expired]` | List memories newest-first; filter by namespace/tags. Expired memories are hidden unless `--include-expired`. |
 | `cortex get <id> [--json]` | Show one memory by id (incl. linked ids); `--json` uses the `export` record shape. |
-| `cortex search "<q>" [-d 0.6] [-t tag] [-x tag]` | Semantic search with a relevance cutoff and tag filters. Prints the matched excerpt (`matched: …`) under hits on long memories. |
+| `cortex search "<q>" [-d 0.6] [-t tag] [-x tag] [--include-expired]` | Semantic search with a relevance cutoff and tag filters. Prints the matched excerpt (`matched: …`) under hits on long memories. Expired memories are hidden unless `--include-expired`. |
 | `cortex consolidate "<topic>" [-n '*'] [-l N] [-t tag] [-x tag]` | Print the cluster of memories about a topic + their manifest (read-only gather; the LLM does the merge). No tag flag = no tag filter (whole cluster). |
 | `cortex delete <id>` | Delete a memory by ID (moved to the trash). |
 | `cortex tags [-n ns]` | List tags with memory counts and last activity. `tags rename <from> <to> [-n ns]` fixes drift (`k8s` / `kubernetes`; merges into an existing tag), `tags delete <tag> [-n ns] [--yes]` removes a tag from every memory. Touching the reserved `preference` tag needs `--yes`. |
@@ -806,6 +815,28 @@ migration backup; if re-writing it fails the error names that file, and `cortex 
 (mode 0600), are never pruned and so outlive `TRASH_RETENTION` — delete them yourself.
 Trash is not part of full backups: restoring a backup brings back live memories only
 and the trash is lost.
+
+## Expiry for time-bound facts
+
+Some memories are true only for a while ("deploy freeze until Friday", "working on the
+staging cluster this week"). Left alone they keep being recalled after they stop being
+true. Give them an expiry:
+
+- **Save:** MCP `expiresIn: "7d"`, CLI `cortex save --expires 7d`, the UI's expiry
+  picker, or the API's `valid_until` (absolute) / `expires_in` (relative; `7d`, `36h`;
+  must be > 0 and at most 10 years; exactly one of the two).
+- **Change:** `cortex edit <id> --expires 3d` / `--no-expiry`, or the inspector. An
+  expiry-only change is a metadata merge — nothing is re-embedded.
+- **Effect:** once `valid_until` has passed the memory is hidden from Search, List,
+  find-similar, recall (including the `UserPromptSubmit` hook) and consolidation. Pass
+  `include_expired` / `includeExpired` / `--include-expired` / the UI toggle to see
+  them. Memories without an expiry are never affected.
+- **Sweep:** an hourly server job moves memories that expired more than `EXPIRY_GRACE`
+  ago (Go duration, default `168h`; `0` = as soon as they expire; invalid = startup
+  failure) to the [trash](#trash-soft-delete-and-retention) with reason `expired`,
+  across all tenants (logged with the count). During the grace period you can still
+  rescue a memory by extending its expiry. Restoring such a memory from the trash
+  clears its lapsed expiry (otherwise it would be hidden and re-swept at once).
 
 ## Request size limit
 

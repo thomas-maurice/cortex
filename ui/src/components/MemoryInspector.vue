@@ -20,6 +20,7 @@
             <Input v-model="editNamespace" class="flex-1" placeholder="namespace" />
             <Input v-model="editTags" class="flex-1" placeholder="tags, comma separated" />
           </div>
+          <ExpiryPicker v-model:model="editExpiry" allow-keep />
           <div class="flex items-center gap-2">
             <Button size="sm" :disabled="!editText.trim() || saving" @click="saveEdit">Save</Button>
             <Button size="sm" variant="outline" :disabled="saving" @click="editing = false">Cancel</Button>
@@ -45,6 +46,7 @@
               <MessagesSquare class="size-3" />{{ m.conversationId }}
             </span>
             <span v-if="m.createdAt">{{ fmtDate(m.createdAt) }}</span>
+            <ExpiryBadge :valid-until="m.validUntil" />
             <Badge v-if="m.accessCount" variant="secondary" class="text-amber-600 dark:text-amber-400" title="times the agent recalled this memory">
               <Flame class="size-3" />{{ m.accessCount }}
             </Badge>
@@ -101,6 +103,9 @@ import {
   bumpInspectorChanged,
 } from '@/lib/inspector'
 import { Flame, History, Layers, Link2, MessagesSquare, Pencil, Search, Tag, Trash2 } from 'lucide-vue-next'
+import ExpiryBadge from '@/components/ExpiryBadge.vue'
+import ExpiryPicker from '@/components/ExpiryPicker.vue'
+import { expiryAfter, expiryRequest, toDateInput } from '@/lib/expiry'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -125,6 +130,7 @@ const editing = ref(false)
 const editText = ref('')
 const editNamespace = ref('')
 const editTags = ref('')
+const editExpiry = ref({ preset: 'none', date: '' })
 const saving = ref(false)
 
 // Switching to another memory always drops out of edit mode.
@@ -185,26 +191,46 @@ function startEdit() {
   editNamespace.value = m.value.namespace || ''
   editTags.value = (m.value.tags || []).join(', ')
   editTagsOrig = editTags.value
+  // A memory that already expires defaults to "Keep current" so an unrelated edit
+  // never changes (or drops) the expiry.
+  editExpiry.value = m.value.validUntil
+    ? { preset: 'keep', date: toDateInput(timestampDate(m.value.validUntil)) }
+    : { preset: 'none', date: '' }
   editing.value = true
 }
 
 async function saveEdit() {
+  const exp = expiryRequest(editExpiry.value, !!m.value.validUntil)
+  if (exp.error) {
+    toast.error(exp.error)
+    return
+  }
   saving.value = true
   try {
     const tags = editTags.value.split(',').map((t) => t.trim()).filter(Boolean)
     const tagsChanged = editTags.value !== editTagsOrig
-    await memoryClient.updateMemory({
+    const res = await memoryClient.updateMemory({
       id: m.value.id,
       text: editText.value,
       ...(tagsChanged ? { tags, replaceTags: true } : {}),
       namespace: editNamespace.value,
+      ...exp,
     })
     editing.value = false
     // Reflect the edit in the open sheet immediately — the server copy catches
     // up asynchronously via the re-index queue.
-    // _match offsets refer to the OLD text, so drop them.
-    inspectorMemory.value = { ...m.value, text: editText.value, ...(tagsChanged ? { tags } : {}), namespace: editNamespace.value, _match: undefined }
-    toast.success('Queued for re-indexing — changes appear shortly')
+    const after = expiryAfter(exp)
+    inspectorMemory.value = {
+      ...m.value,
+      text: editText.value,
+      ...(tagsChanged ? { tags } : {}),
+      namespace: editNamespace.value,
+      // _match offsets refer to the OLD text, so drop them.
+      _match: undefined,
+      ...(after === undefined ? {} : { validUntil: after ?? undefined }),
+    }
+    // An expiry-only change is applied directly (no re-embed), not queued.
+    toast.success(res.status === 'updated' ? 'Updated' : 'Queued for re-indexing — changes appear shortly')
     bumpInspectorChanged()
   } catch (e) {
     handleError(e)

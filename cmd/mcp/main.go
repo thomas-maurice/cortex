@@ -17,6 +17,7 @@ import (
 	"connectrpc.com/connect"
 	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	cortexv1 "github.com/thomas-maurice/cortex/gen/cortex/v1"
 	"github.com/thomas-maurice/cortex/gen/cortex/v1/cortexv1connect"
@@ -291,7 +292,11 @@ func main() {
 			"their IDs in the linkTo field — links are bidirectional and queued, applied once both this " +
 			"memory and each target are indexed, so you do not need a separate cortex_memory_link call and " +
 			"the targets need not be indexed yet. Indexing is asynchronous and durable; saving is cheap, so " +
-			"err on the side of saving more.",
+			"err on the side of saving more. For a TIME-BOUND fact — one that stops being true after a while, " +
+			"e.g. \"deploy freeze until Friday\", \"working on the staging cluster this week\", \"the build is " +
+			"broken today\" — ALWAYS set expiresIn (e.g. \"3d\", \"36h\", \"14d\"; " +
+			"weeks are not supported, use days): once it lapses the memory stops being recalled, so it cannot mislead a later session. Omit " +
+			"expiresIn for durable facts, preferences and decisions.",
 	}, withTimeout(callTimeout, d.save))
 
 	addTagsTool(server, d, callTimeout)
@@ -471,6 +476,7 @@ type SaveIn struct {
 	Tags       []string `json:"tags,omitempty" jsonschema:"optional free-form tags for later filtering"`
 	LinkTo     []string `json:"linkTo,omitempty" jsonschema:"optional IDs of related memories to bidirectionally link this new memory to (e.g. from a prior memory_search). Linking is queued and applied once both memories are indexed, so the targets do not need to be indexed yet — they just need to be real memory IDs that exist or are being saved"`
 	Supersedes []string `json:"supersedes,omitempty" jsonschema:"optional IDs of EXISTING memories this new memory replaces (e.g. the sources from a cortex_consolidate manifest that this merged memory absorbs); the server deletes them automatically once this memory is durably indexed, so do not also call cortex_memory_delete on them. Only pass IDs you actually merged into this text"`
+	ExpiresIn  string   `json:"expiresIn,omitempty" jsonschema:"set for TIME-BOUND facts that stop being true after a while (a freeze until Friday, this week's focus): how long the memory stays valid, e.g. \"7d\" or \"36h\" (days or Go durations; max 10 years). After that it is no longer returned by search or recall. Omit for durable facts"`
 }
 
 type SaveOut struct {
@@ -491,6 +497,7 @@ func (d *deps) save(ctx context.Context, _ *mcp.CallToolRequest, in SaveIn) (*mc
 		Tags:           config.MergeTags(in.Tags, d.autoSaveTags),
 		LinkTo:         in.LinkTo,
 		Supersedes:     in.Supersedes,
+		ExpiresIn:      strings.TrimSpace(in.ExpiresIn),
 		Source:         d.source,
 		ConversationId: d.conversationID,
 	}))
@@ -514,6 +521,8 @@ type SearchIn struct {
 	ExcludeTags []string `json:"excludeTags,omitempty" jsonschema:"drop memories carrying ANY of these tags"`
 	MaxDistance float32  `json:"maxDistance,omitempty" jsonschema:"relevance cutoff (cosine distance, ~0=identical, larger=less related); results farther than this are dropped; omit to use the server default"`
 	Fresh       bool     `json:"fresh,omitempty" jsonschema:"return full text even for memories already delivered to this session's context earlier (normally those come back as short stubs to save tokens); set true when the earlier copy was lost, e.g. after context compaction"`
+	// IncludeExpired is rarely wanted: expired memories are time-bound facts that have stopped being true.
+	IncludeExpired bool `json:"includeExpired,omitempty" jsonschema:"also return EXPIRED memories (time-bound facts whose expiry has passed and are normally hidden because they are probably no longer true); only set it to audit history"`
 }
 
 type SearchHit struct {
@@ -525,6 +534,11 @@ type SearchHit struct {
 	Model         string   `json:"model,omitempty"`
 	LinkedIDs     []string `json:"linkedIds,omitempty"`
 	DupCandidates []string `json:"dupCandidates,omitempty"`
+	// ValidUntil is the RFC3339 expiry of a time-bound memory; Expired is true when
+	// it has passed (only possible with includeExpired). Both omitted for a memory
+	// that never expires.
+	ValidUntil string `json:"validUntil,omitempty"`
+	Expired    bool   `json:"expired,omitempty"`
 	// Stub is true when Text is a truncated prefix because the full text was
 	// already delivered to this session's context earlier (pass fresh=true to
 	// re-fetch it in full).
@@ -557,13 +571,14 @@ func (d *deps) search(ctx context.Context, _ *mcp.CallToolRequest, in SearchIn) 
 	}
 
 	resp, err := d.client.Search(ctx, connect.NewRequest(&cortexv1.SearchRequest{
-		Query:       query,
-		Namespace:   d.nsOrDefault(in.Namespace), // "" -> this project, "*" -> all namespaces
-		Limit:       int32(limit),
-		Tags:        in.Tags,
-		AnyTags:     in.AnyTags,
-		ExcludeTags: in.ExcludeTags,
-		MaxDistance: maxDist,
+		Query:          query,
+		Namespace:      d.nsOrDefault(in.Namespace), // "" -> this project, "*" -> all namespaces
+		Limit:          int32(limit),
+		Tags:           in.Tags,
+		AnyTags:        in.AnyTags,
+		ExcludeTags:    in.ExcludeTags,
+		MaxDistance:    maxDist,
+		IncludeExpired: in.IncludeExpired,
 	}))
 	if err != nil {
 		return nil, SearchOut{}, err
@@ -628,12 +643,18 @@ func (d *deps) search(ctx context.Context, _ *mcp.CallToolRequest, in SearchIn) 
 			DupCandidates: dups,
 			Stub:          stub,
 			Matched:       matched,
-		})
+		}.withExpiry(m.GetValidUntil()))
+		expiry := ""
+		if hit := out.Hits[len(out.Hits)-1]; hit.Expired {
+			expiry = "[EXPIRED " + hit.ValidUntil + " — probably no longer true] "
+		} else if hit.ValidUntil != "" {
+			expiry = "[valid until " + hit.ValidUntil + "] "
+		}
 		if stub {
-			fmt.Fprintf(&b, "%d. id=%s [%s] (dist %.3f) [stub — full text already in this session's context] %s\n",
-				i+1, m.GetId(), m.GetNamespace(), h.GetDistance(), text)
+			fmt.Fprintf(&b, "%d. id=%s [%s] (dist %.3f) %s[stub — full text already in this session's context] %s\n",
+				i+1, m.GetId(), m.GetNamespace(), h.GetDistance(), expiry, text)
 		} else {
-			fmt.Fprintf(&b, "%d. id=%s [%s] (dist %.3f) %s\n", i+1, m.GetId(), m.GetNamespace(), h.GetDistance(), text)
+			fmt.Fprintf(&b, "%d. id=%s [%s] (dist %.3f) %s%s\n", i+1, m.GetId(), m.GetNamespace(), h.GetDistance(), expiry, text)
 		}
 		if matched != "" {
 			fmt.Fprintf(&b, "   matched: %s\n", truncateRunes(matched, matchedTextChars))
@@ -653,6 +674,17 @@ func (d *deps) search(ctx context.Context, _ *mcp.CallToolRequest, in SearchIn) 
 		hookState.Add(delivered...)
 	}
 	return text2result(strings.TrimSpace(b.String())), out, nil
+}
+
+// withExpiry stamps a hit's expiry fields from the memory's valid_until (nil =
+// never expires, both fields stay empty).
+func (h SearchHit) withExpiry(vu *timestamppb.Timestamp) SearchHit {
+	if vu == nil {
+		return h
+	}
+	h.ValidUntil = vu.AsTime().UTC().Format(time.RFC3339)
+	h.Expired = !vu.AsTime().After(time.Now())
+	return h
 }
 
 // stubTextChars is how much of an already-delivered memory's text a stub keeps —

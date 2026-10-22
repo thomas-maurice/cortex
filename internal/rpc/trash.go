@@ -241,6 +241,14 @@ func (s *Service) restoreEntry(ctx context.Context, ts *store.TenantStore, e mem
 	if rec.CreatedAt.IsZero() {
 		rec.CreatedAt = time.Now().UTC()
 	}
+	// An entry the expiry sweep trashed has, by construction, a lapsed expiry: left
+	// in place it would be hidden again at once and re-trashed by the next sweep,
+	// defeating the restore. Drop it. For any other reason (a user deleted a
+	// memory that happened to be time-bound) the expiry is kept as it was, and a
+	// still-future one is always kept: the fact is still time-bound.
+	if e.Reason == memory.TrashReasonExpired && rec.Expired(time.Now()) {
+		rec.ValidUntil = time.Time{}
+	}
 	if err := bus.PublishIndex(ctx, s.js, rec); err != nil {
 		return fmt.Errorf("publish: %w", err)
 	}

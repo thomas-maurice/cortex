@@ -164,6 +164,61 @@ their data. The sweep skips entries with no valid `deletedAt` (logged). Namespac
 trashes+deletes memories with 8 workers, stopping at the first error. `TRASH_RETENTION`
 is parsed strictly (Go duration, e.g. `720h`; `0` = forever; invalid = startup failure).
 
+## Memory expiry (`validUntil`)
+
+Time-bound facts carry an optional `validUntil` (Weaviate `date`, declared in
+`memoryProperties`, added to existing classes by `ensureProps`; also on `Trash`, so a
+trash round-trip keeps it). It is part of the memory's content, hence index-owned (see
+the field-ownership table); `memory.Record.ValidUntil` zero = never expires.
+
+**Semantics.** `Search`, `List`, `SearchSimilar`, `Consolidate` and recall (the hook
+goes through `Search`) exclude expired memories unless `include_expired` is set. The
+store options default to excluding (`SearchOpts/ListOpts.IncludeExpired` zero value),
+so a new caller is expiry-safe by default.
+
+- **Null filtering.** The filter is `NOT(validUntil <= now)`, not `validUntil > now OR
+  validUntil IS NULL`: `IsNull` filtering needs the class created with
+  `indexNullState` (not the case for existing deployments, and immutable), whereas NOT
+  is a complement over all objects, so memories with no value (never set, or written
+  before the property existed) are kept without a backfill and without a "far-future
+  sentinel". Pinned by `TestExpiryFilterKeepsPreExistingMemories`.
+- **Chunks.** Chunk search resolves every chunk hit to its parent (`ts.Get`) anyway, so
+  expiry is checked on the parent there; `validUntil` is NOT copied onto
+  `MemoryChunk`. Copying would make an expiry-only edit rewrite every chunk (and a
+  missed chunk would resurrect an expired memory); the parent is the single source of
+  truth. Cost: expired parents can occupy slots in the `limit x chunkPoolFactor`
+  candidate pool (generous; the chunkless fallback uses the server-side filter).
+- **Dedup ignores expiry.** The worker's candidate search sets `IncludeExpired`: an
+  expired near-duplicate is still a duplicate, and flagging it lets a review merge or
+  drop the stale copy.
+- **Where expired memories still show.** `ListDuplicateCandidates` deliberately does
+  NOT filter expired memories (consistent with dedup ignoring expiry: a stale copy must
+  stay reviewable so it can be merged or dropped). `RecallSession` facts (a session's
+  memories) DO exclude expired ones. `Consolidate` excludes them for seeds AND
+  link/dup-candidate neighbours (fetched by id, so `skipExpired` re-applies the check)
+  unless `include_expired`, so an expired memory can't be merged and superseded by
+  accident.
+- **Expiry-only edits never re-embed.** `UpdateMemory` with an expiry change and
+  text/tags/namespace absent or identical to the stored values is applied by
+  `TenantStore.SetValidUntil`: a single-property Weaviate merge (zero time = JSON null =
+  clear). It takes no distributed lock, deliberately: a merge is atomic per property and
+  a scalar replace has no read-modify-write to protect (unlike tag-array edits), so it
+  cannot clobber a concurrent link/reinforcement/tag merge (integration-tested). Known
+  limit, shared by every index-owned field: an index message already queued before the
+  edit carries the old expiry and overwrites it when it lands.
+  Any other edit republishes the record carrying the (possibly new) expiry.
+- **Sweep.** Hourly in `cmd/server` (beside the trash sweep): `Store.SweepExpired` per
+  tenant selects `validUntil < now - EXPIRY_GRACE` (server-side `<`, which excludes null),
+  re-reads each candidate right before trashing (an extension made meanwhile wins) and
+  uses `DeleteWithReason(..., "expired")` (trash-first, chunk cascade). Listed
+  oldest-expiry first in batches of 500 so a backlog drains; ids that fail (or were
+  extended) are skipped on later rounds and the window widens by their count, so a
+  persistently failing batch cannot starve the healthy memories behind it.
+  Counts are logged. Restoring from the trash drops a lapsed expiry.
+- **Validation** (server): `valid_until` must be in the future; `expires_in` accepts Go
+  durations plus whole `d` days; both must be > 0 and <= 10 years; both at once is
+  rejected.
+
 ## Tools exposed to Claude
 
 | Tool | Path | Args | Returns |
@@ -204,6 +259,7 @@ automatically without per-call bookkeeping.
 | `CORTEX_UI_PASSWORD` | _(empty = UI login disabled)_ | server |
 | `CORTEX_JWT_SECRET` | derived from `CORTEX_AUTH_TOKEN`, else random | server (signs UI JWTs) |
 | `TRASH_RETENTION` | `168h` (`0` = forever) | server (how long soft-deleted memories stay restorable; hourly sweep purges older entries across all tenants) |
+| `EXPIRY_GRACE` | `168h` (`0` = immediately) | server (how long an expired memory stays hidden-but-extendable before the hourly sweep moves it to the trash; strict Go duration) |
 | `CORTEX_MAX_REQUEST_BYTES` | `268435456` (256 MiB) | server (max RPC request body; raise for very large restores) |
 
 ## Living memory — decay + reinforcement (opt-in)
@@ -330,6 +386,7 @@ integration test), which is why server-side merges need no KV lock.
 | `tags` | index (worker) AND server tag rename/delete (`RenameTag`/`DeleteTag`, merge of `tags` on the memory and its chunks) | writes |
 | `dupCandidates` | index (recomputed; server `DismissDuplicate` may prune) | writes, minus ids in the stored `notDuplicateOf` |
 | `indexedSeq` | index (worker) | writes |
+| `validUntil` (expiry) | index (worker) **and** server `UpdateMemory` expiry-only change (`SetValidUntil`, single-property merge) | writes (an index message without an expiry CLEARS it) |
 | chunks (`MemoryChunk`) | index (worker) | replaced under the lock |
 | `linkedIds` | link consumer (`SetLinks`, under both ids' locks) | never writes |
 | `accessCount`, `lastAccessedAt` | server `Reinforce` (merge) | never writes |

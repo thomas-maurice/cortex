@@ -61,3 +61,21 @@ func TestExportRecordsFromBackup(t *testing.T) {
 	_, err = exportRecordsFromBackup([]byte("not json"), "*")
 	assert.Error(t, err)
 }
+
+// An export/import cycle must not silently turn a time-bound memory into a
+// permanent one.
+func TestExportKeepsValidUntil(t *testing.T) {
+	until := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	data, err := json.Marshal(map[string]any{"tenants": []any{map[string]any{
+		"memories": []memory.Record{{ID: "a", Namespace: "n", ValidUntil: until}, {ID: "b", Namespace: "n"}},
+	}}})
+	require.NoError(t, err)
+	recs, err := exportRecordsFromBackup(data, "*")
+	require.NoError(t, err)
+	byID := map[string]exportRecord{}
+	for _, r := range recs {
+		byID[r.ID] = r
+	}
+	assert.Equal(t, "2026-06-01T00:00:00Z", byID["a"].ValidUntil)
+	assert.Empty(t, byID["b"].ValidUntil, "no expiry must stay absent, not the zero date")
+}

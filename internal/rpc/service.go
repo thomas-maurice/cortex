@@ -106,6 +106,10 @@ type Config struct {
 	// TrashRetention is how long soft-deleted memories stay restorable before the
 	// periodic sweep purges them (TRASH_RETENTION; 0 = keep forever).
 	TrashRetention time.Duration
+	// ExpiryGrace is how long a memory stays in the store (hidden from recall,
+	// listable with include_expired) after its valid_until before the hourly sweep
+	// moves it to Trash (EXPIRY_GRACE; 0 = move as soon as it has expired).
+	ExpiryGrace time.Duration
 }
 
 // Service implements the MemoryService Connect handler. It is the single owner
@@ -262,15 +266,22 @@ func (s *Service) Save(ctx context.Context, req *connect.Request[cortexv1.SaveRe
 		return nil, err
 	}
 
+	now := time.Now().UTC()
+	validUntil, _, err := resolveExpiry(req.Msg.GetValidUntil(), strings.TrimSpace(req.Msg.GetExpiresIn()), now)
+	if err != nil {
+		return nil, err
+	}
+
 	rec := memory.Record{
 		ID:             uuid.NewString(),
 		Text:           text,
 		Namespace:      ns,
 		Tags:           memory.NormalizeTags(req.Msg.GetTags()),
 		Source:         src,
-		CreatedAt:      time.Now().UTC(),
+		CreatedAt:      now,
 		ConversationID: req.Msg.GetConversationId(),
 		Supersedes:     supersedes,
+		ValidUntil:     validUntil,
 	}
 	// UserID is stamped by PublishIndex from context; not read from req.Msg.
 	if err := bus.PublishIndex(ctx, s.js, rec); err != nil {
@@ -309,7 +320,19 @@ func (s *Service) UpdateMemory(ctx context.Context, req *connect.Request[cortexv
 		return nil, err
 	}
 	text := strings.TrimSpace(req.Msg.GetText())
-	if text == "" {
+	newNS := strings.TrimSpace(req.Msg.GetNamespace())
+	newUntil, expirySet, err := resolveExpiry(req.Msg.GetValidUntil(), strings.TrimSpace(req.Msg.GetExpiresIn()), time.Now().UTC())
+	if err != nil {
+		return nil, err
+	}
+	if req.Msg.GetClearValidUntil() {
+		if expirySet {
+			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("clear_valid_until cannot be combined with valid_until or expires_in"))
+		}
+		expirySet = true // newUntil stays the zero time = never expires
+	}
+	// Empty text is only meaningful for an expiry-only change.
+	if text == "" && (!expirySet || req.Msg.GetReplaceTags() || newNS != "") {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New(errTextEmpty))
 	}
 
@@ -325,6 +348,23 @@ func (s *Service) UpdateMemory(ctx context.Context, req *connect.Request[cortexv
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("memory %s not found", id))
 	}
 
+	// Changing ONLY the expiry must not re-embed: the expiry is not part of the
+	// vector, so it is applied as a single-property merge (no worker round-trip).
+	// "Only" means text, tags and namespace are absent or identical to what is
+	// stored — editors (UI/CLI) resend the whole form, so identical values count.
+	if expirySet &&
+		(text == "" || text == rec.Text) &&
+		(!req.Msg.GetReplaceTags() || slices.Equal(req.Msg.GetTags(), rec.Tags)) &&
+		(newNS == "" || newNS == rec.Namespace) {
+		if err := ts.SetValidUntil(ctx, id, newUntil); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("memory %s not found", id))
+			}
+			return nil, err
+		}
+		return connect.NewResponse(&cortexv1.UpdateMemoryResponse{Id: id, Status: "updated"}), nil
+	}
+
 	rec.Text = text
 	if req.Msg.GetReplaceTags() {
 		rec.Tags = memory.NormalizeTags(req.Msg.GetTags())
@@ -333,8 +373,11 @@ func (s *Service) UpdateMemory(ctx context.Context, req *connect.Request[cortexv
 		// it commits, so a tag rename that lands while this is queued is not undone.
 		rec.KeepTags = true
 	}
-	if ns := strings.TrimSpace(req.Msg.GetNamespace()); ns != "" {
-		rec.Namespace = ns
+	if newNS != "" {
+		rec.Namespace = newNS
+	}
+	if expirySet {
+		rec.ValidUntil = newUntil
 	}
 	// DupCandidates are recomputed by the worker on every (re)index; clear the
 	// stale set so a failed republish never leaves an old hint behind.
@@ -394,6 +437,7 @@ func (s *Service) Search(ctx context.Context, req *connect.Request[cortexv1.Sear
 	opts.IncludeTags = req.Msg.GetTags()
 	opts.AnyTags = req.Msg.GetAnyTags()
 	opts.ExcludeTags = req.Msg.GetExcludeTags()
+	opts.IncludeExpired = req.Msg.GetIncludeExpired()
 	hits, err := s.searchStore(ctx, ts, vec, opts)
 	if err != nil {
 		return nil, err
@@ -482,13 +526,14 @@ func (s *Service) SearchSimilar(ctx context.Context, req *connect.Request[cortex
 		return nil, err
 	}
 	hits, err := ts.SearchByID(ctx, id, store.SearchOpts{
-		Namespace:   resolveNamespace(req.Msg.GetNamespace(), s.cfg.DefaultNamespace),
-		Limit:       clampProtoInt(req.Msg.GetLimit()),
-		MaxDistance: req.Msg.GetMaxDistance(),
-		Autocut:     clampProtoInt(req.Msg.GetAutocut()),
-		IncludeTags: req.Msg.GetTags(),
-		AnyTags:     req.Msg.GetAnyTags(),
-		ExcludeTags: req.Msg.GetExcludeTags(),
+		Namespace:      resolveNamespace(req.Msg.GetNamespace(), s.cfg.DefaultNamespace),
+		Limit:          clampProtoInt(req.Msg.GetLimit()),
+		MaxDistance:    req.Msg.GetMaxDistance(),
+		Autocut:        clampProtoInt(req.Msg.GetAutocut()),
+		IncludeTags:    req.Msg.GetTags(),
+		AnyTags:        req.Msg.GetAnyTags(),
+		ExcludeTags:    req.Msg.GetExcludeTags(),
+		IncludeExpired: req.Msg.GetIncludeExpired(),
 	})
 	if err != nil {
 		return nil, err
@@ -507,10 +552,11 @@ func (s *Service) List(ctx context.Context, req *connect.Request[cortexv1.ListRe
 		return nil, err
 	}
 	recs, err := ts.List(ctx, store.ListOpts{
-		Namespace:   resolveNamespace(req.Msg.GetNamespace(), s.cfg.DefaultNamespace),
-		Limit:       clampProtoInt(req.Msg.GetLimit()),
-		IncludeTags: req.Msg.GetTags(),
-		ExcludeTags: req.Msg.GetExcludeTags(),
+		Namespace:      resolveNamespace(req.Msg.GetNamespace(), s.cfg.DefaultNamespace),
+		Limit:          clampProtoInt(req.Msg.GetLimit()),
+		IncludeTags:    req.Msg.GetTags(),
+		ExcludeTags:    req.Msg.GetExcludeTags(),
+		IncludeExpired: req.Msg.GetIncludeExpired(),
 	})
 	if err != nil {
 		return nil, err
@@ -995,6 +1041,8 @@ func (s *Service) ListDuplicateCandidates(ctx context.Context, req *connect.Requ
 	if err != nil {
 		return nil, err
 	}
+	// Expired memories are deliberately NOT filtered here: dedup ignores expiry so a
+	// stale expired copy of a fact is still flagged and can be merged or dropped.
 	flagged, err := ts.ListWithCandidates(ctx,
 		resolveNamespace(req.Msg.GetNamespace(), s.cfg.DefaultNamespace),
 		int(req.Msg.GetLimit()))
@@ -1100,14 +1148,15 @@ func (s *Service) Consolidate(ctx context.Context, req *connect.Request[cortexv1
 	}
 	includeTags, anyTags, excludeTags := req.Msg.GetTags(), req.Msg.GetAnyTags(), req.Msg.GetExcludeTags()
 	seeds, err := s.searchStore(ctx, ts, vec, store.SearchOpts{
-		Namespace:   resolveNamespace(req.Msg.GetNamespace(), s.cfg.DefaultNamespace),
-		Limit:       limit,
-		MaxDistance: req.Msg.GetMaxDistance(),
-		IncludeTags: includeTags,
-		AnyTags:     anyTags,
-		ExcludeTags: excludeTags,
-		Query:       topic, // hybrid: a topic that is a literal token still gathers its cluster
-		Alpha:       s.cfg.SearchAlpha,
+		Namespace:      resolveNamespace(req.Msg.GetNamespace(), s.cfg.DefaultNamespace),
+		Limit:          limit,
+		MaxDistance:    req.Msg.GetMaxDistance(),
+		IncludeTags:    includeTags,
+		AnyTags:        anyTags,
+		ExcludeTags:    excludeTags,
+		Query:          topic, // hybrid: a topic that is a literal token still gathers its cluster
+		Alpha:          s.cfg.SearchAlpha,
+		IncludeExpired: req.Msg.GetIncludeExpired(),
 	})
 	if err != nil {
 		return nil, err
@@ -1119,13 +1168,13 @@ func (s *Service) Consolidate(ctx context.Context, req *connect.Request[cortexv1
 	// requested tags: a tag-scoped consolidation must never pull an out-of-scope
 	// memory into the set a merge can then delete.
 	keep := tagFilter(includeTags, anyTags, excludeTags)
-	cluster := assembleCluster(seeds, limit, func(id string) (memory.Record, bool, error) {
+	cluster := assembleCluster(seeds, limit, skipExpired(func(id string) (memory.Record, bool, error) {
 		r, found, err := ts.Get(ctx, id)
 		if err != nil || !found || !keep(r.Tags) {
 			return memory.Record{}, false, err
 		}
 		return r, true, nil
-	})
+	}, req.Msg.GetIncludeExpired(), time.Now()))
 
 	out := &cortexv1.ConsolidateResponse{
 		Cluster:  make([]*cortexv1.Memory, 0, len(cluster)),

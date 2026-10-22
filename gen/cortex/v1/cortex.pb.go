@@ -106,8 +106,13 @@ type Memory struct {
 	// recently-used memories float up, untouched ones fade. Unset until first
 	// reinforced (recency then falls back to created_at).
 	LastAccessedAt *timestamppb.Timestamp `protobuf:"bytes,14,opt,name=last_accessed_at,json=lastAccessedAt,proto3" json:"last_accessed_at,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// valid_until is when this memory stops being true (time-bound facts such as "deploy
+	// freeze until Friday"). Unset = never expires. Expired memories are hidden from
+	// Search/List/recall unless include_expired is set, and are moved to Trash (reason
+	// "expired") by the server's sweep once expired for longer than EXPIRY_GRACE.
+	ValidUntil    *timestamppb.Timestamp `protobuf:"bytes,15,opt,name=valid_until,json=validUntil,proto3" json:"valid_until,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Memory) Reset() {
@@ -238,6 +243,13 @@ func (x *Memory) GetLastAccessedAt() *timestamppb.Timestamp {
 	return nil
 }
 
+func (x *Memory) GetValidUntil() *timestamppb.Timestamp {
+	if x != nil {
+		return x.ValidUntil
+	}
+	return nil
+}
+
 type SaveRequest struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	Text           string                 `protobuf:"bytes,1,opt,name=text,proto3" json:"text,omitempty"`
@@ -257,7 +269,12 @@ type SaveRequest struct {
 	// where the merged content is lost if indexing fails. Best-effort, like
 	// link_to: a missing/already-deleted source is skipped (logged), never fatal.
 	// One-shot, not persisted as a property.
-	Supersedes    []string `protobuf:"bytes,7,rep,name=supersedes,proto3" json:"supersedes,omitempty"`
+	Supersedes []string `protobuf:"bytes,7,rep,name=supersedes,proto3" json:"supersedes,omitempty"`
+	// Optional expiry for a time-bound fact: either an absolute valid_until or a
+	// relative expires_in ("7d", "36h"; days supported; > 0 and <= 10 years), not both.
+	// valid_until must be in the future.
+	ValidUntil    *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=valid_until,json=validUntil,proto3" json:"valid_until,omitempty"`
+	ExpiresIn     string                 `protobuf:"bytes,9,opt,name=expires_in,json=expiresIn,proto3" json:"expires_in,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -341,6 +358,20 @@ func (x *SaveRequest) GetSupersedes() []string {
 	return nil
 }
 
+func (x *SaveRequest) GetValidUntil() *timestamppb.Timestamp {
+	if x != nil {
+		return x.ValidUntil
+	}
+	return nil
+}
+
+func (x *SaveRequest) GetExpiresIn() string {
+	if x != nil {
+		return x.ExpiresIn
+	}
+	return ""
+}
+
 type SaveResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
@@ -395,8 +426,13 @@ func (x *SaveResponse) GetStatus() string {
 
 type UpdateMemoryRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	Id    string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`     // required: the memory to edit (e.g. from a search hit)
-	Text  string                 `protobuf:"bytes,2,opt,name=text,proto3" json:"text,omitempty"` // required: the new full memory text; replaces and re-embeds
+	Id    string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"` // required: the memory to edit (e.g. from a search hit)
+	// text is the new full memory text; replaces and re-embeds. Required unless the
+	// request ONLY changes the expiry (valid_until / expires_in / clear_valid_until
+	// with no other field set): then it may be empty. An expiry-only change — empty
+	// text, or text identical to the stored text — is applied as a metadata merge
+	// and never re-embeds.
+	Text string `protobuf:"bytes,2,opt,name=text,proto3" json:"text,omitempty"`
 	// tags is the desired tag set, applied ONLY when replace_tags is true. proto3
 	// can't tell an empty list from an unset one, so replace_tags is the explicit
 	// switch: it lets an editor clear all tags while letting a text-only edit (e.g.
@@ -404,9 +440,15 @@ type UpdateMemoryRequest struct {
 	Tags        []string `protobuf:"bytes,3,rep,name=tags,proto3" json:"tags,omitempty"`
 	ReplaceTags bool     `protobuf:"varint,4,opt,name=replace_tags,json=replaceTags,proto3" json:"replace_tags,omitempty"`
 	// namespace moves the memory when non-empty; empty keeps the current namespace.
-	Namespace     string `protobuf:"bytes,5,opt,name=namespace,proto3" json:"namespace,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Namespace string `protobuf:"bytes,5,opt,name=namespace,proto3" json:"namespace,omitempty"`
+	// Expiry change: set an absolute valid_until or a relative expires_in (same rules as
+	// SaveRequest), or clear_valid_until to make the memory never expire. At most one of
+	// the three; none = leave the stored expiry untouched.
+	ValidUntil      *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=valid_until,json=validUntil,proto3" json:"valid_until,omitempty"`
+	ExpiresIn       string                 `protobuf:"bytes,7,opt,name=expires_in,json=expiresIn,proto3" json:"expires_in,omitempty"`
+	ClearValidUntil bool                   `protobuf:"varint,8,opt,name=clear_valid_until,json=clearValidUntil,proto3" json:"clear_valid_until,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *UpdateMemoryRequest) Reset() {
@@ -474,10 +516,31 @@ func (x *UpdateMemoryRequest) GetNamespace() string {
 	return ""
 }
 
+func (x *UpdateMemoryRequest) GetValidUntil() *timestamppb.Timestamp {
+	if x != nil {
+		return x.ValidUntil
+	}
+	return nil
+}
+
+func (x *UpdateMemoryRequest) GetExpiresIn() string {
+	if x != nil {
+		return x.ExpiresIn
+	}
+	return ""
+}
+
+func (x *UpdateMemoryRequest) GetClearValidUntil() bool {
+	if x != nil {
+		return x.ClearValidUntil
+	}
+	return false
+}
+
 type UpdateMemoryResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	Status        string                 `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"` // "queued"
+	Status        string                 `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"` // "queued" (re-embed) or "updated" (metadata-only expiry change, applied)
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -541,9 +604,11 @@ type SearchRequest struct {
 	// UI's browse/explore, the CLI by default) set it so human browsing does not
 	// inflate the usage signal ranking depends on; the agent (MCP) leaves it false
 	// so genuine recalls still count. No effect unless RERANK_WEIGHT>0 server-side.
-	NoReinforce   bool `protobuf:"varint,9,opt,name=no_reinforce,json=noReinforce,proto3" json:"no_reinforce,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	NoReinforce bool `protobuf:"varint,9,opt,name=no_reinforce,json=noReinforce,proto3" json:"no_reinforce,omitempty"`
+	// include_expired keeps memories whose valid_until has passed (default: hidden).
+	IncludeExpired bool `protobuf:"varint,10,opt,name=include_expired,json=includeExpired,proto3" json:"include_expired,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *SearchRequest) Reset() {
@@ -639,18 +704,26 @@ func (x *SearchRequest) GetNoReinforce() bool {
 	return false
 }
 
+func (x *SearchRequest) GetIncludeExpired() bool {
+	if x != nil {
+		return x.IncludeExpired
+	}
+	return false
+}
+
 type SearchSimilarRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`                                        // the seed memory whose neighbours to find
-	Namespace     string                 `protobuf:"bytes,2,opt,name=namespace,proto3" json:"namespace,omitempty"`                          // "" = server default, "*" = all namespaces
-	Limit         int32                  `protobuf:"varint,3,opt,name=limit,proto3" json:"limit,omitempty"`                                 // default 5
-	Tags          []string               `protobuf:"bytes,4,rep,name=tags,proto3" json:"tags,omitempty"`                                    // neighbour must carry ALL of these
-	ExcludeTags   []string               `protobuf:"bytes,5,rep,name=exclude_tags,json=excludeTags,proto3" json:"exclude_tags,omitempty"`   // drop neighbours carrying ANY of these
-	MaxDistance   float32                `protobuf:"fixed32,6,opt,name=max_distance,json=maxDistance,proto3" json:"max_distance,omitempty"` // relevance cutoff; <=0 = no cutoff
-	Autocut       int32                  `protobuf:"varint,7,opt,name=autocut,proto3" json:"autocut,omitempty"`                             // Weaviate autocut jumps; <=0 disables
-	AnyTags       []string               `protobuf:"bytes,8,rep,name=any_tags,json=anyTags,proto3" json:"any_tags,omitempty"`               // neighbour must carry AT LEAST ONE of these
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	Id             string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`                                                // the seed memory whose neighbours to find
+	Namespace      string                 `protobuf:"bytes,2,opt,name=namespace,proto3" json:"namespace,omitempty"`                                  // "" = server default, "*" = all namespaces
+	Limit          int32                  `protobuf:"varint,3,opt,name=limit,proto3" json:"limit,omitempty"`                                         // default 5
+	Tags           []string               `protobuf:"bytes,4,rep,name=tags,proto3" json:"tags,omitempty"`                                            // neighbour must carry ALL of these
+	ExcludeTags    []string               `protobuf:"bytes,5,rep,name=exclude_tags,json=excludeTags,proto3" json:"exclude_tags,omitempty"`           // drop neighbours carrying ANY of these
+	MaxDistance    float32                `protobuf:"fixed32,6,opt,name=max_distance,json=maxDistance,proto3" json:"max_distance,omitempty"`         // relevance cutoff; <=0 = no cutoff
+	Autocut        int32                  `protobuf:"varint,7,opt,name=autocut,proto3" json:"autocut,omitempty"`                                     // Weaviate autocut jumps; <=0 disables
+	AnyTags        []string               `protobuf:"bytes,8,rep,name=any_tags,json=anyTags,proto3" json:"any_tags,omitempty"`                       // neighbour must carry AT LEAST ONE of these
+	IncludeExpired bool                   `protobuf:"varint,9,opt,name=include_expired,json=includeExpired,proto3" json:"include_expired,omitempty"` // keep neighbours whose valid_until has passed (default: hidden)
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *SearchSimilarRequest) Reset() {
@@ -737,6 +810,13 @@ func (x *SearchSimilarRequest) GetAnyTags() []string {
 		return x.AnyTags
 	}
 	return nil
+}
+
+func (x *SearchSimilarRequest) GetIncludeExpired() bool {
+	if x != nil {
+		return x.IncludeExpired
+	}
+	return false
 }
 
 type Hit struct {
@@ -1402,14 +1482,15 @@ func (x *GetMemoryResponse) GetMemory() *Memory {
 }
 
 type ListRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Namespace     string                 `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"`                        // "" = server default, "*" = all namespaces
-	Limit         int32                  `protobuf:"varint,2,opt,name=limit,proto3" json:"limit,omitempty"`                               // default 20
-	Tags          []string               `protobuf:"bytes,3,rep,name=tags,proto3" json:"tags,omitempty"`                                  // memory must carry ALL of these
-	ExcludeTags   []string               `protobuf:"bytes,4,rep,name=exclude_tags,json=excludeTags,proto3" json:"exclude_tags,omitempty"` // drop memories carrying ANY of these
-	AnyTags       []string               `protobuf:"bytes,5,rep,name=any_tags,json=anyTags,proto3" json:"any_tags,omitempty"`             // memory must carry AT LEAST ONE of these
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	Namespace      string                 `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"`                                  // "" = server default, "*" = all namespaces
+	Limit          int32                  `protobuf:"varint,2,opt,name=limit,proto3" json:"limit,omitempty"`                                         // default 20
+	Tags           []string               `protobuf:"bytes,3,rep,name=tags,proto3" json:"tags,omitempty"`                                            // memory must carry ALL of these
+	ExcludeTags    []string               `protobuf:"bytes,4,rep,name=exclude_tags,json=excludeTags,proto3" json:"exclude_tags,omitempty"`           // drop memories carrying ANY of these
+	AnyTags        []string               `protobuf:"bytes,5,rep,name=any_tags,json=anyTags,proto3" json:"any_tags,omitempty"`                       // memory must carry AT LEAST ONE of these
+	IncludeExpired bool                   `protobuf:"varint,6,opt,name=include_expired,json=includeExpired,proto3" json:"include_expired,omitempty"` // keep memories whose valid_until has passed (default: hidden)
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *ListRequest) Reset() {
@@ -1475,6 +1556,13 @@ func (x *ListRequest) GetAnyTags() []string {
 		return x.AnyTags
 	}
 	return nil
+}
+
+func (x *ListRequest) GetIncludeExpired() bool {
+	if x != nil {
+		return x.IncludeExpired
+	}
+	return false
 }
 
 type ListResponse struct {
@@ -4289,11 +4377,12 @@ type ConsolidateRequest struct {
 	// any_tags and exclude_tags are empty (the default) there is NO tag filtering:
 	// the whole topical cluster in the namespace is gathered, across every tag —
 	// empty does NOT mean "only untagged memories".
-	Tags          []string `protobuf:"bytes,5,rep,name=tags,proto3" json:"tags,omitempty"`                                  // cluster member must carry ALL of these
-	ExcludeTags   []string `protobuf:"bytes,6,rep,name=exclude_tags,json=excludeTags,proto3" json:"exclude_tags,omitempty"` // drop members carrying ANY of these
-	AnyTags       []string `protobuf:"bytes,7,rep,name=any_tags,json=anyTags,proto3" json:"any_tags,omitempty"`             // cluster member must carry AT LEAST ONE of these
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Tags           []string `protobuf:"bytes,5,rep,name=tags,proto3" json:"tags,omitempty"`                                            // cluster member must carry ALL of these
+	ExcludeTags    []string `protobuf:"bytes,6,rep,name=exclude_tags,json=excludeTags,proto3" json:"exclude_tags,omitempty"`           // drop members carrying ANY of these
+	AnyTags        []string `protobuf:"bytes,7,rep,name=any_tags,json=anyTags,proto3" json:"any_tags,omitempty"`                       // cluster member must carry AT LEAST ONE of these
+	IncludeExpired bool     `protobuf:"varint,8,opt,name=include_expired,json=includeExpired,proto3" json:"include_expired,omitempty"` // also gather expired memories (default: skipped, seeds and neighbours alike)
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *ConsolidateRequest) Reset() {
@@ -4373,6 +4462,13 @@ func (x *ConsolidateRequest) GetAnyTags() []string {
 		return x.AnyTags
 	}
 	return nil
+}
+
+func (x *ConsolidateRequest) GetIncludeExpired() bool {
+	if x != nil {
+		return x.IncludeExpired
+	}
+	return false
 }
 
 type RestoreMemoriesRequest struct {
@@ -6574,7 +6670,7 @@ type TrashEntry struct {
 	CreatedAt      *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
 	LinkedIds      []string               `protobuf:"bytes,8,rep,name=linked_ids,json=linkedIds,proto3" json:"linked_ids,omitempty"`
 	DeletedAt      *timestamppb.Timestamp `protobuf:"bytes,9,opt,name=deleted_at,json=deletedAt,proto3" json:"deleted_at,omitempty"`
-	// reason is why it was trashed: "delete", "supersedes:<id>" or "namespace-delete".
+	// reason is why it was trashed: "delete", "supersedes:<id>", "namespace-delete" or "expired".
 	Reason        string `protobuf:"bytes,10,opt,name=reason,proto3" json:"reason,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -7057,7 +7153,7 @@ var File_cortex_v1_cortex_proto protoreflect.FileDescriptor
 
 const file_cortex_v1_cortex_proto_rawDesc = "" +
 	"\n" +
-	"\x16cortex/v1/cortex.proto\x12\tcortex.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xdd\x03\n" +
+	"\x16cortex/v1/cortex.proto\x12\tcortex.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\x9a\x04\n" +
 	"\x06Memory\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04text\x18\x02 \x01(\tR\x04text\x12\x1c\n" +
@@ -7075,7 +7171,9 @@ const file_cortex_v1_cortex_proto_rawDesc = "" +
 	"\x0edup_candidates\x18\v \x03(\tR\rdupCandidates\x12(\n" +
 	"\x10not_duplicate_of\x18\f \x03(\tR\x0enotDuplicateOf\x12!\n" +
 	"\faccess_count\x18\r \x01(\x05R\vaccessCount\x12D\n" +
-	"\x10last_accessed_at\x18\x0e \x01(\v2\x1a.google.protobuf.TimestampR\x0elastAccessedAt\"\xcd\x01\n" +
+	"\x10last_accessed_at\x18\x0e \x01(\v2\x1a.google.protobuf.TimestampR\x0elastAccessedAt\x12;\n" +
+	"\vvalid_until\x18\x0f \x01(\v2\x1a.google.protobuf.TimestampR\n" +
+	"validUntil\"\xa9\x02\n" +
 	"\vSaveRequest\x12\x12\n" +
 	"\x04text\x18\x01 \x01(\tR\x04text\x12\x1c\n" +
 	"\tnamespace\x18\x02 \x01(\tR\tnamespace\x12\x12\n" +
@@ -7085,19 +7183,28 @@ const file_cortex_v1_cortex_proto_rawDesc = "" +
 	"\alink_to\x18\x06 \x03(\tR\x06linkTo\x12\x1e\n" +
 	"\n" +
 	"supersedes\x18\a \x03(\tR\n" +
-	"supersedes\"6\n" +
+	"supersedes\x12;\n" +
+	"\vvalid_until\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\n" +
+	"validUntil\x12\x1d\n" +
+	"\n" +
+	"expires_in\x18\t \x01(\tR\texpiresIn\"6\n" +
 	"\fSaveResponse\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x16\n" +
-	"\x06status\x18\x02 \x01(\tR\x06status\"\x8e\x01\n" +
+	"\x06status\x18\x02 \x01(\tR\x06status\"\x96\x02\n" +
 	"\x13UpdateMemoryRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04text\x18\x02 \x01(\tR\x04text\x12\x12\n" +
 	"\x04tags\x18\x03 \x03(\tR\x04tags\x12!\n" +
 	"\freplace_tags\x18\x04 \x01(\bR\vreplaceTags\x12\x1c\n" +
-	"\tnamespace\x18\x05 \x01(\tR\tnamespace\">\n" +
+	"\tnamespace\x18\x05 \x01(\tR\tnamespace\x12;\n" +
+	"\vvalid_until\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
+	"validUntil\x12\x1d\n" +
+	"\n" +
+	"expires_in\x18\a \x01(\tR\texpiresIn\x12*\n" +
+	"\x11clear_valid_until\x18\b \x01(\bR\x0fclearValidUntil\">\n" +
 	"\x14UpdateMemoryResponse\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x16\n" +
-	"\x06status\x18\x02 \x01(\tR\x06status\"\x8b\x02\n" +
+	"\x06status\x18\x02 \x01(\tR\x06status\"\xb4\x02\n" +
 	"\rSearchRequest\x12\x14\n" +
 	"\x05query\x18\x01 \x01(\tR\x05query\x12\x1c\n" +
 	"\tnamespace\x18\x02 \x01(\tR\tnamespace\x12\x14\n" +
@@ -7107,7 +7214,9 @@ const file_cortex_v1_cortex_proto_rawDesc = "" +
 	"\fmax_distance\x18\x06 \x01(\x02R\vmaxDistance\x12\x18\n" +
 	"\aautocut\x18\a \x01(\x05R\aautocut\x12\x19\n" +
 	"\bany_tags\x18\b \x03(\tR\aanyTags\x12!\n" +
-	"\fno_reinforce\x18\t \x01(\bR\vnoReinforce\"\xe9\x01\n" +
+	"\fno_reinforce\x18\t \x01(\bR\vnoReinforce\x12'\n" +
+	"\x0finclude_expired\x18\n" +
+	" \x01(\bR\x0eincludeExpired\"\x92\x02\n" +
 	"\x14SearchSimilarRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1c\n" +
 	"\tnamespace\x18\x02 \x01(\tR\tnamespace\x12\x14\n" +
@@ -7116,7 +7225,8 @@ const file_cortex_v1_cortex_proto_rawDesc = "" +
 	"\fexclude_tags\x18\x05 \x03(\tR\vexcludeTags\x12!\n" +
 	"\fmax_distance\x18\x06 \x01(\x02R\vmaxDistance\x12\x18\n" +
 	"\aautocut\x18\a \x01(\x05R\aautocut\x12\x19\n" +
-	"\bany_tags\x18\b \x03(\tR\aanyTags\"t\n" +
+	"\bany_tags\x18\b \x03(\tR\aanyTags\x12'\n" +
+	"\x0finclude_expired\x18\t \x01(\bR\x0eincludeExpired\"t\n" +
 	"\x03Hit\x12)\n" +
 	"\x06memory\x18\x01 \x01(\v2\x11.cortex.v1.MemoryR\x06memory\x12\x1a\n" +
 	"\bdistance\x18\x02 \x01(\x02R\bdistance\x12&\n" +
@@ -7177,13 +7287,14 @@ const file_cortex_v1_cortex_proto_rawDesc = "" +
 	"\x10GetMemoryRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\">\n" +
 	"\x11GetMemoryResponse\x12)\n" +
-	"\x06memory\x18\x01 \x01(\v2\x11.cortex.v1.MemoryR\x06memory\"\x93\x01\n" +
+	"\x06memory\x18\x01 \x01(\v2\x11.cortex.v1.MemoryR\x06memory\"\xbc\x01\n" +
 	"\vListRequest\x12\x1c\n" +
 	"\tnamespace\x18\x01 \x01(\tR\tnamespace\x12\x14\n" +
 	"\x05limit\x18\x02 \x01(\x05R\x05limit\x12\x12\n" +
 	"\x04tags\x18\x03 \x03(\tR\x04tags\x12!\n" +
 	"\fexclude_tags\x18\x04 \x03(\tR\vexcludeTags\x12\x19\n" +
-	"\bany_tags\x18\x05 \x03(\tR\aanyTags\"=\n" +
+	"\bany_tags\x18\x05 \x03(\tR\aanyTags\x12'\n" +
+	"\x0finclude_expired\x18\x06 \x01(\bR\x0eincludeExpired\"=\n" +
 	"\fListResponse\x12-\n" +
 	"\bmemories\x18\x01 \x03(\v2\x11.cortex.v1.MemoryR\bmemories\"7\n" +
 	"\rDeleteRequest\x12\x0e\n" +
@@ -7364,7 +7475,7 @@ const file_cortex_v1_cortex_proto_rawDesc = "" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\ttarget_id\x18\x02 \x01(\tR\btargetId\"D\n" +
 	"\x18DismissDuplicateResponse\x12(\n" +
-	"\x10not_duplicate_of\x18\x01 \x03(\tR\x0enotDuplicateOf\"\xd3\x01\n" +
+	"\x10not_duplicate_of\x18\x01 \x03(\tR\x0enotDuplicateOf\"\xfc\x01\n" +
 	"\x12ConsolidateRequest\x12\x14\n" +
 	"\x05topic\x18\x01 \x01(\tR\x05topic\x12\x1c\n" +
 	"\tnamespace\x18\x02 \x01(\tR\tnamespace\x12\x14\n" +
@@ -7372,7 +7483,8 @@ const file_cortex_v1_cortex_proto_rawDesc = "" +
 	"\fmax_distance\x18\x04 \x01(\x02R\vmaxDistance\x12\x12\n" +
 	"\x04tags\x18\x05 \x03(\tR\x04tags\x12!\n" +
 	"\fexclude_tags\x18\x06 \x03(\tR\vexcludeTags\x12\x19\n" +
-	"\bany_tags\x18\a \x03(\tR\aanyTags\"G\n" +
+	"\bany_tags\x18\a \x03(\tR\aanyTags\x12'\n" +
+	"\x0finclude_expired\x18\b \x01(\bR\x0eincludeExpired\"G\n" +
 	"\x16RestoreMemoriesRequest\x12-\n" +
 	"\bmemories\x18\x01 \x03(\v2\x11.cortex.v1.MemoryR\bmemories\"1\n" +
 	"\x17RestoreMemoriesResponse\x12\x16\n" +
@@ -7750,163 +7862,166 @@ var file_cortex_v1_cortex_proto_goTypes = []any{
 var file_cortex_v1_cortex_proto_depIdxs = []int32{
 	121, // 0: cortex.v1.Memory.created_at:type_name -> google.protobuf.Timestamp
 	121, // 1: cortex.v1.Memory.last_accessed_at:type_name -> google.protobuf.Timestamp
-	1,   // 2: cortex.v1.Hit.memory:type_name -> cortex.v1.Memory
-	9,   // 3: cortex.v1.Hit.match:type_name -> cortex.v1.Match
-	8,   // 4: cortex.v1.SearchResponse.hits:type_name -> cortex.v1.Hit
-	8,   // 5: cortex.v1.SearchSimilarResponse.hits:type_name -> cortex.v1.Hit
-	1,   // 6: cortex.v1.RecallPreviewHit.memory:type_name -> cortex.v1.Memory
-	9,   // 7: cortex.v1.RecallPreviewHit.match:type_name -> cortex.v1.Match
-	13,  // 8: cortex.v1.PreviewRecallResponse.injected:type_name -> cortex.v1.RecallPreviewHit
-	13,  // 9: cortex.v1.PreviewRecallResponse.near_misses:type_name -> cortex.v1.RecallPreviewHit
-	1,   // 10: cortex.v1.GetMemoryResponse.memory:type_name -> cortex.v1.Memory
-	1,   // 11: cortex.v1.ListResponse.memories:type_name -> cortex.v1.Memory
-	121, // 12: cortex.v1.BackupFile.created_at:type_name -> google.protobuf.Timestamp
-	28,  // 13: cortex.v1.ListBackupsResponse.backups:type_name -> cortex.v1.BackupFile
-	28,  // 14: cortex.v1.ListS3BackupsResponse.backups:type_name -> cortex.v1.BackupFile
-	43,  // 15: cortex.v1.DoctorResponse.checks:type_name -> cortex.v1.Check
-	1,   // 16: cortex.v1.DeadLetter.record:type_name -> cortex.v1.Memory
-	121, // 17: cortex.v1.DeadLetter.failed_at:type_name -> google.protobuf.Timestamp
-	0,   // 18: cortex.v1.DeadRequest.action:type_name -> cortex.v1.DeadAction
-	47,  // 19: cortex.v1.DeadResponse.dead_letters:type_name -> cortex.v1.DeadLetter
-	121, // 20: cortex.v1.ConversationSummary.created_at:type_name -> google.protobuf.Timestamp
-	121, // 21: cortex.v1.ConversationSummary.updated_at:type_name -> google.protobuf.Timestamp
-	54,  // 22: cortex.v1.RecallSessionResponse.summary:type_name -> cortex.v1.ConversationSummary
-	1,   // 23: cortex.v1.RecallSessionResponse.facts:type_name -> cortex.v1.Memory
-	54,  // 24: cortex.v1.ListSummariesResponse.summaries:type_name -> cortex.v1.ConversationSummary
-	1,   // 25: cortex.v1.DuplicateGroup.memory:type_name -> cortex.v1.Memory
-	1,   // 26: cortex.v1.DuplicateGroup.candidates:type_name -> cortex.v1.Memory
-	66,  // 27: cortex.v1.ListDuplicateCandidatesResponse.groups:type_name -> cortex.v1.DuplicateGroup
-	1,   // 28: cortex.v1.RestoreMemoriesRequest.memories:type_name -> cortex.v1.Memory
-	121, // 29: cortex.v1.NamespaceInfo.last_updated:type_name -> google.protobuf.Timestamp
-	73,  // 30: cortex.v1.ListNamespacesResponse.namespaces:type_name -> cortex.v1.NamespaceInfo
-	121, // 31: cortex.v1.TagInfo.last_activity:type_name -> google.protobuf.Timestamp
-	80,  // 32: cortex.v1.ListTagsResponse.tags:type_name -> cortex.v1.TagInfo
-	1,   // 33: cortex.v1.ConsolidateResponse.cluster:type_name -> cortex.v1.Memory
-	121, // 34: cortex.v1.UserInfo.created_at:type_name -> google.protobuf.Timestamp
-	121, // 35: cortex.v1.UserInfo.updated_at:type_name -> google.protobuf.Timestamp
-	90,  // 36: cortex.v1.ListUsersResponse.users:type_name -> cortex.v1.UserInfo
-	90,  // 37: cortex.v1.CreateUserResponse.user:type_name -> cortex.v1.UserInfo
-	90,  // 38: cortex.v1.SetUserRoleResponse.user:type_name -> cortex.v1.UserInfo
-	121, // 39: cortex.v1.ApiKeyInfo.created_at:type_name -> google.protobuf.Timestamp
-	121, // 40: cortex.v1.ApiKeyInfo.last_used_at:type_name -> google.protobuf.Timestamp
-	101, // 41: cortex.v1.CreateApiKeyResponse.key:type_name -> cortex.v1.ApiKeyInfo
-	101, // 42: cortex.v1.ListApiKeysResponse.keys:type_name -> cortex.v1.ApiKeyInfo
-	101, // 43: cortex.v1.AdminCreateApiKeyResponse.key:type_name -> cortex.v1.ApiKeyInfo
-	101, // 44: cortex.v1.AdminListApiKeysResponse.keys:type_name -> cortex.v1.ApiKeyInfo
-	121, // 45: cortex.v1.TrashEntry.created_at:type_name -> google.protobuf.Timestamp
-	121, // 46: cortex.v1.TrashEntry.deleted_at:type_name -> google.protobuf.Timestamp
-	114, // 47: cortex.v1.ListTrashResponse.entries:type_name -> cortex.v1.TrashEntry
-	2,   // 48: cortex.v1.MemoryService.Save:input_type -> cortex.v1.SaveRequest
-	4,   // 49: cortex.v1.MemoryService.UpdateMemory:input_type -> cortex.v1.UpdateMemoryRequest
-	6,   // 50: cortex.v1.MemoryService.Search:input_type -> cortex.v1.SearchRequest
-	7,   // 51: cortex.v1.MemoryService.SearchSimilar:input_type -> cortex.v1.SearchSimilarRequest
-	12,  // 52: cortex.v1.MemoryService.PreviewRecall:input_type -> cortex.v1.PreviewRecallRequest
-	17,  // 53: cortex.v1.MemoryService.List:input_type -> cortex.v1.ListRequest
-	15,  // 54: cortex.v1.MemoryService.GetMemory:input_type -> cortex.v1.GetMemoryRequest
-	19,  // 55: cortex.v1.MemoryService.Delete:input_type -> cortex.v1.DeleteRequest
-	40,  // 56: cortex.v1.MemoryService.Status:input_type -> cortex.v1.StatusRequest
-	38,  // 57: cortex.v1.MemoryService.GetVersion:input_type -> cortex.v1.GetVersionRequest
-	42,  // 58: cortex.v1.MemoryService.Doctor:input_type -> cortex.v1.DoctorRequest
-	45,  // 59: cortex.v1.MemoryService.Reindex:input_type -> cortex.v1.ReindexRequest
-	48,  // 60: cortex.v1.MemoryService.Dead:input_type -> cortex.v1.DeadRequest
-	50,  // 61: cortex.v1.MemoryService.IndexQueue:input_type -> cortex.v1.IndexQueueRequest
-	52,  // 62: cortex.v1.MemoryService.PullModel:input_type -> cortex.v1.PullModelRequest
-	55,  // 63: cortex.v1.MemoryService.SummarizeSession:input_type -> cortex.v1.SummarizeSessionRequest
-	57,  // 64: cortex.v1.MemoryService.RecallSession:input_type -> cortex.v1.RecallSessionRequest
-	59,  // 65: cortex.v1.MemoryService.ListSummaries:input_type -> cortex.v1.ListSummariesRequest
-	61,  // 66: cortex.v1.MemoryService.Link:input_type -> cortex.v1.LinkRequest
-	63,  // 67: cortex.v1.MemoryService.Unlink:input_type -> cortex.v1.UnlinkRequest
-	65,  // 68: cortex.v1.MemoryService.ListDuplicateCandidates:input_type -> cortex.v1.ListDuplicateCandidatesRequest
-	68,  // 69: cortex.v1.MemoryService.DismissDuplicate:input_type -> cortex.v1.DismissDuplicateRequest
-	70,  // 70: cortex.v1.MemoryService.Consolidate:input_type -> cortex.v1.ConsolidateRequest
-	71,  // 71: cortex.v1.MemoryService.RestoreMemories:input_type -> cortex.v1.RestoreMemoriesRequest
-	74,  // 72: cortex.v1.MemoryService.ListNamespaces:input_type -> cortex.v1.ListNamespacesRequest
-	76,  // 73: cortex.v1.MemoryService.RenameNamespace:input_type -> cortex.v1.RenameNamespaceRequest
-	78,  // 74: cortex.v1.MemoryService.DeleteNamespace:input_type -> cortex.v1.DeleteNamespaceRequest
-	81,  // 75: cortex.v1.MemoryService.ListTags:input_type -> cortex.v1.ListTagsRequest
-	83,  // 76: cortex.v1.MemoryService.RenameTag:input_type -> cortex.v1.RenameTagRequest
-	85,  // 77: cortex.v1.MemoryService.DeleteTag:input_type -> cortex.v1.DeleteTagRequest
-	115, // 78: cortex.v1.MemoryService.ListTrash:input_type -> cortex.v1.ListTrashRequest
-	117, // 79: cortex.v1.MemoryService.RestoreFromTrash:input_type -> cortex.v1.RestoreFromTrashRequest
-	119, // 80: cortex.v1.MemoryService.PurgeTrash:input_type -> cortex.v1.PurgeTrashRequest
-	87,  // 81: cortex.v1.MemoryService.MigrateMT:input_type -> cortex.v1.MigrateMTRequest
-	21,  // 82: cortex.v1.MemoryService.BackupSelf:input_type -> cortex.v1.BackupSelfRequest
-	23,  // 83: cortex.v1.MemoryService.RestoreSelf:input_type -> cortex.v1.RestoreSelfRequest
-	25,  // 84: cortex.v1.MemoryService.BackupAll:input_type -> cortex.v1.BackupAllRequest
-	27,  // 85: cortex.v1.MemoryService.ListBackups:input_type -> cortex.v1.ListBackupsRequest
-	30,  // 86: cortex.v1.MemoryService.ListS3Backups:input_type -> cortex.v1.ListS3BackupsRequest
-	32,  // 87: cortex.v1.MemoryService.RestoreAll:input_type -> cortex.v1.RestoreAllRequest
-	34,  // 88: cortex.v1.MemoryService.DownloadBackup:input_type -> cortex.v1.DownloadBackupRequest
-	36,  // 89: cortex.v1.MemoryService.DeleteBackup:input_type -> cortex.v1.DeleteBackupRequest
-	91,  // 90: cortex.v1.MemoryService.ListUsers:input_type -> cortex.v1.ListUsersRequest
-	93,  // 91: cortex.v1.MemoryService.CreateUser:input_type -> cortex.v1.CreateUserRequest
-	95,  // 92: cortex.v1.MemoryService.DeleteUser:input_type -> cortex.v1.DeleteUserRequest
-	97,  // 93: cortex.v1.MemoryService.SetUserRole:input_type -> cortex.v1.SetUserRoleRequest
-	99,  // 94: cortex.v1.MemoryService.ResetUserPassword:input_type -> cortex.v1.ResetUserPasswordRequest
-	102, // 95: cortex.v1.MemoryService.CreateApiKey:input_type -> cortex.v1.CreateApiKeyRequest
-	104, // 96: cortex.v1.MemoryService.ListApiKeys:input_type -> cortex.v1.ListApiKeysRequest
-	106, // 97: cortex.v1.MemoryService.DeleteApiKey:input_type -> cortex.v1.DeleteApiKeyRequest
-	108, // 98: cortex.v1.MemoryService.AdminCreateApiKey:input_type -> cortex.v1.AdminCreateApiKeyRequest
-	110, // 99: cortex.v1.MemoryService.AdminListApiKeys:input_type -> cortex.v1.AdminListApiKeysRequest
-	112, // 100: cortex.v1.MemoryService.AdminDeleteApiKey:input_type -> cortex.v1.AdminDeleteApiKeyRequest
-	3,   // 101: cortex.v1.MemoryService.Save:output_type -> cortex.v1.SaveResponse
-	5,   // 102: cortex.v1.MemoryService.UpdateMemory:output_type -> cortex.v1.UpdateMemoryResponse
-	10,  // 103: cortex.v1.MemoryService.Search:output_type -> cortex.v1.SearchResponse
-	11,  // 104: cortex.v1.MemoryService.SearchSimilar:output_type -> cortex.v1.SearchSimilarResponse
-	14,  // 105: cortex.v1.MemoryService.PreviewRecall:output_type -> cortex.v1.PreviewRecallResponse
-	18,  // 106: cortex.v1.MemoryService.List:output_type -> cortex.v1.ListResponse
-	16,  // 107: cortex.v1.MemoryService.GetMemory:output_type -> cortex.v1.GetMemoryResponse
-	20,  // 108: cortex.v1.MemoryService.Delete:output_type -> cortex.v1.DeleteResponse
-	41,  // 109: cortex.v1.MemoryService.Status:output_type -> cortex.v1.StatusResponse
-	39,  // 110: cortex.v1.MemoryService.GetVersion:output_type -> cortex.v1.GetVersionResponse
-	44,  // 111: cortex.v1.MemoryService.Doctor:output_type -> cortex.v1.DoctorResponse
-	46,  // 112: cortex.v1.MemoryService.Reindex:output_type -> cortex.v1.ReindexResponse
-	49,  // 113: cortex.v1.MemoryService.Dead:output_type -> cortex.v1.DeadResponse
-	51,  // 114: cortex.v1.MemoryService.IndexQueue:output_type -> cortex.v1.IndexQueueResponse
-	53,  // 115: cortex.v1.MemoryService.PullModel:output_type -> cortex.v1.PullModelResponse
-	56,  // 116: cortex.v1.MemoryService.SummarizeSession:output_type -> cortex.v1.SummarizeSessionResponse
-	58,  // 117: cortex.v1.MemoryService.RecallSession:output_type -> cortex.v1.RecallSessionResponse
-	60,  // 118: cortex.v1.MemoryService.ListSummaries:output_type -> cortex.v1.ListSummariesResponse
-	62,  // 119: cortex.v1.MemoryService.Link:output_type -> cortex.v1.LinkResponse
-	64,  // 120: cortex.v1.MemoryService.Unlink:output_type -> cortex.v1.UnlinkResponse
-	67,  // 121: cortex.v1.MemoryService.ListDuplicateCandidates:output_type -> cortex.v1.ListDuplicateCandidatesResponse
-	69,  // 122: cortex.v1.MemoryService.DismissDuplicate:output_type -> cortex.v1.DismissDuplicateResponse
-	89,  // 123: cortex.v1.MemoryService.Consolidate:output_type -> cortex.v1.ConsolidateResponse
-	72,  // 124: cortex.v1.MemoryService.RestoreMemories:output_type -> cortex.v1.RestoreMemoriesResponse
-	75,  // 125: cortex.v1.MemoryService.ListNamespaces:output_type -> cortex.v1.ListNamespacesResponse
-	77,  // 126: cortex.v1.MemoryService.RenameNamespace:output_type -> cortex.v1.RenameNamespaceResponse
-	79,  // 127: cortex.v1.MemoryService.DeleteNamespace:output_type -> cortex.v1.DeleteNamespaceResponse
-	82,  // 128: cortex.v1.MemoryService.ListTags:output_type -> cortex.v1.ListTagsResponse
-	84,  // 129: cortex.v1.MemoryService.RenameTag:output_type -> cortex.v1.RenameTagResponse
-	86,  // 130: cortex.v1.MemoryService.DeleteTag:output_type -> cortex.v1.DeleteTagResponse
-	116, // 131: cortex.v1.MemoryService.ListTrash:output_type -> cortex.v1.ListTrashResponse
-	118, // 132: cortex.v1.MemoryService.RestoreFromTrash:output_type -> cortex.v1.RestoreFromTrashResponse
-	120, // 133: cortex.v1.MemoryService.PurgeTrash:output_type -> cortex.v1.PurgeTrashResponse
-	88,  // 134: cortex.v1.MemoryService.MigrateMT:output_type -> cortex.v1.MigrateMTResponse
-	22,  // 135: cortex.v1.MemoryService.BackupSelf:output_type -> cortex.v1.BackupSelfResponse
-	24,  // 136: cortex.v1.MemoryService.RestoreSelf:output_type -> cortex.v1.RestoreSelfResponse
-	26,  // 137: cortex.v1.MemoryService.BackupAll:output_type -> cortex.v1.BackupAllResponse
-	29,  // 138: cortex.v1.MemoryService.ListBackups:output_type -> cortex.v1.ListBackupsResponse
-	31,  // 139: cortex.v1.MemoryService.ListS3Backups:output_type -> cortex.v1.ListS3BackupsResponse
-	33,  // 140: cortex.v1.MemoryService.RestoreAll:output_type -> cortex.v1.RestoreAllResponse
-	35,  // 141: cortex.v1.MemoryService.DownloadBackup:output_type -> cortex.v1.DownloadBackupResponse
-	37,  // 142: cortex.v1.MemoryService.DeleteBackup:output_type -> cortex.v1.DeleteBackupResponse
-	92,  // 143: cortex.v1.MemoryService.ListUsers:output_type -> cortex.v1.ListUsersResponse
-	94,  // 144: cortex.v1.MemoryService.CreateUser:output_type -> cortex.v1.CreateUserResponse
-	96,  // 145: cortex.v1.MemoryService.DeleteUser:output_type -> cortex.v1.DeleteUserResponse
-	98,  // 146: cortex.v1.MemoryService.SetUserRole:output_type -> cortex.v1.SetUserRoleResponse
-	100, // 147: cortex.v1.MemoryService.ResetUserPassword:output_type -> cortex.v1.ResetUserPasswordResponse
-	103, // 148: cortex.v1.MemoryService.CreateApiKey:output_type -> cortex.v1.CreateApiKeyResponse
-	105, // 149: cortex.v1.MemoryService.ListApiKeys:output_type -> cortex.v1.ListApiKeysResponse
-	107, // 150: cortex.v1.MemoryService.DeleteApiKey:output_type -> cortex.v1.DeleteApiKeyResponse
-	109, // 151: cortex.v1.MemoryService.AdminCreateApiKey:output_type -> cortex.v1.AdminCreateApiKeyResponse
-	111, // 152: cortex.v1.MemoryService.AdminListApiKeys:output_type -> cortex.v1.AdminListApiKeysResponse
-	113, // 153: cortex.v1.MemoryService.AdminDeleteApiKey:output_type -> cortex.v1.AdminDeleteApiKeyResponse
-	101, // [101:154] is the sub-list for method output_type
-	48,  // [48:101] is the sub-list for method input_type
-	48,  // [48:48] is the sub-list for extension type_name
-	48,  // [48:48] is the sub-list for extension extendee
-	0,   // [0:48] is the sub-list for field type_name
+	121, // 2: cortex.v1.Memory.valid_until:type_name -> google.protobuf.Timestamp
+	121, // 3: cortex.v1.SaveRequest.valid_until:type_name -> google.protobuf.Timestamp
+	121, // 4: cortex.v1.UpdateMemoryRequest.valid_until:type_name -> google.protobuf.Timestamp
+	1,   // 5: cortex.v1.Hit.memory:type_name -> cortex.v1.Memory
+	9,   // 6: cortex.v1.Hit.match:type_name -> cortex.v1.Match
+	8,   // 7: cortex.v1.SearchResponse.hits:type_name -> cortex.v1.Hit
+	8,   // 8: cortex.v1.SearchSimilarResponse.hits:type_name -> cortex.v1.Hit
+	1,   // 9: cortex.v1.RecallPreviewHit.memory:type_name -> cortex.v1.Memory
+	9,   // 10: cortex.v1.RecallPreviewHit.match:type_name -> cortex.v1.Match
+	13,  // 11: cortex.v1.PreviewRecallResponse.injected:type_name -> cortex.v1.RecallPreviewHit
+	13,  // 12: cortex.v1.PreviewRecallResponse.near_misses:type_name -> cortex.v1.RecallPreviewHit
+	1,   // 13: cortex.v1.GetMemoryResponse.memory:type_name -> cortex.v1.Memory
+	1,   // 14: cortex.v1.ListResponse.memories:type_name -> cortex.v1.Memory
+	121, // 15: cortex.v1.BackupFile.created_at:type_name -> google.protobuf.Timestamp
+	28,  // 16: cortex.v1.ListBackupsResponse.backups:type_name -> cortex.v1.BackupFile
+	28,  // 17: cortex.v1.ListS3BackupsResponse.backups:type_name -> cortex.v1.BackupFile
+	43,  // 18: cortex.v1.DoctorResponse.checks:type_name -> cortex.v1.Check
+	1,   // 19: cortex.v1.DeadLetter.record:type_name -> cortex.v1.Memory
+	121, // 20: cortex.v1.DeadLetter.failed_at:type_name -> google.protobuf.Timestamp
+	0,   // 21: cortex.v1.DeadRequest.action:type_name -> cortex.v1.DeadAction
+	47,  // 22: cortex.v1.DeadResponse.dead_letters:type_name -> cortex.v1.DeadLetter
+	121, // 23: cortex.v1.ConversationSummary.created_at:type_name -> google.protobuf.Timestamp
+	121, // 24: cortex.v1.ConversationSummary.updated_at:type_name -> google.protobuf.Timestamp
+	54,  // 25: cortex.v1.RecallSessionResponse.summary:type_name -> cortex.v1.ConversationSummary
+	1,   // 26: cortex.v1.RecallSessionResponse.facts:type_name -> cortex.v1.Memory
+	54,  // 27: cortex.v1.ListSummariesResponse.summaries:type_name -> cortex.v1.ConversationSummary
+	1,   // 28: cortex.v1.DuplicateGroup.memory:type_name -> cortex.v1.Memory
+	1,   // 29: cortex.v1.DuplicateGroup.candidates:type_name -> cortex.v1.Memory
+	66,  // 30: cortex.v1.ListDuplicateCandidatesResponse.groups:type_name -> cortex.v1.DuplicateGroup
+	1,   // 31: cortex.v1.RestoreMemoriesRequest.memories:type_name -> cortex.v1.Memory
+	121, // 32: cortex.v1.NamespaceInfo.last_updated:type_name -> google.protobuf.Timestamp
+	73,  // 33: cortex.v1.ListNamespacesResponse.namespaces:type_name -> cortex.v1.NamespaceInfo
+	121, // 34: cortex.v1.TagInfo.last_activity:type_name -> google.protobuf.Timestamp
+	80,  // 35: cortex.v1.ListTagsResponse.tags:type_name -> cortex.v1.TagInfo
+	1,   // 36: cortex.v1.ConsolidateResponse.cluster:type_name -> cortex.v1.Memory
+	121, // 37: cortex.v1.UserInfo.created_at:type_name -> google.protobuf.Timestamp
+	121, // 38: cortex.v1.UserInfo.updated_at:type_name -> google.protobuf.Timestamp
+	90,  // 39: cortex.v1.ListUsersResponse.users:type_name -> cortex.v1.UserInfo
+	90,  // 40: cortex.v1.CreateUserResponse.user:type_name -> cortex.v1.UserInfo
+	90,  // 41: cortex.v1.SetUserRoleResponse.user:type_name -> cortex.v1.UserInfo
+	121, // 42: cortex.v1.ApiKeyInfo.created_at:type_name -> google.protobuf.Timestamp
+	121, // 43: cortex.v1.ApiKeyInfo.last_used_at:type_name -> google.protobuf.Timestamp
+	101, // 44: cortex.v1.CreateApiKeyResponse.key:type_name -> cortex.v1.ApiKeyInfo
+	101, // 45: cortex.v1.ListApiKeysResponse.keys:type_name -> cortex.v1.ApiKeyInfo
+	101, // 46: cortex.v1.AdminCreateApiKeyResponse.key:type_name -> cortex.v1.ApiKeyInfo
+	101, // 47: cortex.v1.AdminListApiKeysResponse.keys:type_name -> cortex.v1.ApiKeyInfo
+	121, // 48: cortex.v1.TrashEntry.created_at:type_name -> google.protobuf.Timestamp
+	121, // 49: cortex.v1.TrashEntry.deleted_at:type_name -> google.protobuf.Timestamp
+	114, // 50: cortex.v1.ListTrashResponse.entries:type_name -> cortex.v1.TrashEntry
+	2,   // 51: cortex.v1.MemoryService.Save:input_type -> cortex.v1.SaveRequest
+	4,   // 52: cortex.v1.MemoryService.UpdateMemory:input_type -> cortex.v1.UpdateMemoryRequest
+	6,   // 53: cortex.v1.MemoryService.Search:input_type -> cortex.v1.SearchRequest
+	7,   // 54: cortex.v1.MemoryService.SearchSimilar:input_type -> cortex.v1.SearchSimilarRequest
+	12,  // 55: cortex.v1.MemoryService.PreviewRecall:input_type -> cortex.v1.PreviewRecallRequest
+	17,  // 56: cortex.v1.MemoryService.List:input_type -> cortex.v1.ListRequest
+	15,  // 57: cortex.v1.MemoryService.GetMemory:input_type -> cortex.v1.GetMemoryRequest
+	19,  // 58: cortex.v1.MemoryService.Delete:input_type -> cortex.v1.DeleteRequest
+	40,  // 59: cortex.v1.MemoryService.Status:input_type -> cortex.v1.StatusRequest
+	38,  // 60: cortex.v1.MemoryService.GetVersion:input_type -> cortex.v1.GetVersionRequest
+	42,  // 61: cortex.v1.MemoryService.Doctor:input_type -> cortex.v1.DoctorRequest
+	45,  // 62: cortex.v1.MemoryService.Reindex:input_type -> cortex.v1.ReindexRequest
+	48,  // 63: cortex.v1.MemoryService.Dead:input_type -> cortex.v1.DeadRequest
+	50,  // 64: cortex.v1.MemoryService.IndexQueue:input_type -> cortex.v1.IndexQueueRequest
+	52,  // 65: cortex.v1.MemoryService.PullModel:input_type -> cortex.v1.PullModelRequest
+	55,  // 66: cortex.v1.MemoryService.SummarizeSession:input_type -> cortex.v1.SummarizeSessionRequest
+	57,  // 67: cortex.v1.MemoryService.RecallSession:input_type -> cortex.v1.RecallSessionRequest
+	59,  // 68: cortex.v1.MemoryService.ListSummaries:input_type -> cortex.v1.ListSummariesRequest
+	61,  // 69: cortex.v1.MemoryService.Link:input_type -> cortex.v1.LinkRequest
+	63,  // 70: cortex.v1.MemoryService.Unlink:input_type -> cortex.v1.UnlinkRequest
+	65,  // 71: cortex.v1.MemoryService.ListDuplicateCandidates:input_type -> cortex.v1.ListDuplicateCandidatesRequest
+	68,  // 72: cortex.v1.MemoryService.DismissDuplicate:input_type -> cortex.v1.DismissDuplicateRequest
+	70,  // 73: cortex.v1.MemoryService.Consolidate:input_type -> cortex.v1.ConsolidateRequest
+	71,  // 74: cortex.v1.MemoryService.RestoreMemories:input_type -> cortex.v1.RestoreMemoriesRequest
+	74,  // 75: cortex.v1.MemoryService.ListNamespaces:input_type -> cortex.v1.ListNamespacesRequest
+	76,  // 76: cortex.v1.MemoryService.RenameNamespace:input_type -> cortex.v1.RenameNamespaceRequest
+	78,  // 77: cortex.v1.MemoryService.DeleteNamespace:input_type -> cortex.v1.DeleteNamespaceRequest
+	81,  // 78: cortex.v1.MemoryService.ListTags:input_type -> cortex.v1.ListTagsRequest
+	83,  // 79: cortex.v1.MemoryService.RenameTag:input_type -> cortex.v1.RenameTagRequest
+	85,  // 80: cortex.v1.MemoryService.DeleteTag:input_type -> cortex.v1.DeleteTagRequest
+	115, // 81: cortex.v1.MemoryService.ListTrash:input_type -> cortex.v1.ListTrashRequest
+	117, // 82: cortex.v1.MemoryService.RestoreFromTrash:input_type -> cortex.v1.RestoreFromTrashRequest
+	119, // 83: cortex.v1.MemoryService.PurgeTrash:input_type -> cortex.v1.PurgeTrashRequest
+	87,  // 84: cortex.v1.MemoryService.MigrateMT:input_type -> cortex.v1.MigrateMTRequest
+	21,  // 85: cortex.v1.MemoryService.BackupSelf:input_type -> cortex.v1.BackupSelfRequest
+	23,  // 86: cortex.v1.MemoryService.RestoreSelf:input_type -> cortex.v1.RestoreSelfRequest
+	25,  // 87: cortex.v1.MemoryService.BackupAll:input_type -> cortex.v1.BackupAllRequest
+	27,  // 88: cortex.v1.MemoryService.ListBackups:input_type -> cortex.v1.ListBackupsRequest
+	30,  // 89: cortex.v1.MemoryService.ListS3Backups:input_type -> cortex.v1.ListS3BackupsRequest
+	32,  // 90: cortex.v1.MemoryService.RestoreAll:input_type -> cortex.v1.RestoreAllRequest
+	34,  // 91: cortex.v1.MemoryService.DownloadBackup:input_type -> cortex.v1.DownloadBackupRequest
+	36,  // 92: cortex.v1.MemoryService.DeleteBackup:input_type -> cortex.v1.DeleteBackupRequest
+	91,  // 93: cortex.v1.MemoryService.ListUsers:input_type -> cortex.v1.ListUsersRequest
+	93,  // 94: cortex.v1.MemoryService.CreateUser:input_type -> cortex.v1.CreateUserRequest
+	95,  // 95: cortex.v1.MemoryService.DeleteUser:input_type -> cortex.v1.DeleteUserRequest
+	97,  // 96: cortex.v1.MemoryService.SetUserRole:input_type -> cortex.v1.SetUserRoleRequest
+	99,  // 97: cortex.v1.MemoryService.ResetUserPassword:input_type -> cortex.v1.ResetUserPasswordRequest
+	102, // 98: cortex.v1.MemoryService.CreateApiKey:input_type -> cortex.v1.CreateApiKeyRequest
+	104, // 99: cortex.v1.MemoryService.ListApiKeys:input_type -> cortex.v1.ListApiKeysRequest
+	106, // 100: cortex.v1.MemoryService.DeleteApiKey:input_type -> cortex.v1.DeleteApiKeyRequest
+	108, // 101: cortex.v1.MemoryService.AdminCreateApiKey:input_type -> cortex.v1.AdminCreateApiKeyRequest
+	110, // 102: cortex.v1.MemoryService.AdminListApiKeys:input_type -> cortex.v1.AdminListApiKeysRequest
+	112, // 103: cortex.v1.MemoryService.AdminDeleteApiKey:input_type -> cortex.v1.AdminDeleteApiKeyRequest
+	3,   // 104: cortex.v1.MemoryService.Save:output_type -> cortex.v1.SaveResponse
+	5,   // 105: cortex.v1.MemoryService.UpdateMemory:output_type -> cortex.v1.UpdateMemoryResponse
+	10,  // 106: cortex.v1.MemoryService.Search:output_type -> cortex.v1.SearchResponse
+	11,  // 107: cortex.v1.MemoryService.SearchSimilar:output_type -> cortex.v1.SearchSimilarResponse
+	14,  // 108: cortex.v1.MemoryService.PreviewRecall:output_type -> cortex.v1.PreviewRecallResponse
+	18,  // 109: cortex.v1.MemoryService.List:output_type -> cortex.v1.ListResponse
+	16,  // 110: cortex.v1.MemoryService.GetMemory:output_type -> cortex.v1.GetMemoryResponse
+	20,  // 111: cortex.v1.MemoryService.Delete:output_type -> cortex.v1.DeleteResponse
+	41,  // 112: cortex.v1.MemoryService.Status:output_type -> cortex.v1.StatusResponse
+	39,  // 113: cortex.v1.MemoryService.GetVersion:output_type -> cortex.v1.GetVersionResponse
+	44,  // 114: cortex.v1.MemoryService.Doctor:output_type -> cortex.v1.DoctorResponse
+	46,  // 115: cortex.v1.MemoryService.Reindex:output_type -> cortex.v1.ReindexResponse
+	49,  // 116: cortex.v1.MemoryService.Dead:output_type -> cortex.v1.DeadResponse
+	51,  // 117: cortex.v1.MemoryService.IndexQueue:output_type -> cortex.v1.IndexQueueResponse
+	53,  // 118: cortex.v1.MemoryService.PullModel:output_type -> cortex.v1.PullModelResponse
+	56,  // 119: cortex.v1.MemoryService.SummarizeSession:output_type -> cortex.v1.SummarizeSessionResponse
+	58,  // 120: cortex.v1.MemoryService.RecallSession:output_type -> cortex.v1.RecallSessionResponse
+	60,  // 121: cortex.v1.MemoryService.ListSummaries:output_type -> cortex.v1.ListSummariesResponse
+	62,  // 122: cortex.v1.MemoryService.Link:output_type -> cortex.v1.LinkResponse
+	64,  // 123: cortex.v1.MemoryService.Unlink:output_type -> cortex.v1.UnlinkResponse
+	67,  // 124: cortex.v1.MemoryService.ListDuplicateCandidates:output_type -> cortex.v1.ListDuplicateCandidatesResponse
+	69,  // 125: cortex.v1.MemoryService.DismissDuplicate:output_type -> cortex.v1.DismissDuplicateResponse
+	89,  // 126: cortex.v1.MemoryService.Consolidate:output_type -> cortex.v1.ConsolidateResponse
+	72,  // 127: cortex.v1.MemoryService.RestoreMemories:output_type -> cortex.v1.RestoreMemoriesResponse
+	75,  // 128: cortex.v1.MemoryService.ListNamespaces:output_type -> cortex.v1.ListNamespacesResponse
+	77,  // 129: cortex.v1.MemoryService.RenameNamespace:output_type -> cortex.v1.RenameNamespaceResponse
+	79,  // 130: cortex.v1.MemoryService.DeleteNamespace:output_type -> cortex.v1.DeleteNamespaceResponse
+	82,  // 131: cortex.v1.MemoryService.ListTags:output_type -> cortex.v1.ListTagsResponse
+	84,  // 132: cortex.v1.MemoryService.RenameTag:output_type -> cortex.v1.RenameTagResponse
+	86,  // 133: cortex.v1.MemoryService.DeleteTag:output_type -> cortex.v1.DeleteTagResponse
+	116, // 134: cortex.v1.MemoryService.ListTrash:output_type -> cortex.v1.ListTrashResponse
+	118, // 135: cortex.v1.MemoryService.RestoreFromTrash:output_type -> cortex.v1.RestoreFromTrashResponse
+	120, // 136: cortex.v1.MemoryService.PurgeTrash:output_type -> cortex.v1.PurgeTrashResponse
+	88,  // 137: cortex.v1.MemoryService.MigrateMT:output_type -> cortex.v1.MigrateMTResponse
+	22,  // 138: cortex.v1.MemoryService.BackupSelf:output_type -> cortex.v1.BackupSelfResponse
+	24,  // 139: cortex.v1.MemoryService.RestoreSelf:output_type -> cortex.v1.RestoreSelfResponse
+	26,  // 140: cortex.v1.MemoryService.BackupAll:output_type -> cortex.v1.BackupAllResponse
+	29,  // 141: cortex.v1.MemoryService.ListBackups:output_type -> cortex.v1.ListBackupsResponse
+	31,  // 142: cortex.v1.MemoryService.ListS3Backups:output_type -> cortex.v1.ListS3BackupsResponse
+	33,  // 143: cortex.v1.MemoryService.RestoreAll:output_type -> cortex.v1.RestoreAllResponse
+	35,  // 144: cortex.v1.MemoryService.DownloadBackup:output_type -> cortex.v1.DownloadBackupResponse
+	37,  // 145: cortex.v1.MemoryService.DeleteBackup:output_type -> cortex.v1.DeleteBackupResponse
+	92,  // 146: cortex.v1.MemoryService.ListUsers:output_type -> cortex.v1.ListUsersResponse
+	94,  // 147: cortex.v1.MemoryService.CreateUser:output_type -> cortex.v1.CreateUserResponse
+	96,  // 148: cortex.v1.MemoryService.DeleteUser:output_type -> cortex.v1.DeleteUserResponse
+	98,  // 149: cortex.v1.MemoryService.SetUserRole:output_type -> cortex.v1.SetUserRoleResponse
+	100, // 150: cortex.v1.MemoryService.ResetUserPassword:output_type -> cortex.v1.ResetUserPasswordResponse
+	103, // 151: cortex.v1.MemoryService.CreateApiKey:output_type -> cortex.v1.CreateApiKeyResponse
+	105, // 152: cortex.v1.MemoryService.ListApiKeys:output_type -> cortex.v1.ListApiKeysResponse
+	107, // 153: cortex.v1.MemoryService.DeleteApiKey:output_type -> cortex.v1.DeleteApiKeyResponse
+	109, // 154: cortex.v1.MemoryService.AdminCreateApiKey:output_type -> cortex.v1.AdminCreateApiKeyResponse
+	111, // 155: cortex.v1.MemoryService.AdminListApiKeys:output_type -> cortex.v1.AdminListApiKeysResponse
+	113, // 156: cortex.v1.MemoryService.AdminDeleteApiKey:output_type -> cortex.v1.AdminDeleteApiKeyResponse
+	104, // [104:157] is the sub-list for method output_type
+	51,  // [51:104] is the sub-list for method input_type
+	51,  // [51:51] is the sub-list for extension type_name
+	51,  // [51:51] is the sub-list for extension extendee
+	0,   // [0:51] is the sub-list for field type_name
 }
 
 func init() { file_cortex_v1_cortex_proto_init() }
