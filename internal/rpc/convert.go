@@ -23,7 +23,12 @@ func protoToRecord(m *cortexv1.Memory) memory.Record {
 	if ts := m.GetLastAccessedAt(); ts != nil {
 		lastAccessed = ts.AsTime()
 	}
+	var validUntil time.Time
+	if ts := m.GetValidUntil(); ts != nil {
+		validUntil = ts.AsTime()
+	}
 	return memory.Record{
+		ValidUntil:     validUntil,
 		ID:             m.GetId(),
 		Text:           m.GetText(),
 		Namespace:      m.GetNamespace(),
@@ -59,6 +64,7 @@ func recordToProto(r memory.Record) *cortexv1.Memory {
 		NotDuplicateOf: r.NotDuplicateOf,
 		AccessCount:    int32(r.AccessCount),
 		LastAccessedAt: lastAccessedProto(r.LastAccessedAt),
+		ValidUntil:     validUntilProto(r.ValidUntil),
 	}
 }
 

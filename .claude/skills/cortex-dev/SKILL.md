@@ -222,6 +222,16 @@ should encode *why* the behaviour matters, not just what it does (Rule 9).
   which snapshots + converts the trash into the admin tenant; tests use it for a clean
   slate). `TRASH_RETENTION` is parsed strictly (bad value = server exits). DropTenant wipes
   the user's trash deliberately. Summaries are not trashed.
+- **Memory expiry (`validUntil`).** Optional index-owned `date` on Memory (+ Trash). Search/List/
+  SearchSimilar/Consolidate/recall hide expired memories unless `include_expired` (store `SearchOpts/
+  ListOpts.IncludeExpired`, zero value = hide) via the filter `NOT(validUntil <= now)` (no IsNull,
+  no sentinel: null counts as never-expires); chunk search checks the parent record instead of copying
+  the date onto chunks; dedup (`worker.findCandidates`) opts in to expired. Expiry-only
+  `UpdateMemory` (text/tags/ns absent or identical) = `TenantStore.SetValidUntil` merge, no re-embed,
+  no lock (status `updated`). Hourly `Service.SweepExpired` → `Store.SweepExpired` trashes memories
+  expired > `EXPIRY_GRACE` (default 168h, strict parse, 0 = now) with reason `expired`; restore clears a
+  lapsed expiry. CLI `save --expires`, `edit --expires/--no-expiry`, `list/search --include-expired`;
+  MCP `expiresIn` / `includeExpired`. See docs/DESIGN.md "Memory expiry".
 - **Observability** lives in `internal/obs` (shared registry, `/healthz` `/readyz` `/metrics`
   handlers, `obs.Serve` for the dedicated metrics listeners, dependency probes reusing `Store.Ready` / `Embedder.Reachable`). Server RPC metrics are
   a Connect interceptor + a scrape-time queue collector in `internal/rpc/metrics.go`; worker metrics
@@ -296,11 +306,11 @@ and scripting without going through Claude. Global flags: `--server`
 
 | Command | What it does |
 |---------|--------------|
-| `save "<text>" [-n ns] [-t tag]… [-L <id>]… [-S <id>]…` | Queue a memory. `-L/--link-to` links to existing ids (applied after indexing); `-S/--supersedes` deletes the ids it replaces once indexed. |
-| `edit <id> "<text>" [-n ns] [-t tag]… [--replace-tags]` | Replace text (re-embeds), keeping id/links/history. Tags kept unless `-t` given; namespace kept unless `-n`. |
-| `list [-n '*'] [-l N] [-t tag] [-T anyTag] [-x excludeTag]` | List newest-first with tag/namespace filters. |
+| `save "<text>" [-n ns] [-t tag]… [-L <id>]… [-S <id>]… [--expires 7d]` | Queue a memory (`--expires`: time-bound fact, hidden from recall after that long). `-L/--link-to` links to existing ids (applied after indexing); `-S/--supersedes` deletes the ids it replaces once indexed. |
+| `edit <id> ["<text>"] [-n ns] [-t tag]… [--replace-tags] [--expires 7d \| --no-expiry]` | Replace text (re-embeds), keeping id/links/history. Tags kept unless `-t` given; namespace kept unless `-n`. Text optional when only the expiry changes (applied directly, no re-embed). |
+| `list [-n '*'] [-l N] [-t tag] [-T anyTag] [-x excludeTag] [--include-expired]` | List newest-first with tag/namespace filters; expired memories hidden unless `--include-expired`. |
 | `get <id> [--json]` | Show one memory by id (full text + linked ids) via the `GetMemory` RPC (tenant-scoped; NotFound for unknown/other-tenant ids; no reinforcement). Same RPC backs the `cortex_memory_get` MCP tool, which also marks the id delivered in recallstate. |
-| `search "<q>" [-n '*'] [-l N] [-d 0.6] [--autocut N] [-t/-T/-x tag] [--reinforce]` | Hybrid (BM25+vector) semantic search. `-d` = distance cutoff. CLI does NOT reinforce by default. |
+| `search "<q>" [-n '*'] [-l N] [-d 0.6] [--autocut N] [-t/-T/-x tag] [--reinforce] [--include-expired]` | Hybrid (BM25+vector) semantic search. `-d` = distance cutoff. CLI does NOT reinforce by default. |
 | `delete <id>` | Delete one memory by id (soft: moved to the `Trash` class, see §4). |
 | `trash ls [-n ns]` / `trash restore <id>...` / `trash purge <id>... \| --all [-n ns] [--yes]` | Soft-delete trash (`ListTrash`/`RestoreFromTrash`/`PurgeTrash` RPCs; `cmd/cli/trash.go`). |
 | `export [-n '*'] [-o file]` | Dump memories (text+metadata, no vectors) to JSON (stdout by default). |

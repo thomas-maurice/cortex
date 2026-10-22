@@ -57,10 +57,13 @@ func trashProperties() []*models.Property {
 		{Name: "notDuplicateOf", DataType: []string{"text[]"}},
 		{Name: "deletedAt", DataType: []string{"date"}},
 		{Name: "reason", DataType: []string{"text"}},
+		// validUntil is carried so a restore keeps a still-future expiry (see
+		// RestoreFromTrash for what happens to one that has passed).
+		{Name: "validUntil", DataType: []string{"date"}},
 	}
 }
 
-var trashScanProps = []string{"memoryId", "text", "namespace", "tags", "source", "conversationId", "createdAt", "linkedIds", "notDuplicateOf", "deletedAt", "reason"}
+var trashScanProps = []string{"memoryId", "text", "namespace", "tags", "source", "conversationId", "createdAt", "linkedIds", "notDuplicateOf", "deletedAt", "reason", "validUntil"}
 
 // ListAllTrash scans the Trash class without any tenant scope — the migrate-mt
 // snapshot, taken while the store is still non-MT (like ListAllRecords). Must not
@@ -105,6 +108,9 @@ func (ts *TenantStore) putTrash(ctx context.Context, rec memory.Record, reason s
 	}
 	if !rec.CreatedAt.IsZero() {
 		props["createdAt"] = rec.CreatedAt.UTC().Format(time.RFC3339)
+	}
+	if !rec.ValidUntil.IsZero() {
+		props["validUntil"] = rec.ValidUntil.UTC().Format(time.RFC3339)
 	}
 	return ts.upsertObject(ctx, memory.TrashClassName, rec.ID, props, nil)
 }

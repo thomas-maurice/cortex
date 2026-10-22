@@ -3,6 +3,7 @@ package rpc
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -20,6 +21,19 @@ func fakeGetter(recs map[string]memory.Record, fails map[string]bool) func(strin
 		r, ok := recs[id]
 		return r, ok, nil
 	}
+}
+
+// An expired neighbour reached through a link must not enter the cluster (and so
+// the supersede manifest) unless the caller opted in.
+func TestAssembleClusterSkipsExpiredNeighbours(t *testing.T) {
+	now := time.Now()
+	recs := map[string]memory.Record{
+		"live":    {ID: "live"},
+		"expired": {ID: "expired", ValidUntil: now.Add(-time.Hour)},
+	}
+	seeds := []memory.Hit{hit("s", []string{"expired"}, []string{"live", "expired"})}
+	assert.Equal(t, []string{"s", "live"}, clusterIDs(assembleCluster(seeds, 10, skipExpired(fakeGetter(recs, nil), false, now))))
+	assert.Equal(t, []string{"s", "expired", "live"}, clusterIDs(assembleCluster(seeds, 10, skipExpired(fakeGetter(recs, nil), true, now))))
 }
 
 func hit(id string, dups, links []string) memory.Hit {

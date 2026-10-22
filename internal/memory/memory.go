@@ -190,6 +190,19 @@ type Record struct {
 	// time, unix microseconds; 0 = unknown/legacy). Sequences from a recreated
 	// stream restart at 1, so the guard only compares seqs within one stream.
 	IndexedStream int64 `json:"indexedStream,omitempty"`
+
+	// ValidUntil is when this memory stops being true ("deploy freeze until
+	// Friday"). The zero time means it never expires. Expired memories are hidden
+	// from Search/List/recall by default and, once expired for longer than the
+	// server's EXPIRY_GRACE, swept into Trash with reason "expired". Part of the
+	// memory's content: index-owned (written by the worker's index path, or by the
+	// metadata-only expiry edit), never embedded.
+	ValidUntil time.Time `json:"validUntil,omitzero"`
+}
+
+// Expired reports whether the memory has a validity limit that has passed.
+func (r Record) Expired(now time.Time) bool {
+	return !r.ValidUntil.IsZero() && !r.ValidUntil.After(now)
 }
 
 // Hit is a search result: a record plus its vector distance to the query.
@@ -246,6 +259,8 @@ const (
 	TrashReasonDelete          = "delete"
 	TrashReasonSupersedes      = "supersedes:"
 	TrashReasonNamespaceDelete = "namespace-delete"
+	// TrashReasonExpired marks a memory moved to Trash by the expiry sweep.
+	TrashReasonExpired = "expired"
 )
 
 // TrashEntry is a soft-deleted Record plus when and why it was deleted.

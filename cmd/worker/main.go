@@ -865,6 +865,9 @@ func findCandidates(ctx context.Context, log *slog.Logger, ts tenantStore, rec m
 		Namespace:   rec.Namespace,
 		Limit:       candidateLimit + 1 + len(rec.NotDuplicateOf), // headroom for self + dismissed pairs
 		MaxDistance: dedupDistance,
+		// An expired near-duplicate is still a duplicate: flagging it lets a review
+		// merge/delete the stale copy instead of leaving it to the sweep.
+		IncludeExpired: true,
 	})
 	if err != nil {
 		log.Warn("dedup candidate search failed, skipping", "id", rec.ID, "err", err)

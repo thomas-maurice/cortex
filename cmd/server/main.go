@@ -68,6 +68,29 @@ func parseTrashRetention(raw string) (time.Duration, error) {
 // trashSweepInterval is how often expired trash entries are purged.
 const trashSweepInterval = time.Hour
 
+// defaultExpiryGrace is used when EXPIRY_GRACE is unset.
+const defaultExpiryGrace = 168 * time.Hour
+
+// parseExpiryGrace parses EXPIRY_GRACE: how long after its validUntil an expired
+// memory stays in the store (hidden, recoverable by extending it) before the
+// sweep moves it to Trash. Empty = default (168h); "0" = move as soon as it has
+// expired. Strict like parseTrashRetention: the setting decides when memories
+// are moved out, so a typo like "7d" must stop the server, not become the default.
+func parseExpiryGrace(raw string) (time.Duration, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return defaultExpiryGrace, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("invalid EXPIRY_GRACE %q: want a Go duration like 168h (days are not supported; use hours), or 0 to trash immediately: %w", raw, err)
+	}
+	if d < 0 {
+		return 0, fmt.Errorf("invalid EXPIRY_GRACE %q: must not be negative", raw)
+	}
+	return d, nil
+}
+
 // initialBackupDelay computes how long to wait before the FIRST periodic backup
 // after startup, given when the last on-disk backup ran (last/hasLast from
 // Service.LastBackupTime). This is what makes the scheduler restart-resilient:
@@ -254,12 +277,20 @@ func main() {
 		backupKeep     = envInt("BACKUP_KEEP", 7)
 		// trashRetention: how long deleted memories stay restorable; 0 = forever.
 		trashRetentionRaw = os.Getenv("TRASH_RETENTION")
+		// expiryGrace: how long an expired memory lingers before moving to Trash.
+		expiryGraceRaw = os.Getenv("EXPIRY_GRACE")
 		// metricsAddr is the dedicated listener for /metrics (+ /healthz, /readyz).
 		// Empty disables metrics entirely.
 		metricsAddr = metricsAddrFromEnv()
 	)
 
 	trashRetention, err := parseTrashRetention(trashRetentionRaw)
+	if err != nil {
+		log.Error("bad configuration", "err", err)
+		os.Exit(1)
+	}
+
+	expiryGrace, err := parseExpiryGrace(expiryGraceRaw)
 	if err != nil {
 		log.Error("bad configuration", "err", err)
 		os.Exit(1)
@@ -351,7 +382,28 @@ func main() {
 		BackupKeep:         backupKeep,
 		S3:                 s3ConfigFromEnv(),
 		TrashRetention:     trashRetention,
+		ExpiryGrace:        expiryGrace,
 	}, log)
+
+	// Hourly expiry sweep: memories expired for longer than EXPIRY_GRACE move to Trash.
+	log.Info("expiry sweep scheduled", "grace", expiryGrace, "every", trashSweepInterval)
+	go func() {
+		ticker := time.NewTicker(trashSweepInterval)
+		defer ticker.Stop()
+		for {
+			n, err := svc.SweepExpired(ctx)
+			if err != nil {
+				log.Error("expiry sweep failed", "moved", n, "err", err)
+			} else {
+				log.Info("expiry sweep", "moved", n)
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
 
 	// Hourly trash retention sweep (disabled when TRASH_RETENTION=0).
 	if trashRetention > 0 {

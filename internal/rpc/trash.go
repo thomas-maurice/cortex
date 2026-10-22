@@ -139,6 +139,13 @@ func (s *Service) RestoreFromTrash(ctx context.Context, req *connect.Request[cor
 		if rec.CreatedAt.IsZero() {
 			rec.CreatedAt = time.Now().UTC()
 		}
+		// A restored memory whose expiry has already passed would be hidden again
+		// at once and re-trashed by the next sweep, defeating the restore. Whoever
+		// restores it wants it back, so drop the lapsed expiry (a still-future one
+		// is kept: the fact is still time-bound).
+		if rec.Expired(time.Now()) {
+			rec.ValidUntil = time.Time{}
+		}
 		if err := bus.PublishIndex(ctx, s.js, rec); err != nil {
 			return nil, fmt.Errorf("restore publish %s (%d already queued): %w", rec.ID, queued, err)
 		}

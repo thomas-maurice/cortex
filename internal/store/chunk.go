@@ -193,6 +193,7 @@ func (ts *TenantStore) Search(ctx context.Context, vector []float32, opts Search
 		want = limit * rerankOverfetch
 	}
 	hits := make([]memory.Hit, 0, want)
+	now := time.Now()
 	for _, mid := range order {
 		rec, found, err := ts.Get(ctx, mid)
 		if err != nil {
@@ -200,6 +201,15 @@ func (ts *TenantStore) Search(ctx context.Context, vector []float32, opts Search
 		}
 		if !found {
 			continue // parent deleted since its chunk was indexed
+		}
+		// Expiry is filtered HERE, on the parent we have just read, not on chunks:
+		// copying validUntil onto chunks would mean an expiry-only edit (a
+		// single-property merge on the Memory) has to rewrite every chunk too, and
+		// a missed chunk would resurrect an expired memory. The parent is the single
+		// source of truth and is fetched anyway. Cost: expired parents occupy slots
+		// of the chunkPoolFactor*limit candidate pool, which is generous.
+		if !opts.IncludeExpired && rec.Expired(now) {
+			continue
 		}
 		hits = append(hits, memory.Hit{Record: rec, Distance: bestDist[mid]})
 		if len(hits) >= want {
