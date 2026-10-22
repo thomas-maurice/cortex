@@ -297,6 +297,19 @@ message SearchSimilarRequest {
 message Hit {
   Memory memory = 1;
   float distance = 2;
+  // The best-matching chunk of a long memory. Unset for hits that matched the
+  // whole-memory vector (un-chunked memories, chunking disabled, find-similar).
+  Match match = 3;
+}
+
+// Match locates the part of a memory that a search matched.
+message Match {
+  int32 chunk_index = 1;
+  string text = 2;  // the chunk text (the excerpt)
+  // Character (Unicode code point) offsets of the excerpt within memory.text,
+  // [start, end). Both 0 when the excerpt could not be located in the text.
+  int32 start = 3;
+  int32 end = 4;
 }
 
 message SearchResponse {

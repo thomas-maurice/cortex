@@ -35,6 +35,30 @@ under qwen3's 32K context, so the proxy only affects chunk *granularity*. Knobs:
 parent's best chunk distance), resolves parents to full `Memory` records, applies
 exclude-tag and living-memory re-ranking, and returns deduped parent memories.
 
+## Showing what matched
+
+The winning chunk of each parent is not thrown away. `Search` returns, per hit, a
+`Match` (proto `Hit.match`): the chunk index, its text (the excerpt) and its
+`[start, end)` offsets in the memory text. Whole-memory fallback hits (un-chunked
+memories, chunking disabled) and find-similar hits have no `match`.
+
+Offsets are **character (Unicode code point) offsets**, not bytes, so a JS client
+can slice with `Array.from(text)`. `chunk.Split` does not record offsets (it
+re-joins sentences with single spaces, so a chunk is not always a byte-exact
+substring), so `chunk.Locate` finds the chunk in the memory text at query time,
+ignoring whitespace differences (a verbatim-repeated chunk text is disambiguated by `chunk_index`: the occurrence nearest the expected position wins); if it cannot (e.g. a hard-split window that cut a
+multi-byte rune) `start = end = 0` and clients show the excerpt without a position.
+Because the chunk's own text is searched for, overlap between adjacent chunks does
+not matter; the inspector highlight splits the markdown at the match boundaries, so a construct
+cut across them (code fence, table) can render oddly — cosmetic only, no security
+impact (every part is still sanitized).
+
+Consumers: the web UI (a `matched:` block per hit; the inspector highlights the span,
+rendering before/match/after as three separately DOMPurify-sanitized markdown blocks),
+`cortex search` (`matched: …` line) and MCP `cortex_memory_search` (`matched` field;
+for already-delivered "stub" results the excerpt replaces the generic 120-char prefix).
+An excerpt equal to the whole text is omitted by the CLI/MCP as redundant.
+
 ## Optional & backward-compatible
 
 Chunking is a toggle — **`CHUNKING_ENABLED`** (default `true`), set identically on

@@ -1,6 +1,7 @@
 package chunk
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -77,4 +78,68 @@ func lastSentenceOf(s string) string {
 		return ""
 	}
 	return parts[len(parts)-1]
+}
+
+// TestLocate pins the contract the search excerpt relies on: a chunk (whose
+// whitespace Split normalises) is found in the source text with rune offsets, so
+// the UI can highlight the matched span.
+func TestLocate(t *testing.T) {
+	t.Run("whitespace-normalised chunk maps back to the original span", func(t *testing.T) {
+		text := "Intro line.\n\nFirst fact.   Second fact.\n\nOutro."
+		s, e, ok := Locate(text, "First fact. Second fact.", 0)
+		require.True(t, ok)
+		assert.Equal(t, "First fact.   Second fact.", string([]rune(text)[s:e]))
+	})
+	t.Run("offsets are in runes, not bytes", func(t *testing.T) {
+		text := "héllo wörld ☃ target text"
+		s, e, ok := Locate(text, "target text", 0)
+		require.True(t, ok)
+		assert.Equal(t, "target text", string([]rune(text)[s:e]))
+	})
+	t.Run("not found", func(t *testing.T) {
+		_, _, ok := Locate("abc def", "xyz", 0)
+		assert.False(t, ok)
+		_, _, ok = Locate("abc", "   ", 0)
+		assert.False(t, ok)
+	})
+	t.Run("every Split chunk of a real document is locatable", func(t *testing.T) {
+		c, err := New(40, 10)
+		require.NoError(t, err)
+		var sb strings.Builder
+		for i := 0; i < 50; i++ {
+			fmt.Fprintf(&sb, "Sentence number %d says something.\n\n", i)
+		}
+		text := sb.String()
+		for i, ch := range c.Split(text) {
+			s, e, ok := Locate(text, ch, i)
+			require.True(t, ok, "chunk %d", i)
+			assert.Equal(t, strings.Fields(ch), strings.Fields(string([]rune(text)[s:e])))
+		}
+	})
+}
+
+// Repeated boilerplate must not pull the highlight to the first occurrence: the
+// chunk index picks the occurrence nearest where that chunk should sit.
+func TestLocateDisambiguatesRepeatsByChunkIndex(t *testing.T) {
+	rep := strings.TrimSpace(strings.Repeat("This block repeats verbatim. ", 8))
+	text := rep + "\n\n" + strings.Repeat("Filler words here now. ", 10) + "\n\n" + rep
+	runes := []rune(text)
+	s0, _, ok := Locate(text, rep, 0)
+	require.True(t, ok)
+	assert.Equal(t, 0, s0, "chunk 0 is the first occurrence")
+	s2, e2, ok := Locate(text, rep, 2)
+	require.True(t, ok)
+	assert.Equal(t, len(runes)-len([]rune(rep)), s2, "chunk 2 is the second occurrence")
+	assert.Equal(t, rep, string(runes[s2:e2]))
+}
+
+// Offsets count code points: an astral-plane emoji is 2 UTF-16 units and 4 bytes
+// but ONE rune.
+func TestLocateAstralRunes(t *testing.T) {
+	text := "😀😀 x 😀 target 😀"
+	s, e, ok := Locate(text, "target", 0)
+	require.True(t, ok)
+	assert.Equal(t, 7, s)
+	assert.Equal(t, 13, e)
+	assert.Equal(t, "target", string([]rune(text)[s:e]))
 }

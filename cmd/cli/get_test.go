@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -50,4 +51,16 @@ func TestGetCmdRequiresExactlyOneArg(t *testing.T) {
 	assert.Error(t, cmd.Args(cmd, nil))
 	assert.Error(t, cmd.Args(cmd, []string{"a", "b"}))
 	assert.NoError(t, cmd.Args(cmd, []string{"a"}))
+}
+
+// The CLI shows what part of a long memory matched; an excerpt equal to the whole
+// text adds nothing and must be suppressed.
+func TestMatchExcerpt(t *testing.T) {
+	h := &cortexv1.Hit{Memory: &cortexv1.Memory{Text: "a long text about needles"}, Match: &cortexv1.Match{Text: "about\n  needles"}}
+	assert.Equal(t, "…about needles", matchExcerpt(h))
+	h.Match.Text = "a long text about needles"
+	assert.Empty(t, matchExcerpt(h))
+	assert.Empty(t, matchExcerpt(&cortexv1.Hit{Memory: &cortexv1.Memory{Text: "x"}}))
+	h.Match.Text = strings.Repeat("w ", 300)
+	assert.True(t, strings.HasSuffix(matchExcerpt(h), "…"))
 }

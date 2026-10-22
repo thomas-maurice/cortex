@@ -63,6 +63,16 @@
       <CardContent class="py-4">
         <div class="flex items-start justify-between gap-3">
           <div class="min-w-0 flex-1 cursor-pointer" @click="openInspector(m, resolveMemory)">
+            <!-- Search hits on long memories: the matched chunk, as PLAIN text (escaped by
+                 Vue interpolation, never v-html) so it can't inject markup. -->
+            <p
+              v-if="m._match && m._match.text && m._match.text.trim() !== m.text.trim()"
+              class="mb-2 line-clamp-3 rounded-md border-l-2 border-amber-500 bg-amber-500/10 px-2 py-1 text-xs"
+              title="The part of this memory that matched your search"
+            >
+              <span class="font-medium text-amber-700 dark:text-amber-400">matched:</span>
+              {{ m._match.text.trim() }}
+            </p>
             <ClampedMarkdown :html="renderMarkdown(m.text)" />
           </div>
           <div class="flex shrink-0 gap-1">
@@ -185,7 +195,7 @@ async function reload() {
       // noReinforce: browsing in the UI must not count as a recall — only the
       // agent's (MCP) searches feed the living-memory usage signal.
       const res = await memoryClient.search({ query: query.value, namespace: namespace.value, limit: 50, tags: activeTags.value, noReinforce: true })
-      memories.value = res.hits.map((h) => ({ ...h.memory, _distance: h.distance }))
+      memories.value = res.hits.map((h) => ({ ...h.memory, _distance: h.distance, _match: h.match }))
     } else {
       const res = await memoryClient.list({ namespace: namespace.value, limit: 50, tags: activeTags.value })
       memories.value = res.memories

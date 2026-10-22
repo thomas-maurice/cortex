@@ -23,6 +23,8 @@ import (
 type fakeClient struct {
 	cortexv1connect.MemoryServiceClient
 	mem *cortexv1.Memory
+	// match, when set, is attached to the search hit (a chunk-found hit).
+	match *cortexv1.Match
 }
 
 func (f fakeClient) GetMemory(context.Context, *connect.Request[cortexv1.GetMemoryRequest]) (*connect.Response[cortexv1.GetMemoryResponse], error) {
@@ -30,7 +32,7 @@ func (f fakeClient) GetMemory(context.Context, *connect.Request[cortexv1.GetMemo
 }
 
 func (f fakeClient) Search(context.Context, *connect.Request[cortexv1.SearchRequest]) (*connect.Response[cortexv1.SearchResponse], error) {
-	return connect.NewResponse(&cortexv1.SearchResponse{Hits: []*cortexv1.Hit{{Memory: f.mem}}}), nil
+	return connect.NewResponse(&cortexv1.SearchResponse{Hits: []*cortexv1.Hit{{Memory: f.mem, Match: f.match}}}), nil
 }
 
 // Opening a memory by id puts its full text in the model's context, so a later
@@ -118,4 +120,60 @@ func TestWithTimeoutPassesThroughFastCalls(t *testing.T) {
 	_, o, err := withTimeout(2*time.Second, fast)(context.Background(), nil, struct{}{})
 	require.NoError(t, err)
 	assert.Equal(t, 7, o.N)
+}
+
+// For an already-delivered (stubbed) memory the generic 120-char prefix says
+// nothing about the NEW query, so the stub must carry the matched excerpt
+// instead. A first (non-stub) delivery returns the full text plus `matched`, and
+// fresh=true bypasses the stub entirely.
+func TestSearchMatchedExcerpt(t *testing.T) {
+	long := strings.Repeat("filler sentence. ", 100) + "The needle fact lives here. " + strings.Repeat("more filler. ", 50)
+	excerpt := "The needle fact lives here."
+	mem := &cortexv1.Memory{Id: "m1", Text: long, Namespace: "ns"}
+	d := &deps{
+		client:             fakeClient{mem: mem, match: &cortexv1.Match{ChunkIndex: 2, Text: excerpt}},
+		seen:               map[string]bool{},
+		defaultSearchLimit: 5,
+	}
+	ctx := context.Background()
+
+	_, out, err := d.search(ctx, nil, SearchIn{Query: "q"})
+	require.NoError(t, err)
+	require.Len(t, out.Hits, 1)
+	assert.False(t, out.Hits[0].Stub)
+	assert.Equal(t, long, out.Hits[0].Text, "first delivery keeps the full text (existing semantics)")
+	assert.Equal(t, excerpt, out.Hits[0].Matched)
+
+	_, out, err = d.search(ctx, nil, SearchIn{Query: "q"})
+	require.NoError(t, err)
+	assert.True(t, out.Hits[0].Stub)
+	assert.Equal(t, excerpt, out.Hits[0].Text, "stub carries the matched excerpt, not the 120-char prefix")
+
+	_, out, err = d.search(ctx, nil, SearchIn{Query: "q", Fresh: true})
+	require.NoError(t, err)
+	assert.False(t, out.Hits[0].Stub)
+	assert.Equal(t, long, out.Hits[0].Text, "fresh=true returns the full text")
+
+	// The stub excerpt is capped: an uncapped ~2k-char chunk would defeat the
+	// stub's token saving.
+	bigExcerpt := strings.Repeat("e", 2000)
+	d.client = fakeClient{mem: &cortexv1.Memory{Id: "m1", Text: long + bigExcerpt}, match: &cortexv1.Match{Text: bigExcerpt}}
+	_, out, err = d.search(ctx, nil, SearchIn{Query: "q"})
+	require.NoError(t, err)
+	assert.True(t, out.Hits[0].Stub)
+	assert.LessOrEqual(t, len([]rune(out.Hits[0].Text)), matchedTextChars+1, "stub excerpt must be capped (+1 for the ellipsis)")
+
+	// No excerpt (whole-memory hit): the stub falls back to the prefix.
+	d.client = fakeClient{mem: mem}
+	_, out, err = d.search(ctx, nil, SearchIn{Query: "q"})
+	require.NoError(t, err)
+	assert.True(t, out.Hits[0].Stub)
+	assert.Equal(t, truncateRunes(long, stubTextChars), out.Hits[0].Text)
+	assert.Empty(t, out.Hits[0].Matched)
+
+	// An excerpt equal to the whole (short) memory is redundant: omitted.
+	d = &deps{client: fakeClient{mem: &cortexv1.Memory{Id: "s", Text: "short"}, match: &cortexv1.Match{Text: "short"}}, seen: map[string]bool{}, defaultSearchLimit: 5}
+	_, out, err = d.search(ctx, nil, SearchIn{Query: "q"})
+	require.NoError(t, err)
+	assert.Empty(t, out.Hits[0].Matched)
 }

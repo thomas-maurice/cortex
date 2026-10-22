@@ -304,10 +304,11 @@ func main() {
 			"'as usual', 'the normal way', 'remember', or a name/term you don't recognise. When unsure whether " +
 			"something is in memory, SEARCH ANYWAY — a cheap empty result beats answering without the user's own " +
 			"context or contradicting a stored decision/preference. Only skip it for a pure greeting or a fully " +
-			"self-contained mechanical step. Returns the most relevant memories for a natural-language query, " +
+			"self-contained mechanical step. Returns the most relevant memories for a natural-language query " +
+			"(for long memories, `matched` is the excerpt that matched), " +
 			"optionally filtered by namespace, required/excluded tags, and a relevance cutoff (maxDistance) that " +
 			"drops weak matches. Memories whose full text was already delivered to this session's context " +
-			"(by an earlier search or the recall prompt hook) come back as short stubs to avoid inflating " +
+			"(by an earlier search or the recall prompt hook) come back as short stubs (showing the part that matched this query) to avoid inflating " +
 			"token use — pass fresh=true only if the earlier copy is no longer in context (e.g. compacted away).",
 	}, withTimeout(callTimeout, d.search))
 
@@ -507,6 +508,11 @@ type SearchHit struct {
 	// already delivered to this session's context earlier (pass fresh=true to
 	// re-fetch it in full).
 	Stub bool `json:"stub,omitempty"`
+	// Matched is the part of a long memory that matched the query (the best
+	// chunk). Omitted when the hit has no excerpt (whole-memory match) or the
+	// excerpt IS the whole text. On a stub, Text already holds the excerpt
+	// instead of the generic prefix, so Matched is left empty (no duplication).
+	Matched string `json:"matched,omitempty"`
 }
 
 type SearchOut struct {
@@ -569,11 +575,24 @@ func (d *deps) search(ctx context.Context, _ *mcp.CallToolRequest, in SearchIn) 
 		m := h.GetMemory()
 		dups := m.GetDupCandidates()
 		text := m.GetText()
+		// The excerpt is only informative when it is a strict part of the text.
+		excerpt := strings.TrimSpace(h.GetMatch().GetText())
+		if excerpt == strings.TrimSpace(text) {
+			excerpt = ""
+		}
+		matched := ""
 		stub := !in.Fresh && alreadySeen(m.GetId())
 		if stub {
 			stubbed++
-			text = truncateRunes(text, stubTextChars)
+			if excerpt != "" {
+				// The generic prefix says nothing about THIS query; the matched
+				// excerpt is what is new and relevant.
+				text = truncateRunes(excerpt, matchedTextChars)
+			} else {
+				text = truncateRunes(text, stubTextChars)
+			}
 		} else {
+			matched = excerpt
 			d.seen[m.GetId()] = true
 			delivered = append(delivered, m.GetId())
 		}
@@ -587,12 +606,16 @@ func (d *deps) search(ctx context.Context, _ *mcp.CallToolRequest, in SearchIn) 
 			LinkedIDs:     m.GetLinkedIds(),
 			DupCandidates: dups,
 			Stub:          stub,
+			Matched:       matched,
 		})
 		if stub {
 			fmt.Fprintf(&b, "%d. id=%s [%s] (dist %.3f) [stub — full text already in this session's context] %s\n",
 				i+1, m.GetId(), m.GetNamespace(), h.GetDistance(), text)
 		} else {
 			fmt.Fprintf(&b, "%d. id=%s [%s] (dist %.3f) %s\n", i+1, m.GetId(), m.GetNamespace(), h.GetDistance(), text)
+		}
+		if matched != "" {
+			fmt.Fprintf(&b, "   matched: %s\n", truncateRunes(matched, matchedTextChars))
 		}
 		if len(dups) > 0 {
 			flagged++
@@ -614,6 +637,12 @@ func (d *deps) search(ctx context.Context, _ *mcp.CallToolRequest, in SearchIn) 
 // stubTextChars is how much of an already-delivered memory's text a stub keeps —
 // enough to recognise it, not enough to re-inflate the context.
 const stubTextChars = 120
+
+// matchedTextChars caps the matched excerpt used as a stub's text and echoed in
+// the human-readable result — a chunk can be ~2k chars, which would defeat the
+// stub's token-saving purpose. (The structured `matched` field of a non-stub hit
+// carries it whole.)
+const matchedTextChars = 400
 
 // truncateRunes shortens s to at most n runes, marking the cut.
 func truncateRunes(s string, n int) string {

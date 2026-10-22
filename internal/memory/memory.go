@@ -193,6 +193,19 @@ type Record struct {
 type Hit struct {
 	Record
 	Distance float32 `json:"distance"`
+	// Match is the winning chunk for hits found via the chunk index; nil for
+	// whole-memory-vector hits.
+	Match *Match `json:"match,omitempty"`
+}
+
+// Match is the best-matching chunk of a memory. Start/End are character (rune)
+// offsets of the chunk within the memory text, [Start, End); both 0 when the
+// chunk text could not be located (End == 0).
+type Match struct {
+	ChunkIndex int    `json:"chunkIndex"`
+	Text       string `json:"text"`
+	Start      int    `json:"start"`
+	End        int    `json:"end"`
 }
 
 // Summary is a single, ever-current digest of one conversation. It is unique per

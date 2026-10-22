@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	tiktoken "github.com/pkoukk/tiktoken-go"
 	loader "github.com/pkoukk/tiktoken-go-loader"
@@ -180,4 +181,72 @@ func splitSentences(text string) []string {
 
 func isSpace(r rune) bool {
 	return r == ' ' || r == '\t' || r == '\n' || r == '\r'
+}
+
+// Locate finds chunkText inside text and returns its [start, end) offsets in
+// runes (Unicode code points). Split re-joins sentences with single spaces and
+// trims them, so a chunk is not always a byte-exact substring of the source;
+// matching therefore ignores differences in whitespace runs. ok is false when the
+// chunk cannot be found (e.g. a hard-split window that cut a multi-byte rune), in
+// which case callers should show the chunk text without a position.
+//
+// When the chunk text occurs more than once (repeated boilerplate), chunkIndex
+// disambiguates: chunks advance through the text by roughly 7/8 of their length
+// (overlap is ~12%), so the occurrence nearest that expected position wins.
+// Cost is O(len(text)) for one memory.
+func Locate(text, chunkText string, chunkIndex int) (start, end int, ok bool) {
+	ct, _ := collapseSpace(chunkText)
+	if ct == "" {
+		return 0, 0, false
+	}
+	tt, orig := collapseSpace(text)
+	ctRunes := utf8.RuneCountInString(ct)
+	expected := chunkIndex * ctRunes * 7 / 8
+
+	best, bestDist := -1, 0
+	runePos, bytePos := 0, 0 // rune index of byte offset bytePos in tt
+	for from := 0; from <= len(tt); {
+		i := strings.Index(tt[from:], ct)
+		if i < 0 {
+			break
+		}
+		i += from
+		runePos += utf8.RuneCountInString(tt[bytePos:i])
+		bytePos = i
+		d := runePos - expected
+		if d < 0 {
+			d = -d
+		}
+		if best < 0 || d < bestDist {
+			best, bestDist = runePos, d
+		}
+		_, w := utf8.DecodeRuneInString(tt[i:])
+		from = i + w
+	}
+	if best < 0 {
+		return 0, 0, false
+	}
+	return orig[best], orig[best+ctRunes-1] + 1, true
+}
+
+// collapseSpace trims s and collapses whitespace runs to one space, returning the
+// result plus, per output rune, its rune index in s.
+func collapseSpace(s string) (string, []int) {
+	var b strings.Builder
+	var orig []int
+	pendingSpace := false
+	for i, r := range []rune(s) {
+		if isSpace(r) {
+			pendingSpace = b.Len() > 0
+			continue
+		}
+		if pendingSpace {
+			b.WriteRune(' ')
+			orig = append(orig, i-1)
+			pendingSpace = false
+		}
+		b.WriteRune(r)
+		orig = append(orig, i)
+	}
+	return b.String(), orig
 }
