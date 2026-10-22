@@ -27,9 +27,9 @@ func TestGetTenantStates(t *testing.T) {
 	st, err := New(rest, grpc)
 	require.NoError(t, err)
 	st.SetMultiTenant(true)
-	_ = st.DeleteClass(ctx)
+	_ = st.DeleteAllClasses(ctx)
 	require.NoError(t, st.EnsureSchema(ctx))
-	t.Cleanup(func() { _ = st.DeleteClass(ctx) })
+	t.Cleanup(func() { _ = st.DeleteAllClasses(ctx) })
 
 	t.Run("never-written tenant is not found", func(t *testing.T) {
 		_, ok, err := st.Tenant("never-written").Get(ctx, uuid.NewString())

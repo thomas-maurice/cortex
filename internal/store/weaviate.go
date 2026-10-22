@@ -121,7 +121,10 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 	if err := s.ensureClass(ctx, chunkClass(s.multiTenant), chunkProperties()); err != nil {
 		return err
 	}
-	return s.ensureClass(ctx, summaryClass(s.multiTenant), summaryProperties())
+	if err := s.ensureClass(ctx, summaryClass(s.multiTenant), summaryProperties()); err != nil {
+		return err
+	}
+	return s.ensureClass(ctx, trashClass(s.multiTenant), trashProperties())
 }
 
 // ensureClass creates the class if it is absent, else adds any missing
@@ -269,6 +272,7 @@ func expectedFieldTokenized() map[string][]string {
 		memory.ClassName:        {"namespace", "source", "conversationId"},
 		memory.ChunkClassName:   {"memoryId", "namespace"},
 		memory.SummaryClassName: {"namespace", "source", "conversationId"},
+		memory.TrashClassName:   {"memoryId", "namespace"},
 	}
 }
 
@@ -285,11 +289,12 @@ func (s *Store) VerifySchema(ctx context.Context) ([]string, error) {
 		memory.ClassName:        memoryProperties(),
 		memory.ChunkClassName:   chunkProperties(),
 		memory.SummaryClassName: summaryProperties(),
+		memory.TrashClassName:   trashProperties(),
 	}
 	fieldKeys := expectedFieldTokenized()
 
 	var problems []string
-	for _, className := range []string{memory.ClassName, memory.ChunkClassName, memory.SummaryClassName} {
+	for _, className := range []string{memory.ClassName, memory.ChunkClassName, memory.SummaryClassName, memory.TrashClassName} {
 		exists, err := s.client.Schema().ClassExistenceChecker().WithClassName(className).Do(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("check class %s: %w", className, err)
@@ -339,8 +344,10 @@ func (s *Store) VerifySchema(ctx context.Context) ([]string, error) {
 	return problems, nil
 }
 
-// DeleteClass drops the Memory AND ConversationSummary classes and all their
-// objects. Used by reindex when a model change alters the vector dimension and
+// DeleteClass drops the Memory, MemoryChunk and ConversationSummary classes
+// and all their objects. It deliberately leaves Trash alone: trash objects carry
+// no vector, so a dimension-change rebuild is irrelevant to them (see
+// DeleteAllClasses for the callers that must drop it too). Used by reindex when a model change alters the vector dimension and
 // the classes must be rebuilt — both are dropped so their stored vectors stay
 // dimension-consistent. Facts are then republished by reindex; summaries start
 // empty and are rebuilt as the agent re-summarises.
@@ -355,6 +362,33 @@ func (s *Store) DeleteClass(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// DeleteTrashClass drops the Trash class (and its objects).
+func (s *Store) DeleteTrashClass(ctx context.Context) error {
+	if err := s.client.Schema().ClassDeleter().WithClassName(memory.TrashClassName).Do(ctx); err != nil {
+		return fmt.Errorf("delete class %s: %w", memory.TrashClassName, err)
+	}
+	return nil
+}
+
+// DeleteAllClasses drops every memory class including Trash. Needed only where
+// the Trash tenancy mode must change too (migrate-mt, after snapshotting the
+// trash) and by tests that want a clean slate.
+func (s *Store) DeleteAllClasses(ctx context.Context) error {
+	if err := s.DeleteClass(ctx); err != nil {
+		return err
+	}
+	return s.DeleteTrashClass(ctx)
+}
+
+// ClassExists reports whether className exists in the Weaviate schema.
+func (s *Store) ClassExists(ctx context.Context, className string) (bool, error) {
+	ok, err := s.client.Schema().ClassExistenceChecker().WithClassName(className).Do(ctx)
+	if err != nil {
+		return false, fmt.Errorf("check class %s: %w", className, err)
+	}
+	return ok, nil
 }
 
 // IsClassMultiTenant reports whether className currently has MT enabled in
@@ -648,11 +682,35 @@ func (ts *TenantStore) UpsertSummary(ctx context.Context, sum memory.Summary, ve
 	}, vector)
 }
 
-// Delete removes a memory by ID, cascading to its chunks so no orphaned chunks
-// are left behind to surface in search. Chunks are deleted first: if the memory
-// delete then fails the caller retries, whereas the reverse order could leave the
-// memory present but unsearchable-via-its-own-chunks momentarily.
+// Delete removes a memory by ID (soft: the record is copied to Trash first, see
+// DeleteWithReason), cascading to its chunks.
 func (ts *TenantStore) Delete(ctx context.Context, id string) error {
+	return ts.DeleteWithReason(ctx, id, memory.TrashReasonDelete)
+}
+
+// DeleteWithReason moves a memory to Trash (recording reason) and then removes it,
+// cascading to its chunks so no orphaned chunks are left behind to surface in
+// search. The trash write comes FIRST: if it fails nothing is deleted (fail loud,
+// the caller can retry), so a delete can never lose data that the trash would
+// have kept. A memory that does not exist is not trashed and the delete stays a
+// no-op. Chunks are deleted before the memory: if the memory delete then fails the
+// caller retries, whereas the reverse order could leave the memory present but
+// unsearchable-via-its-own-chunks momentarily.
+func (ts *TenantStore) DeleteWithReason(ctx context.Context, id, reason string) error {
+	rec, found, err := ts.Get(ctx, id)
+	if err != nil {
+		return fmt.Errorf("read memory before trashing: %w", err)
+	}
+	if found {
+		if err := ts.putTrash(ctx, rec, reason, time.Now()); err != nil {
+			return fmt.Errorf("move %s to trash: %w", id, err)
+		}
+	}
+	return ts.hardDelete(ctx, id)
+}
+
+// hardDelete permanently removes a memory and its chunks (no trash).
+func (ts *TenantStore) hardDelete(ctx context.Context, id string) error {
 	if err := ts.deleteChunksByMemory(ctx, id); err != nil {
 		return err
 	}

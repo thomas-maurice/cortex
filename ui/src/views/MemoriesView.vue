@@ -229,11 +229,11 @@ async function save() {
 }
 
 async function remove(id) {
-  if (!(await confirmDialog('Delete this memory?', { actionLabel: 'Delete' }))) return
+  if (!(await confirmDialog('Delete this memory? It is moved to the trash and can be restored from there.', { actionLabel: 'Delete' }))) return
   try {
     await memoryClient.delete({ id })
     memories.value = memories.value.filter((m) => m.id !== id)
-    toast.success('Memory deleted')
+    toast.success('Memory moved to trash')
   } catch (e) {
     handleError(e)
   }

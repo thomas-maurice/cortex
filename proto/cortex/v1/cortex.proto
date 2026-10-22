@@ -97,6 +97,17 @@ service MemoryService {
   // DeleteNamespace permanently deletes every memory AND conversation summary in
   // a namespace.
   rpc DeleteNamespace(DeleteNamespaceRequest) returns (DeleteNamespaceResponse) {}
+  // ListTrash lists the caller's trashed (soft-deleted) memories, newest
+  // deletion first. Deletes (Delete, supersedes, DeleteNamespace) move the record
+  // into a Trash class instead of destroying it; entries expire after the
+  // server's TRASH_RETENTION.
+  rpc ListTrash(ListTrashRequest) returns (ListTrashResponse) {}
+  // RestoreFromTrash re-queues trashed memories through the normal index path
+  // (the worker re-embeds), keeping their ids, and removes them from the trash.
+  // NotFound for an unknown id; AlreadyExists when a live memory has that id.
+  rpc RestoreFromTrash(RestoreFromTrashRequest) returns (RestoreFromTrashResponse) {}
+  // PurgeTrash permanently deletes trashed memories (by ids, or all).
+  rpc PurgeTrash(PurgeTrashRequest) returns (PurgeTrashResponse) {}
   // MigrateMT performs a one-shot migration from a non-MT store to a
   // multi-tenant store: it snapshots all memories and summaries, drops the
   // three memory classes, recreates them with MT enabled, and re-imports every
@@ -329,6 +340,10 @@ message ListResponse {
 
 message DeleteRequest {
   string id = 1;
+  // reason is recorded on the trash entry so mass deletions are filterable. Empty =
+  // "delete"; otherwise one of: delete, stale-review, duplicate-review (anything
+  // else is InvalidArgument).
+  string reason = 2;
 }
 
 message DeleteResponse {
@@ -448,6 +463,7 @@ message StatusResponse {
   int64 memory_count = 6;  // total stored memories
   string version = 7;
   bool model_present = 8;  // true when the embedding model is pulled in Ollama
+  int64 trash_count = 20;  // soft-deleted memories awaiting restore/purge (caller's tenant)
 }
 
 message DoctorRequest {}
@@ -688,6 +704,8 @@ message MigrateMTResponse {
   // tenant is the bootstrap admin tenant all data was migrated into.
   string tenant = 6;
   string message = 7;
+  // trash_migrated is the number of trash entries carried over into the tenant.
+  int32 trash_migrated = 8;
 }
 
 message ConsolidateResponse {
@@ -819,4 +837,61 @@ message AdminDeleteApiKeyRequest {
 
 message AdminDeleteApiKeyResponse {
   string status = 1; // "deleted"
+}
+
+// TrashEntry is a soft-deleted memory plus deletion metadata.
+message TrashEntry {
+  string id = 1;
+  string text = 2;
+  string namespace = 3;
+  repeated string tags = 4;
+  string source = 5;
+  string conversation_id = 6;
+  google.protobuf.Timestamp created_at = 7;
+  repeated string linked_ids = 8;
+  google.protobuf.Timestamp deleted_at = 9;
+  // reason is why it was trashed: "delete", "supersedes:<id>" or "namespace-delete".
+  string reason = 10;
+}
+
+message ListTrashRequest {
+  string namespace = 1; // empty = all namespaces
+  int32 limit = 2;      // 0 = default (100)
+  int32 offset = 3;
+  // reason filters on the deletion reason: exact ("delete", "stale-review",
+  // "namespace-delete") or a family ("supersedes" matches "supersedes:<id>").
+  string reason = 4;
+}
+
+message ListTrashResponse {
+  repeated TrashEntry entries = 1;
+  int32 total = 2;             // entries matching the namespace filter, before paging
+  int64 retention_seconds = 3; // server TRASH_RETENTION; 0 = kept forever
+}
+
+message RestoreFromTrashRequest {
+  repeated string ids = 1; // explicit ids: validated all-or-nothing, max 1000
+  // all restores every entry matching the optional filters below (exclusive with
+  // ids). Unlike ids it is NOT all-or-nothing and has no id cap: each entry is
+  // restored independently and failures (e.g. the id is live again) are counted.
+  bool all = 2;
+  string namespace = 3; // with all: only this namespace
+  string reason = 4;    // with all: only this reason (see ListTrashRequest.reason)
+}
+
+message RestoreFromTrashResponse {
+  int32 queued = 1;
+  int32 failed = 2;               // entries skipped (bulk form only)
+  repeated string failures = 3;   // first few "<id>: <why>" messages
+}
+
+message PurgeTrashRequest {
+  repeated string ids = 1;
+  bool all = 2;          // purge every entry (exclusive with ids)
+  string namespace = 3;  // with all: restrict to this namespace (empty = every namespace)
+  string reason = 4;     // with all: restrict to this reason (see ListTrashRequest.reason)
+}
+
+message PurgeTrashResponse {
+  int32 purged = 1;
 }

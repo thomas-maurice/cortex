@@ -60,7 +60,7 @@ direct.** Trade-off accepted: the MCP server and the worker both hold a Weaviate
 
 **Auto-schema is disabled** (`AUTOSCHEMA_ENABLED=false` on Weaviate: compose, TrueNAS
 compose, CI, `scripts/wv-test.sh`). The schema is declared in code only
-(`memoryProperties` / `chunkProperties` / `summaryProperties` / `userProperties` /
+(`memoryProperties` / `chunkProperties` / `summaryProperties` / `trashProperties` / `userProperties` /
 `apiKeyProperties`, applied by `EnsureSchema` / `EnsureIdentitySchema`, additive via
 `ensureProps`). Any new property a write path sets MUST be added to those lists, or
 the write fails. Why: reindex-with-rebuild and `migrate-mt` drop and recreate classes;
@@ -119,13 +119,59 @@ still fails on its 10th delivery is published to `memory.dead` (with the error
 and delivery count) and acked — preserved for inspection/requeue via the CLI,
 never silently dropped.
 
+### Trash (soft delete)
+
+Class `Trash` (declared in code like the others, `trashProperties`; field-tokenized
+`memoryId`/`namespace`; vectorizer none, no vector; MT with auto-tenant creation iff
+`Memory` is). One object per deleted memory, keyed by the memory's own id, holding
+`memoryId, text, namespace, tags, source, conversationId, createdAt, linkedIds,
+notDuplicateOf` plus `deletedAt` and `reason` (`delete`, `supersedes:<id>`,
+`namespace-delete`). `Memory` carries NO deleted flag, so normal queries are untouched.
+`TenantStore.DeleteWithReason` (used by `Delete`, the worker's `applySupersedes`, and
+`DeleteNamespace`) writes the trash entry FIRST and aborts without deleting anything if
+that write fails; chunk cascade is unchanged. `RestoreFromTrash` validates every id
+(in trash, not live: NotFound / AlreadyExists, all-or-nothing), republishes the record via
+`bus.PublishIndex` (links via `PublishLink` for still-existing endpoints), then drops the
+trash entry. `PurgeTrash` is permanent. The entry keeps every Memory property the worker does not
+recompute — `accessCount`, `lastAccessedAt`, `model`, `dims` plus the metadata listed above —
+so a delete+restore does not reset recall history; `dupCandidates` (recomputed at index) and
+`indexedSeq`/`indexedStream` (re-stamped by the worker) are dropped. `RestoreFromTrash{all,
+namespace, reason}` is the bulk form (gated by `scanGate`, per-entry, counts failures, no id
+cap). Cross-request links: restore publishes link ADDs only to live/same-batch endpoints; an
+endpoint still in the trash is skipped because its own entry holds the reciprocal `linkedIds`,
+so restoring it later sees this one live and re-links (no dependence on the link queue
+outliving a long gap; `LinkMaxDeliver` only covers minutes). Purge and the retention sweep queue
+link REMOVEs to live neighbours (the worker tolerates a missing endpoint, as `Unlink` does) unless
+the purged id is live again. `Delete` takes an optional `reason` from a bounded set
+(`delete`, `stale-review`, `duplicate-review`). `Status.trash_count` and the MCP
+`cortex_trash_list` tool expose the trash. The server sweeps entries older than
+`TRASH_RETENTION` hourly. Not covered: conversation summaries (permanently deleted by a
+namespace delete), and backups (trash is excluded). `DeleteClass` (reindex rebuild)
+drops only Memory/MemoryChunk/ConversationSummary and leaves the trash alone (no
+vectors, dimension irrelevant); `migrate-mt` snapshots the non-MT trash, drops all four
+classes (`DeleteAllClasses`), recreates them MT and re-writes the trash entries into the
+calling admin's tenant (`PutTrashEntry`, deletedAt/reason preserved; count reported as
+`trash_migrated`). The snapshotted trash is first saved to `<backup-name>.trash.json`
+beside the migration backup (the backup itself holds memories only); a post-drop write
+failure points at it, and `cortex import <file>` re-creates the entries as live memories (deletedAt/reason lost).
+Trash-entry write failures after the rebuild are non-fatal (logged, counted, reported in
+the response; memories/summaries are re-queued first). The sidecar and the reindex
+snapshot are plaintext (0600), never pruned and outlive `TRASH_RETENTION`; trash is not
+in full backups, so restoring one loses it. `DeleteNamespace`, bulk
+`RestoreFromTrash` and `PurgeTrash(all)` share a per-tenant single-flight gate (`scanGate`);
+read-only `ListTrash` is not gated. `DropTenant` (DeleteUser) deliberately wipes the user's trash with
+their data. The sweep skips entries with no valid `deletedAt` (logged). Namespace delete
+trashes+deletes memories with 8 workers, stopping at the first error. `TRASH_RETENTION`
+is parsed strictly (Go duration, e.g. `720h`; `0` = forever; invalid = startup failure).
+
 ## Tools exposed to Claude
 
 | Tool | Path | Args | Returns |
 |------|------|------|---------|
 | `memory_save` | NATS publish | `text`, `namespace?`, `tags?` | `{id, status:"queued"}` |
 | `memory_search` | Ollama + Weaviate | `query`, `namespace?` (`*` = all), `limit?` | `{hits:[{id,text,namespace,tags,distance}]}` |
-| `memory_delete` | Weaviate | `id` | `{status:"deleted"}` |
+| `memory_delete` | Weaviate (soft: copies to `Trash` first) | `id` | `{status:"deleted"}` |
+| `trash_restore` | NATS publish (`memory.index`) | `id` | `{status:"queued"}` |
 | `memory_link` | NATS publish (`memory.link`) | `id`, `targetId` | `{status:"queued"}` (applied async once both ends indexed) |
 | `memory_unlink` | NATS publish (`memory.link`) | `id`, `targetId` | `{status:"queued"}` |
 
@@ -157,6 +203,7 @@ automatically without per-call bookkeeping.
 | `CORTEX_UI_USER` | `admin` | server (web UI login) |
 | `CORTEX_UI_PASSWORD` | _(empty = UI login disabled)_ | server |
 | `CORTEX_JWT_SECRET` | derived from `CORTEX_AUTH_TOKEN`, else random | server (signs UI JWTs) |
+| `TRASH_RETENTION` | `168h` (`0` = forever) | server (how long soft-deleted memories stay restorable; hourly sweep purges older entries across all tenants) |
 | `CORTEX_MAX_REQUEST_BYTES` | `268435456` (256 MiB) | server (max RPC request body; raise for very large restores) |
 
 ## Living memory — decay + reinforcement (opt-in)

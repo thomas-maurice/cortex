@@ -608,7 +608,7 @@ type tenantStore interface {
 	Upsert(ctx context.Context, rec memory.Record, vector []float32) error
 	UpdateIndexFields(ctx context.Context, rec memory.Record, vector []float32) error
 	ReplaceChunks(ctx context.Context, rec memory.Record, chunks []store.ChunkVec) error
-	Delete(ctx context.Context, id string) error
+	DeleteWithReason(ctx context.Context, id, reason string) error
 	GetSummarySeq(ctx context.Context, conversationID string) (seq uint64, stream int64, err error)
 	UpsertSummary(ctx context.Context, sum memory.Summary, vector []float32) error
 	SearchMemoryVectors(ctx context.Context, vec []float32, opts store.SearchOpts) ([]memory.Hit, error)
@@ -830,11 +830,12 @@ func planSupersedes(recID string, supersedes []string) []string {
 // a failure here leaves stale sources behind (the pre-merge state) rather than
 // losing the merged content. Best-effort and non-fatal: a missing/already-gone
 // source is logged and skipped, so a redelivery that re-runs this (sources
-// already deleted) is harmless. ts is scoped to the record's tenant so the
+// already deleted) is harmless. Sources go to the Trash (reason supersedes:<id>),
+// so a bad consolidation is recoverable. ts is scoped to the record's tenant so the
 // deletes only affect the correct tenant's data in multi-tenant mode.
 func applySupersedes(ctx context.Context, log *slog.Logger, ts tenantStore, rec memory.Record) {
 	for _, id := range planSupersedes(rec.ID, rec.Supersedes) {
-		if err := ts.Delete(ctx, id); err != nil {
+		if err := ts.DeleteWithReason(ctx, id, memory.TrashReasonSupersedes+rec.ID); err != nil {
 			log.Warn("supersede delete failed, skipping", "id", rec.ID, "superseded", id, "err", err)
 			continue
 		}
