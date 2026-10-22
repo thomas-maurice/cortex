@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/weaviate/weaviate-go-client/v5/weaviate"
+	"github.com/weaviate/weaviate-go-client/v5/weaviate/fault"
 	"github.com/weaviate/weaviate-go-client/v5/weaviate/filters"
 	"github.com/weaviate/weaviate-go-client/v5/weaviate/graphql"
 	wgrpc "github.com/weaviate/weaviate-go-client/v5/weaviate/grpc"
@@ -38,6 +39,10 @@ type SearchOpts struct {
 	IncludeTags    []string // memory must carry ALL of these tags (server-side)
 	AnyTags        []string // memory must carry AT LEAST ONE of these tags (server-side)
 	ExcludeTags    []string // drop memories carrying ANY of these tags (post-filter)
+	// IncludeExpired keeps memories whose validUntil has passed. The zero value
+	// (false) hides them, so every caller is expiry-safe by default; only the
+	// worker's dedup scan and an explicit include_expired request opt in.
+	IncludeExpired bool
 	// Query, when non-empty, switches Search from a pure nearVector query to a
 	// HYBRID (BM25 keyword + vector) query using this raw text for the keyword
 	// side and the supplied vector for the vector side. This is what lets exact
@@ -70,6 +75,7 @@ type ListOpts struct {
 	IncludeTags    []string
 	AnyTags        []string
 	ExcludeTags    []string
+	IncludeExpired bool // keep memories whose validUntil has passed (default: hide them)
 }
 
 // SummarySearchOpts configures a nearVector search over conversation summaries.
@@ -201,6 +207,10 @@ func memoryProperties() []*models.Property {
 		// creation time, unix microseconds), so a recreated stream (sequences restart
 		// at 1) is not mistaken for "older than everything stored".
 		{Name: "indexedStream", DataType: []string{"int"}},
+		// validUntil is when the memory stops being true (null = never expires).
+		// Index-owned. Memories written before this property existed simply have no
+		// value, which the expiry filter treats as "never expires" (see notExpired).
+		{Name: "validUntil", DataType: []string{"date"}},
 	}
 }
 
@@ -607,12 +617,27 @@ func indexOwnedProps(rec memory.Record) map[string]interface{} {
 	}
 }
 
+// validUntilValue renders an expiry for a Weaviate date property: nil (JSON null,
+// which a merge treats as "clear") for the zero time, else RFC3339.
+func validUntilValue(t time.Time) interface{} {
+	if t.IsZero() {
+		return nil
+	}
+	return t.UTC().Format(time.RFC3339)
+}
+
 // Upsert writes a record with its precomputed vector into the Memory class,
 // creating the object with EVERY field (the index-owned ones plus the fields other
 // writers own, which a new memory such as an import carries). For an existing
 // memory use UpdateIndexFields.
 func (ts *TenantStore) Upsert(ctx context.Context, rec memory.Record, vector []float32) error {
 	props := indexOwnedProps(rec)
+	// validUntil is written ONLY here, on create: afterwards it belongs to
+	// SetValidUntil, so a queued index message (reindex, an earlier text edit, a
+	// restore) carrying an older snapshot can never revert an expiry edit.
+	if !rec.ValidUntil.IsZero() {
+		props["validUntil"] = validUntilValue(rec.ValidUntil)
+	}
 	props["linkedIds"] = rec.LinkedIDs
 	props["notDuplicateOf"] = rec.NotDuplicateOf
 	props["accessCount"] = rec.AccessCount
@@ -628,9 +653,10 @@ func (ts *TenantStore) Upsert(ctx context.Context, rec memory.Record, vector []f
 // UpdateIndexFields rewrites an EXISTING memory's index-owned fields and vector
 // via a Weaviate merge (PATCH) and nothing else. Index-owned: text, vector,
 // namespace, tags, source, createdAt, conversationId, model, dims, dupCandidates,
-// indexedSeq. Deliberately NOT written, because other writers own them and a
-// queued index message only carries a stale snapshot:
+// indexedSeq, indexedStream. Deliberately NOT written, because other writers own
+// them and a queued index message only carries a stale snapshot:
 //
+//	validUntil                   server SetValidUntil (written by Upsert on create only)
 //	linkedIds                    link consumer (SetLinks)
 //	accessCount, lastAccessedAt  server Reinforce
 //	notDuplicateOf               server DismissDuplicate (SetNotDuplicateOf)
@@ -653,6 +679,34 @@ func (ts *TenantStore) UpdateIndexFields(ctx context.Context, rec memory.Record,
 	}
 	return nil
 }
+
+// SetValidUntil is the sole writer of an existing memory's expiry; it changes ONLY the expiry (zero time = never expires) via a
+// single-property Weaviate merge: no vector, no other field and no chunk is
+// touched, so an expiry change never re-embeds. A merge is atomic per property, so
+// it cannot clobber a concurrent tag/link/reinforcement merge, and being a scalar
+// replace (not a read-modify-write) it needs no distributed lock. Returns
+// ErrNotFound when the memory does not exist (yet).
+func (ts *TenantStore) SetValidUntil(ctx context.Context, id string, until time.Time) error {
+	updater := ts.s.client.Data().Updater().
+		WithMerge().
+		WithClassName(memory.ClassName).
+		WithID(id).
+		WithProperties(map[string]interface{}{"validUntil": validUntilValue(until)})
+	if ts.t != "" {
+		updater = updater.WithTenant(ts.t)
+	}
+	if err := updater.Do(ctx); err != nil {
+		var wErr *fault.WeaviateClientError
+		if isTenantNotFound(err) || (errors.As(err, &wErr) && wErr.StatusCode == 404) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("set validUntil %s: %w", id, err)
+	}
+	return nil
+}
+
+// ErrNotFound is returned by metadata-only writes for a memory that does not exist.
+var ErrNotFound = errors.New("memory not found")
 
 // formatDate renders a time for a Weaviate date property, returning "" for the
 // zero time so the property stays null rather than serialising the year-0001
@@ -895,8 +949,38 @@ func (ts *TenantStore) Reinforce(ctx context.Context, id string, count int, at t
 	return nil
 }
 
+// expiredProp reports whether a scanned result's validUntil has passed.
+func expiredProp(p map[string]any, now time.Time) bool {
+	vu := propString(p, "validUntil")
+	if vu == "" {
+		return false
+	}
+	t, err := time.Parse(time.RFC3339, vu)
+	return err == nil && !t.After(now)
+}
+
+// CountLiveExpired is Count split by expiry: live memories (what List/Search can
+// return) and expired ones still stored (hidden, awaiting the sweep).
+func (ts *TenantStore) CountLiveExpired(ctx context.Context) (live, expired int, err error) {
+	now := time.Now()
+	err = ts.s.scanAll(ctx, memory.ClassName, ts.t, []string{"validUntil"}, func(r graphql.SearchResult) {
+		if expiredProp(r.Properties, now) {
+			expired++
+		} else {
+			live++
+		}
+	})
+	if err != nil {
+		if isTenantNotFound(err) {
+			return 0, 0, nil
+		}
+		return 0, 0, fmt.Errorf("count query: %w", err)
+	}
+	return live, expired, nil
+}
+
 // Count returns the number of stored memories for this tenant, optionally scoped
-// to a namespace ("" counts all). There is no gRPC Aggregate in the stable
+// to a namespace ("" counts all, expired included — see CountLiveExpired). There is no gRPC Aggregate in the stable
 // client, so it cursor-scans the class and counts the rows (correct beyond the
 // 10000-result query cap). The cursor cannot be combined with a where filter, so
 // the namespace is matched in Go.
@@ -956,7 +1040,7 @@ func (ts *TenantStore) ListAllSummaries(ctx context.Context) ([]memory.Summary, 
 }
 
 // memoryProps is the property set fetched for both search and list.
-var memoryProps = []string{"text", "namespace", "tags", "source", "createdAt", "model", "dims", "conversationId", "linkedIds", "dupCandidates", "notDuplicateOf", "accessCount", "lastAccessedAt"}
+var memoryProps = []string{"text", "namespace", "tags", "source", "createdAt", "model", "dims", "conversationId", "linkedIds", "dupCandidates", "notDuplicateOf", "accessCount", "lastAccessedAt", "validUntil"}
 
 // buildWhere combines exact namespace + conversationId filters with tag
 // filters: includeTags ("has ALL of these", ContainsAll) and anyTags ("has at
@@ -997,6 +1081,28 @@ func buildWhere(namespace, conversationID string, includeTags, anyTags []string)
 	default:
 		return filters.Where().WithOperator(filters.And).WithOperands(ops)
 	}
+}
+
+// notExpired ANDs "not expired" onto where. It is expressed as NOT(validUntil <=
+// now) rather than `validUntil > now OR validUntil IS NULL`: IsNull filtering needs
+// the class created with indexNullState (not the case for existing deployments and
+// not changeable afterwards), whereas NOT is a complement over all objects, so a
+// memory with no validUntil (never set, or written before the property existed)
+// is kept without any backfill. includeExpired=true returns where unchanged.
+func notExpired(where *filters.WhereBuilder, includeExpired bool, now time.Time) *filters.WhereBuilder {
+	if includeExpired {
+		return where
+	}
+	live := filters.Where().WithOperator(filters.Not).WithOperands([]*filters.WhereBuilder{
+		filters.Where().
+			WithPath([]string{"validUntil"}).
+			WithOperator(filters.LessThanEqual).
+			WithValueDate(now),
+	})
+	if where == nil {
+		return live
+	}
+	return filters.Where().WithOperator(filters.And).WithOperands([]*filters.WhereBuilder{where, live})
 }
 
 // excludeTagged drops records carrying any of the excluded tags. Done in Go
@@ -1067,7 +1173,7 @@ func (ts *TenantStore) SearchMemoryVectors(ctx context.Context, vector []float32
 	if opts.Autocut > 0 {
 		query = query.WithAutocut(opts.Autocut)
 	}
-	if where := buildWhere(opts.Namespace, opts.ConversationID, opts.IncludeTags, opts.AnyTags); where != nil {
+	if where := notExpired(buildWhere(opts.Namespace, opts.ConversationID, opts.IncludeTags, opts.AnyTags), opts.IncludeExpired, time.Now()); where != nil {
 		query = query.WithWhere(where)
 	}
 
@@ -1273,7 +1379,7 @@ func (ts *TenantStore) SearchByID(ctx context.Context, id string, opts SearchOpt
 	if opts.Autocut > 0 {
 		query = query.WithAutocut(opts.Autocut)
 	}
-	if where := buildWhere(opts.Namespace, opts.ConversationID, opts.IncludeTags, opts.AnyTags); where != nil {
+	if where := notExpired(buildWhere(opts.Namespace, opts.ConversationID, opts.IncludeTags, opts.AnyTags), opts.IncludeExpired, time.Now()); where != nil {
 		query = query.WithWhere(where)
 	}
 
@@ -1317,7 +1423,7 @@ func (ts *TenantStore) List(ctx context.Context, opts ListOpts) ([]memory.Record
 		query = query.WithTenant(ts.t)
 	}
 
-	if where := buildWhere(opts.Namespace, opts.ConversationID, opts.IncludeTags, opts.AnyTags); where != nil {
+	if where := notExpired(buildWhere(opts.Namespace, opts.ConversationID, opts.IncludeTags, opts.AnyTags), opts.IncludeExpired, time.Now()); where != nil {
 		query = query.WithWhere(where)
 	}
 
@@ -1495,6 +1601,9 @@ func resultToRecord(r graphql.SearchResult) memory.Record {
 	if la := propString(p, "lastAccessedAt"); la != "" {
 		rec.LastAccessedAt, _ = time.Parse(time.RFC3339, la) // ignored: best-effort timestamp parse
 	}
+	if vu := propString(p, "validUntil"); vu != "" {
+		rec.ValidUntil, _ = time.Parse(time.RFC3339, vu) // ignored: best-effort timestamp parse
+	}
 	return rec
 }
 
@@ -1550,6 +1659,11 @@ func objectToRecord(id string, raw models.PropertySchema) memory.Record {
 			rec.LastAccessedAt = t
 		}
 		// err != nil: malformed timestamp; leave LastAccessedAt as zero time (explicit fallback)
+	}
+	if vu := restString(p, "validUntil"); vu != "" {
+		if t, err := time.Parse(time.RFC3339, vu); err == nil {
+			rec.ValidUntil = t
+		}
 	}
 	return rec
 }

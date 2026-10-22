@@ -248,6 +248,11 @@ message Memory {
   // recently-used memories float up, untouched ones fade. Unset until first
   // reinforced (recency then falls back to created_at).
   google.protobuf.Timestamp last_accessed_at = 14;
+  // valid_until is when this memory stops being true (time-bound facts such as "deploy
+  // freeze until Friday"). Unset = never expires. Expired memories are hidden from
+  // Search/List/recall unless include_expired is set, and are moved to Trash (reason
+  // "expired") by the server's sweep once expired for longer than EXPIRY_GRACE.
+  google.protobuf.Timestamp valid_until = 20; // numbers >= 20 for expiry fields keep clear of fields added concurrently elsewhere
 }
 
 message SaveRequest {
@@ -269,6 +274,11 @@ message SaveRequest {
   // link_to: a missing/already-deleted source is skipped (logged), never fatal.
   // One-shot, not persisted as a property.
   repeated string supersedes = 7;
+  // Optional expiry for a time-bound fact: either an absolute valid_until or a
+  // relative expires_in ("7d", "36h"; days supported; > 0 and <= 10 years), not both.
+  // valid_until must be in the future.
+  google.protobuf.Timestamp valid_until = 20;
+  string expires_in = 21;
 }
 
 message SaveResponse {
@@ -278,7 +288,12 @@ message SaveResponse {
 
 message UpdateMemoryRequest {
   string id = 1;   // required: the memory to edit (e.g. from a search hit)
-  string text = 2; // required: the new full memory text; replaces and re-embeds
+  // text is the new full memory text; replaces and re-embeds. Required unless the
+  // request ONLY changes the expiry (valid_until / expires_in / clear_valid_until
+  // with no other field set): then it may be empty. An expiry-only change — empty
+  // text, or text identical to the stored text — is applied as a metadata merge
+  // and never re-embeds.
+  string text = 2;
   // tags is the desired tag set, applied ONLY when replace_tags is true. proto3
   // can't tell an empty list from an unset one, so replace_tags is the explicit
   // switch: it lets an editor clear all tags while letting a text-only edit (e.g.
@@ -287,11 +302,17 @@ message UpdateMemoryRequest {
   bool replace_tags = 4;
   // namespace moves the memory when non-empty; empty keeps the current namespace.
   string namespace = 5;
+  // Expiry change: set an absolute valid_until or a relative expires_in (same rules as
+  // SaveRequest), or clear_valid_until to make the memory never expire. At most one of
+  // the three; none = leave the stored expiry untouched.
+  google.protobuf.Timestamp valid_until = 20;
+  string expires_in = 21;
+  bool clear_valid_until = 22;
 }
 
 message UpdateMemoryResponse {
   string id = 1;
-  string status = 2; // "queued"
+  string status = 2; // "queued" (re-embed) or "updated" (metadata-only expiry change, applied)
 }
 
 message SearchRequest {
@@ -309,6 +330,8 @@ message SearchRequest {
   // inflate the usage signal ranking depends on; the agent (MCP) leaves it false
   // so genuine recalls still count. No effect unless RERANK_WEIGHT>0 server-side.
   bool no_reinforce = 9;
+  // include_expired keeps memories whose valid_until has passed (default: hidden).
+  bool include_expired = 20;
 }
 
 message SearchSimilarRequest {
@@ -320,6 +343,7 @@ message SearchSimilarRequest {
   float max_distance = 6;           // relevance cutoff; <=0 = no cutoff
   int32 autocut = 7;                // Weaviate autocut jumps; <=0 disables
   repeated string any_tags = 8;     // neighbour must carry AT LEAST ONE of these
+  bool include_expired = 20;        // keep neighbours whose valid_until has passed (default: hidden)
 }
 
 message Hit {
@@ -420,6 +444,7 @@ message ListRequest {
   repeated string tags = 3;         // memory must carry ALL of these
   repeated string exclude_tags = 4; // drop memories carrying ANY of these
   repeated string any_tags = 5;     // memory must carry AT LEAST ONE of these
+  bool include_expired = 20;        // keep memories whose valid_until has passed (default: hidden)
 }
 
 message ListResponse {
@@ -552,6 +577,9 @@ message StatusResponse {
   string version = 7;
   bool model_present = 8;  // true when the embedding model is pulled in Ollama
   int64 trash_count = 20;  // soft-deleted memories awaiting restore/purge (caller's tenant)
+  // memory_count above counts LIVE memories only; expired_count is how many expired
+  // memories (hidden from search/list, awaiting the sweep) are stored on top of it.
+  int64 expired_count = 21;
 }
 
 message DoctorRequest {}
@@ -726,6 +754,7 @@ message ConsolidateRequest {
   repeated string tags = 5;         // cluster member must carry ALL of these
   repeated string exclude_tags = 6; // drop members carrying ANY of these
   repeated string any_tags = 7;     // cluster member must carry AT LEAST ONE of these
+  bool include_expired = 20;        // also gather expired memories (default: skipped, seeds and neighbours alike)
 }
 
 message RestoreMemoriesRequest {
@@ -738,6 +767,11 @@ message RestoreMemoriesRequest {
 
 message RestoreMemoriesResponse {
   int32 queued = 1; // how many memories were accepted onto the index queue
+  // expired_queued is how many of the queued records carry a lapsed valid_until. A
+  // record that creates a NEW memory stays hidden from search/list until its expiry is
+  // cleared or extended; one over an existing id keeps that memory's current expiry
+  // (the index path never rewrites an existing expiry).
+  int32 expired_queued = 20;
 }
 
 // NamespaceInfo aggregates one namespace's contents for the admin view.
@@ -748,6 +782,8 @@ message NamespaceInfo {
   // last_updated is the most recent activity in the namespace: the newest memory
   // createdAt or summary updatedAt. Unset when the namespace has no timestamps.
   google.protobuf.Timestamp last_updated = 4;
+  // memory_count counts live memories only; expired memories are counted here.
+  int64 expired_count = 20;
 }
 
 message ListNamespacesRequest {}
@@ -778,9 +814,12 @@ message DeleteNamespaceResponse {
 // TagInfo aggregates one tag's usage for the tag admin view.
 message TagInfo {
   string name = 1;
-  int64 memory_count = 2; // memories carrying this tag (summaries have no tags)
+  int64 memory_count = 2; // LIVE memories carrying this tag (summaries have no tags)
   // last_activity is the newest createdAt among memories with the tag.
   google.protobuf.Timestamp last_activity = 3;
+  // expired_count is how many EXPIRED memories (hidden from search/list) carry the
+  // tag; memory_count excludes them. Rename/delete still apply to them.
+  int64 expired_count = 20;
 }
 
 message ListTagsRequest {
@@ -977,8 +1016,10 @@ message TrashEntry {
   google.protobuf.Timestamp created_at = 7;
   repeated string linked_ids = 8;
   google.protobuf.Timestamp deleted_at = 9;
-  // reason is why it was trashed: "delete", "supersedes:<id>" or "namespace-delete".
+  // reason is why it was trashed: "delete", "supersedes:<id>", "namespace-delete" or "expired".
   string reason = 10;
+  // valid_until is the expiry the memory carried when it was trashed (unset = none).
+  google.protobuf.Timestamp valid_until = 20;
 }
 
 message ListTrashRequest {
@@ -1010,6 +1051,10 @@ message RestoreFromTrashResponse {
   int32 queued = 1;
   int32 failed = 2;               // entries skipped (bulk form only)
   repeated string failures = 3;   // first few "<id>: <why>" messages
+  // expired_queued is how many restored memories carry an expiry that has already
+  // lapsed (an entry trashed for a reason other than "expired" keeps its valid_until):
+  // they come back but stay hidden from search/list until the expiry is changed.
+  int32 expired_queued = 20;
 }
 
 message PurgeTrashRequest {

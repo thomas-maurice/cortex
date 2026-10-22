@@ -397,6 +397,7 @@ function toExportRecord(m) {
   if (m.conversationId) r.conversationId = m.conversationId
   if (m.linkedIds?.length) r.linkedIds = m.linkedIds
   if (m.notDuplicateOf?.length) r.notDuplicateOf = m.notDuplicateOf
+  if (m.validUntil) r.validUntil = rfc3339(m.validUntil)
   return r
 }
 
@@ -405,7 +406,7 @@ async function doExport() {
   error.value = ''
   try {
     const ns = exportNs.value.trim() || '*'
-    const res = await memoryClient.list({ namespace: ns, limit: MAX_EXPORT })
+    const res = await memoryClient.list({ namespace: ns, limit: MAX_EXPORT, includeExpired: true }) // a backup must include expired memories
     const recs = res.memories.map(toExportRecord)
     const json = JSON.stringify(recs, null, 2)
 
@@ -671,6 +672,10 @@ async function doImport() {
       if (r.createdAt) {
         const d = new Date(r.createdAt)
         if (!isNaN(d.getTime())) m.createdAt = timestampFromDate(d)
+      }
+      if (r.validUntil) {
+        const d = new Date(r.validUntil)
+        if (!isNaN(d.getTime())) m.validUntil = timestampFromDate(d)
       }
       mems.push(m)
     }

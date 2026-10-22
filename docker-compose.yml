@@ -157,6 +157,8 @@ services:
       # BACKUP_KEEP: ${BACKUP_KEEP:-7}
       # How long deleted memories stay restorable in the trash (Go duration e.g. 720h, NOT 30d; 0 = forever; invalid = server won't start).
       # TRASH_RETENTION: ${TRASH_RETENTION:-168h}
+      # How long an EXPIRED memory (valid_until passed) stays hidden-but-recoverable before the hourly sweep moves it to the trash (Go duration, NOT 7d; 0 = immediately; invalid = server won't start).
+      # EXPIRY_GRACE: ${EXPIRY_GRACE:-168h}
       # Dedicated metrics listener (/metrics, /healthz, /readyz; unauthenticated)
       # inside the container. /metrics is never served on the API port (8080).
       # Not published to the host. Empty disables it (default is :9090).

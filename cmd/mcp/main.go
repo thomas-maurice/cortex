@@ -17,6 +17,7 @@ import (
 	"connectrpc.com/connect"
 	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	cortexv1 "github.com/thomas-maurice/cortex/gen/cortex/v1"
 	"github.com/thomas-maurice/cortex/gen/cortex/v1/cortexv1connect"
@@ -291,7 +292,11 @@ func main() {
 			"their IDs in the linkTo field — links are bidirectional and queued, applied once both this " +
 			"memory and each target are indexed, so you do not need a separate cortex_memory_link call and " +
 			"the targets need not be indexed yet. Indexing is asynchronous and durable; saving is cheap, so " +
-			"err on the side of saving more.",
+			"err on the side of saving more. For a TIME-BOUND fact — one that stops being true after a while, " +
+			"e.g. \"deploy freeze until Friday\", \"working on the staging cluster this week\", \"the build is " +
+			"broken today\" — ALWAYS set expiresIn (e.g. \"3d\", \"36h\", \"14d\"; " +
+			"weeks are not supported, use days): once it lapses the memory stops being recalled, so it cannot mislead a later session. Omit " +
+			"expiresIn for durable facts, preferences and decisions.",
 	}, withTimeout(callTimeout, d.save))
 
 	addTagsTool(server, d, callTimeout)
@@ -355,7 +360,9 @@ func main() {
 			"Strongly prefer Markdown for the text, as the UI renders it. Tags are left untouched unless you set " +
 			"replaceTags=true, in which case the tags field becomes the memory's new tag set (an empty list clears " +
 			"them). Namespace is left untouched unless you pass a non-empty namespace. Editing is asynchronous: the " +
-			"updated memory is re-indexed shortly after the call returns.",
+			"updated memory is re-indexed shortly after the call returns. EXPIRY: set expiresIn (e.g. \"7d\") to " +
+			"make the memory time-bound or to extend its expiry, or clearValidUntil=true to make it permanent; " +
+			"for an expiry-only change you may omit text (applied immediately, no re-indexing).",
 	}, withTimeout(callTimeout, d.edit))
 
 	mcp.AddTool(server, &mcp.Tool{
@@ -439,6 +446,10 @@ func main() {
 			"the new memory replaces. The server deletes those superseded sources automatically once the new memory " +
 			"is durably indexed, so do NOT call cortex_memory_delete on them yourself — that would risk losing " +
 			"content if indexing hasn't finished. Only supersede ids that appear in the manifest. " +
+			"TIME-BOUND SOURCES: cluster memories may carry an expiry (shown as \"(expires …)\"). When the merged " +
+			"memory is made only of time-bound facts, save it with expiresIn so it does not outlive them — if EVERY " +
+			"source expires the response gives `suggestedExpiresIn` (the latest source's remaining time): use it. If " +
+			"any source is permanent, decide yourself; leave expiresIn off when the merged text is durable. " +
 			"SCOPE: OMIT namespace to consolidate ONLY the current project (the default — almost always what you " +
 			"want; it gathers fewer, more relevant memories and costs far fewer tokens). Pass \"*\" to span ALL " +
 			"projects ONLY when the user explicitly asks to consolidate across everything — it pulls in much more " +
@@ -471,6 +482,7 @@ type SaveIn struct {
 	Tags       []string `json:"tags,omitempty" jsonschema:"optional free-form tags for later filtering"`
 	LinkTo     []string `json:"linkTo,omitempty" jsonschema:"optional IDs of related memories to bidirectionally link this new memory to (e.g. from a prior memory_search). Linking is queued and applied once both memories are indexed, so the targets do not need to be indexed yet — they just need to be real memory IDs that exist or are being saved"`
 	Supersedes []string `json:"supersedes,omitempty" jsonschema:"optional IDs of EXISTING memories this new memory replaces (e.g. the sources from a cortex_consolidate manifest that this merged memory absorbs); the server deletes them automatically once this memory is durably indexed, so do not also call cortex_memory_delete on them. Only pass IDs you actually merged into this text"`
+	ExpiresIn  string   `json:"expiresIn,omitempty" jsonschema:"set for TIME-BOUND facts that stop being true after a while (a freeze until Friday, this week's focus): how long the memory stays valid, e.g. \"7d\" or \"36h\" (days or Go durations; max 10 years). After that it is no longer returned by search or recall. Omit for durable facts"`
 }
 
 type SaveOut struct {
@@ -491,6 +503,7 @@ func (d *deps) save(ctx context.Context, _ *mcp.CallToolRequest, in SaveIn) (*mc
 		Tags:           config.MergeTags(in.Tags, d.autoSaveTags),
 		LinkTo:         in.LinkTo,
 		Supersedes:     in.Supersedes,
+		ExpiresIn:      strings.TrimSpace(in.ExpiresIn),
 		Source:         d.source,
 		ConversationId: d.conversationID,
 	}))
@@ -514,6 +527,8 @@ type SearchIn struct {
 	ExcludeTags []string `json:"excludeTags,omitempty" jsonschema:"drop memories carrying ANY of these tags"`
 	MaxDistance float32  `json:"maxDistance,omitempty" jsonschema:"relevance cutoff (cosine distance, ~0=identical, larger=less related); results farther than this are dropped; omit to use the server default"`
 	Fresh       bool     `json:"fresh,omitempty" jsonschema:"return full text even for memories already delivered to this session's context earlier (normally those come back as short stubs to save tokens); set true when the earlier copy was lost, e.g. after context compaction"`
+	// IncludeExpired is rarely wanted: expired memories are time-bound facts that have stopped being true.
+	IncludeExpired bool `json:"includeExpired,omitempty" jsonschema:"also return EXPIRED memories (time-bound facts whose expiry has passed and are normally hidden because they are probably no longer true); only set it to audit history"`
 }
 
 type SearchHit struct {
@@ -525,6 +540,11 @@ type SearchHit struct {
 	Model         string   `json:"model,omitempty"`
 	LinkedIDs     []string `json:"linkedIds,omitempty"`
 	DupCandidates []string `json:"dupCandidates,omitempty"`
+	// ValidUntil is the RFC3339 expiry of a time-bound memory; Expired is true when
+	// it has passed (only possible with includeExpired). Both omitted for a memory
+	// that never expires.
+	ValidUntil string `json:"validUntil,omitempty"`
+	Expired    bool   `json:"expired,omitempty"`
 	// Stub is true when Text is a truncated prefix because the full text was
 	// already delivered to this session's context earlier (pass fresh=true to
 	// re-fetch it in full).
@@ -557,13 +577,14 @@ func (d *deps) search(ctx context.Context, _ *mcp.CallToolRequest, in SearchIn) 
 	}
 
 	resp, err := d.client.Search(ctx, connect.NewRequest(&cortexv1.SearchRequest{
-		Query:       query,
-		Namespace:   d.nsOrDefault(in.Namespace), // "" -> this project, "*" -> all namespaces
-		Limit:       int32(limit),
-		Tags:        in.Tags,
-		AnyTags:     in.AnyTags,
-		ExcludeTags: in.ExcludeTags,
-		MaxDistance: maxDist,
+		Query:          query,
+		Namespace:      d.nsOrDefault(in.Namespace), // "" -> this project, "*" -> all namespaces
+		Limit:          int32(limit),
+		Tags:           in.Tags,
+		AnyTags:        in.AnyTags,
+		ExcludeTags:    in.ExcludeTags,
+		MaxDistance:    maxDist,
+		IncludeExpired: in.IncludeExpired,
 	}))
 	if err != nil {
 		return nil, SearchOut{}, err
@@ -628,12 +649,13 @@ func (d *deps) search(ctx context.Context, _ *mcp.CallToolRequest, in SearchIn) 
 			DupCandidates: dups,
 			Stub:          stub,
 			Matched:       matched,
-		})
+		}.withExpiry(m.GetValidUntil()))
+		expiry := expiryPrefix(out.Hits[len(out.Hits)-1])
 		if stub {
-			fmt.Fprintf(&b, "%d. id=%s [%s] (dist %.3f) [stub — full text already in this session's context] %s\n",
-				i+1, m.GetId(), m.GetNamespace(), h.GetDistance(), text)
+			fmt.Fprintf(&b, "%d. id=%s [%s] (dist %.3f) %s[stub — full text already in this session's context] %s\n",
+				i+1, m.GetId(), m.GetNamespace(), h.GetDistance(), expiry, text)
 		} else {
-			fmt.Fprintf(&b, "%d. id=%s [%s] (dist %.3f) %s\n", i+1, m.GetId(), m.GetNamespace(), h.GetDistance(), text)
+			fmt.Fprintf(&b, "%d. id=%s [%s] (dist %.3f) %s%s\n", i+1, m.GetId(), m.GetNamespace(), h.GetDistance(), expiry, text)
 		}
 		if matched != "" {
 			fmt.Fprintf(&b, "   matched: %s\n", truncateRunes(matched, matchedTextChars))
@@ -653,6 +675,17 @@ func (d *deps) search(ctx context.Context, _ *mcp.CallToolRequest, in SearchIn) 
 		hookState.Add(delivered...)
 	}
 	return text2result(strings.TrimSpace(b.String())), out, nil
+}
+
+// withExpiry stamps a hit's expiry fields from the memory's valid_until (nil =
+// never expires, both fields stay empty).
+func (h SearchHit) withExpiry(vu *timestamppb.Timestamp) SearchHit {
+	if vu == nil {
+		return h
+	}
+	h.ValidUntil = vu.AsTime().UTC().Format(time.RFC3339)
+	h.Expired = !vu.AsTime().After(time.Now())
+	return h
 }
 
 // stubTextChars is how much of an already-delivered memory's text a stub keeps —
@@ -704,7 +737,7 @@ func (d *deps) get(ctx context.Context, _ *mcp.CallToolRequest, in GetIn) (*mcp.
 			st.Add(m.GetId())
 		}
 	}
-	text := fmt.Sprintf("id=%s [%s] %s", m.GetId(), m.GetNamespace(), m.GetText())
+	text := fmt.Sprintf("id=%s [%s] %s%s", m.GetId(), m.GetNamespace(), expiryPrefix(hit), m.GetText())
 	if links := m.GetLinkedIds(); len(links) > 0 {
 		text += "\n   linked: " + strings.Join(links, ", ")
 	}
@@ -746,6 +779,9 @@ func (d *deps) tagsList(ctx context.Context, _ *mcp.CallToolRequest, in TagsList
 	out := TagsListOut{Tags: make([]TagCount, 0, len(resp.Msg.GetTags()))}
 	var b strings.Builder
 	for _, t := range resp.Msg.GetTags() {
+		if t.GetMemoryCount() == 0 {
+			continue // only on expired memories: not a tag to reuse
+		}
 		out.Tags = append(out.Tags, TagCount{Tag: t.GetName(), Count: t.GetMemoryCount()})
 		fmt.Fprintf(&b, "%q: %d\n", t.GetName(), t.GetMemoryCount())
 	}
@@ -839,8 +875,12 @@ func (d *deps) trashRestore(ctx context.Context, _ *mcp.CallToolRequest, in Tras
 	if id == "" {
 		return nil, TrashRestoreOut{}, fmt.Errorf("id must not be empty")
 	}
-	if _, err := d.client.RestoreFromTrash(ctx, connect.NewRequest(&cortexv1.RestoreFromTrashRequest{Ids: []string{id}})); err != nil {
+	resp, err := d.client.RestoreFromTrash(ctx, connect.NewRequest(&cortexv1.RestoreFromTrashRequest{Ids: []string{id}}))
+	if err != nil {
 		return nil, TrashRestoreOut{}, err
+	}
+	if resp.Msg.GetExpiredQueued() > 0 {
+		return text2result("restored " + id + " (queued for indexing) but it is already expired: hidden from search until its expiry is changed (cortex_memory_edit with expiresIn or clearValidUntil)"), TrashRestoreOut{ID: id, Status: "queued"}, nil
 	}
 	return text2result("restored " + id + " (queued for indexing)"), TrashRestoreOut{ID: id, Status: "queued"}, nil
 }
@@ -848,11 +888,13 @@ func (d *deps) trashRestore(ctx context.Context, _ *mcp.CallToolRequest, in Tras
 // ---- memory_edit ----
 
 type EditIn struct {
-	ID          string   `json:"id" jsonschema:"the ID of the existing memory to edit (from cortex_memory_search)"`
-	Text        string   `json:"text" jsonschema:"the new FULL memory text; replaces the existing text and is re-embedded. Prefer Markdown as the UI renders it"`
-	Tags        []string `json:"tags,omitempty" jsonschema:"the memory's new tag set; applied only when replaceTags is true (an empty list then clears all tags)"`
-	ReplaceTags bool     `json:"replaceTags,omitempty" jsonschema:"when true, replace the memory's tags with the tags field; when false/omitted, keep the existing tags"`
-	Namespace   string   `json:"namespace,omitempty" jsonschema:"optional new namespace to move the memory to; omit to keep the current one"`
+	ID              string   `json:"id" jsonschema:"the ID of the existing memory to edit (from cortex_memory_search)"`
+	Text            string   `json:"text,omitempty" jsonschema:"the new FULL memory text; replaces the existing text and is re-embedded. Prefer Markdown as the UI renders it. May be omitted ONLY when changing just the expiry (expiresIn / clearValidUntil)"`
+	Tags            []string `json:"tags,omitempty" jsonschema:"the memory's new tag set; applied only when replaceTags is true (an empty list then clears all tags)"`
+	ReplaceTags     bool     `json:"replaceTags,omitempty" jsonschema:"when true, replace the memory's tags with the tags field; when false/omitted, keep the existing tags"`
+	Namespace       string   `json:"namespace,omitempty" jsonschema:"optional new namespace to move the memory to; omit to keep the current one"`
+	ExpiresIn       string   `json:"expiresIn,omitempty" jsonschema:"make the memory time-bound / extend it: how long from now it stays valid, e.g. \"7d\" or \"36h\" (max 10 years)"`
+	ClearValidUntil bool     `json:"clearValidUntil,omitempty" jsonschema:"remove the memory's expiry so it never expires (cannot be combined with expiresIn)"`
 }
 
 type EditOut struct {
@@ -866,20 +908,27 @@ func (d *deps) edit(ctx context.Context, _ *mcp.CallToolRequest, in EditIn) (*mc
 		return nil, EditOut{}, fmt.Errorf("id must not be empty")
 	}
 	text := strings.TrimSpace(in.Text)
-	if text == "" {
-		return nil, EditOut{}, fmt.Errorf("text must not be empty")
+	expiresIn := strings.TrimSpace(in.ExpiresIn)
+	expiryOnly := expiresIn != "" || in.ClearValidUntil
+	if text == "" && !expiryOnly {
+		return nil, EditOut{}, fmt.Errorf("text must not be empty (omit it only when changing just the expiry)")
 	}
 	resp, err := d.client.UpdateMemory(ctx, connect.NewRequest(&cortexv1.UpdateMemoryRequest{
-		Id:          id,
-		Text:        text,
-		Tags:        in.Tags,
-		ReplaceTags: in.ReplaceTags,
-		Namespace:   in.Namespace,
+		Id:              id,
+		Text:            text,
+		Tags:            in.Tags,
+		ReplaceTags:     in.ReplaceTags,
+		Namespace:       in.Namespace,
+		ExpiresIn:       expiresIn,
+		ClearValidUntil: in.ClearValidUntil,
 	}))
 	if err != nil {
 		return nil, EditOut{}, err
 	}
 	out := EditOut{ID: resp.Msg.GetId(), Status: resp.Msg.GetStatus()}
+	if out.Status == "updated" {
+		return text2result("Memory expiry updated (id=" + out.ID + ")"), out, nil
+	}
 	return text2result("Memory queued for re-indexing (id=" + out.ID + ")"), out, nil
 }
 
@@ -1014,14 +1063,9 @@ func (d *deps) recall(ctx context.Context, _ *mcp.CallToolRequest, in RecallIn) 
 		b.WriteString("\nFacts from that session:\n")
 	}
 	for i, f := range facts {
-		out.Facts = append(out.Facts, SearchHit{
-			ID:        f.GetId(),
-			Text:      f.GetText(),
-			Namespace: f.GetNamespace(),
-			Tags:      f.GetTags(),
-			Model:     f.GetModel(),
-		})
-		fmt.Fprintf(&b, "%d. [%s] %s\n", i+1, f.GetNamespace(), f.GetText())
+		fh := memToHit(f)
+		out.Facts = append(out.Facts, fh)
+		fmt.Fprintf(&b, "%d. [%s] %s%s\n", i+1, f.GetNamespace(), expiryPrefix(fh), f.GetText())
 	}
 	return text2result(strings.TrimSpace(b.String())), out, nil
 }
@@ -1051,7 +1095,19 @@ func memToHit(m *cortexv1.Memory) SearchHit {
 		Model:         m.GetModel(),
 		LinkedIDs:     m.GetLinkedIds(),
 		DupCandidates: m.GetDupCandidates(),
+	}.withExpiry(m.GetValidUntil())
+}
+
+// expiryPrefix renders a hit's expiry for text output: "[EXPIRED <t> — probably no
+// longer true] " / "(expires <t>) ", empty for a memory that never expires.
+func expiryPrefix(h SearchHit) string {
+	switch {
+	case h.Expired:
+		return "[EXPIRED " + h.ValidUntil + " — probably no longer true] "
+	case h.ValidUntil != "":
+		return "(expires " + h.ValidUntil + ") "
 	}
+	return ""
 }
 
 func (d *deps) reviewCandidates(ctx context.Context, _ *mcp.CallToolRequest, in ReviewIn) (*mcp.CallToolResult, ReviewOut, error) {
@@ -1074,10 +1130,11 @@ func (d *deps) reviewCandidates(ctx context.Context, _ *mcp.CallToolRequest, in 
 	for i, g := range groups {
 		m := g.GetMemory()
 		cg := CandidateGroup{Memory: memToHit(m), Candidates: make([]SearchHit, 0, len(g.GetCandidates()))}
-		fmt.Fprintf(&b, "\n%d. [%s] (%s) %s\n", i+1, m.GetNamespace(), m.GetId(), m.GetText())
+		fmt.Fprintf(&b, "\n%d. [%s] (%s) %s%s\n", i+1, m.GetNamespace(), m.GetId(), expiryPrefix(cg.Memory), m.GetText())
 		for _, c := range g.GetCandidates() {
-			cg.Candidates = append(cg.Candidates, memToHit(c))
-			fmt.Fprintf(&b, "   ~ likely duplicate of (%s) %s\n", c.GetId(), c.GetText())
+			ch := memToHit(c)
+			cg.Candidates = append(cg.Candidates, ch)
+			fmt.Fprintf(&b, "   ~ likely duplicate of (%s) %s%s\n", c.GetId(), expiryPrefix(ch), c.GetText())
 		}
 		out.Groups = append(out.Groups, cg)
 	}
@@ -1132,8 +1189,11 @@ type ConsolidateIn struct {
 }
 
 type ConsolidateOut struct {
-	Cluster  []SearchHit `json:"cluster" jsonschema:"the related memories to analyse and merge"`
-	Manifest []string    `json:"manifest" jsonschema:"the ids present in the cluster; the ONLY ids eligible to pass to cortex_memory_save's supersedes field"`
+	// SuggestedExpiresIn is set only when EVERY cluster memory is time-bound: the
+	// time left on the latest-expiring one, to pass as expiresIn on the merged memory.
+	SuggestedExpiresIn string      `json:"suggestedExpiresIn,omitempty" jsonschema:"set when all cluster memories expire: pass it as expiresIn when saving the merged memory so it inherits the latest expiry"`
+	Cluster            []SearchHit `json:"cluster" jsonschema:"the related memories to analyse and merge"`
+	Manifest           []string    `json:"manifest" jsonschema:"the ids present in the cluster; the ONLY ids eligible to pass to cortex_memory_save's supersedes field"`
 }
 
 func (d *deps) consolidate(ctx context.Context, _ *mcp.CallToolRequest, in ConsolidateIn) (*mcp.CallToolResult, ConsolidateOut, error) {
@@ -1168,11 +1228,51 @@ func (d *deps) consolidate(ctx context.Context, _ *mcp.CallToolRequest, in Conso
 		"then cortex_memory_save each new memory with supersedes set to the ids it absorbs (only ids from the manifest below).\n",
 		len(cluster), plural(len(cluster), "y", "ies"), topic)
 	for i, m := range cluster {
-		out.Cluster = append(out.Cluster, memToHit(m))
-		fmt.Fprintf(&b, "\n%d. id=%s [%s] %s\n", i+1, m.GetId(), m.GetNamespace(), m.GetText())
+		h := memToHit(m)
+		out.Cluster = append(out.Cluster, h)
+		fmt.Fprintf(&b, "\n%d. id=%s [%s] %s%s\n", i+1, m.GetId(), m.GetNamespace(), expiryPrefix(h), m.GetText())
+	}
+	out.SuggestedExpiresIn = suggestExpiresIn(cluster, time.Now())
+	if out.SuggestedExpiresIn != "" {
+		fmt.Fprintf(&b, "\nEvery memory above is time-bound: save the merged memory with expiresIn=%q (the time left on the latest-expiring one) so it does not outlive its sources.\n", out.SuggestedExpiresIn)
+	} else if hasExpiry(cluster) {
+		b.WriteString("\nSome sources are time-bound and some are permanent: decide whether the merged memory should carry an expiresIn (only set it if the merged text is entirely time-bound).\n")
 	}
 	fmt.Fprintf(&b, "\nmanifest (supersede-able ids): %s\n", strings.Join(out.Manifest, " "))
 	return text2result(strings.TrimSpace(b.String())), out, nil
+}
+
+func hasExpiry(cluster []*cortexv1.Memory) bool {
+	for _, m := range cluster {
+		if m.GetValidUntil() != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// suggestExpiresIn returns the expiresIn to give a memory merged from cluster: the
+// time left on the latest-expiring source, but only when ALL sources expire (if
+// any is permanent the merge is left to the agent). "" otherwise.
+func suggestExpiresIn(cluster []*cortexv1.Memory, now time.Time) string {
+	var latest time.Time
+	for _, m := range cluster {
+		vu := m.GetValidUntil()
+		if vu == nil {
+			return ""
+		}
+		if t := vu.AsTime(); t.After(latest) {
+			latest = t
+		}
+	}
+	left := latest.Sub(now)
+	if len(cluster) == 0 || left <= 0 {
+		return ""
+	}
+	if left < 24*time.Hour {
+		return fmt.Sprintf("%dh", int(left/time.Hour)+1)
+	}
+	return fmt.Sprintf("%dd", int((left+24*time.Hour-1)/(24*time.Hour)))
 }
 
 func text2result(msg string) *mcp.CallToolResult {

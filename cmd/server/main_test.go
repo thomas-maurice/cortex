@@ -245,3 +245,21 @@ func TestParseTrashRetention(t *testing.T) {
 		assert.Error(t, err, "%q", bad)
 	}
 }
+
+// EXPIRY_GRACE decides when memories are moved to Trash, so like TRASH_RETENTION a
+// malformed value must stop the server rather than silently use the default.
+func TestParseExpiryGrace(t *testing.T) {
+	d, err := parseExpiryGrace("")
+	require.NoError(t, err)
+	assert.Equal(t, 168*time.Hour, d)
+	d, err = parseExpiryGrace("24h")
+	require.NoError(t, err)
+	assert.Equal(t, 24*time.Hour, d)
+	d, err = parseExpiryGrace("0")
+	require.NoError(t, err)
+	assert.Zero(t, d, "0 trashes as soon as a memory has expired")
+	for _, bad := range []string{"7d", "abc", "-1h", "7"} {
+		_, err := parseExpiryGrace(bad)
+		assert.Error(t, err, "%q", bad)
+	}
+}

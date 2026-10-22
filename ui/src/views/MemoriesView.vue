@@ -12,6 +12,7 @@
             <Input v-model="draft.tags" class="flex-1" placeholder="tags, comma separated" />
             <Button size="sm" :disabled="!draft.text.trim() || saving" @click="save">Save</Button>
           </div>
+          <ExpiryPicker v-model:model="draftExpiry" />
         </CardContent>
       </Card>
     </div>
@@ -29,6 +30,10 @@
         <component :is="query ? SearchIcon : RotateCw" class="size-4" />
         {{ query ? 'Search' : 'Refresh' }}
       </Button>
+    </div>
+    <div class="flex items-center gap-2">
+      <Switch id="include-expired" v-model="includeExpired" />
+      <Label for="include-expired" class="text-xs text-muted-foreground">Include expired memories (hidden from search and recall by default)</Label>
     </div>
 
     <div v-if="activeTags.length" class="flex flex-wrap items-center gap-2">
@@ -110,6 +115,7 @@
             <MessagesSquare class="size-3" />{{ m.conversationId }}
           </span>
           <span v-if="m.createdAt">{{ formatDate(m.createdAt) }}</span>
+          <ExpiryBadge :valid-until="m.validUntil" />
           <span v-if="m._distance !== undefined">dist: {{ m._distance.toFixed(3) }}</span>
           <Badge v-if="m.accessCount" variant="secondary" class="text-amber-600 dark:text-amber-400" title="times the agent recalled this memory (living memory)">
             <Flame class="size-3" />{{ m.accessCount }}
@@ -135,6 +141,9 @@ import { useAuthStore } from '@/stores/auth'
 import { confirmDialog } from '@/lib/confirm'
 import { openInspector, inspectorChanged } from '@/lib/inspector'
 import ClampedMarkdown from '@/components/ClampedMarkdown.vue'
+import ExpiryBadge from '@/components/ExpiryBadge.vue'
+import ExpiryPicker from '@/components/ExpiryPicker.vue'
+import { expiryRequest } from '@/lib/expiry'
 import {
   Database,
   Flame,
@@ -156,6 +165,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 
 const router = useRouter()
@@ -174,6 +184,8 @@ const error = ref('')
 const showNew = ref(false)
 const saving = ref(false)
 const draft = ref({ text: '', namespace: '', tags: '' })
+const draftExpiry = ref({ preset: 'none', date: '' })
+const includeExpired = ref(false)
 
 function formatDate(ts) {
   try {
@@ -238,12 +250,12 @@ async function reload() {
       // noReinforce: browsing in the UI must not count as a recall — only the
       // agent's (MCP) searches feed the living-memory usage signal.
       memories.value = await fetchExact(async (limit) => {
-        const res = await memoryClient.search({ query: query.value, namespace: namespace.value, limit, tags: activeTags.value, noReinforce: true })
+        const res = await memoryClient.search({ query: query.value, namespace: namespace.value, limit, tags: activeTags.value, noReinforce: true, includeExpired: includeExpired.value })
         return res.hits.map((h) => ({ ...h.memory, _distance: h.distance, _match: h.match }))
       })
     } else {
       memories.value = await fetchExact(async (limit) => {
-        const res = await memoryClient.list({ namespace: namespace.value, limit, tags: activeTags.value })
+        const res = await memoryClient.list({ namespace: namespace.value, limit, tags: activeTags.value, includeExpired: includeExpired.value })
         return res.memories
       })
     }
@@ -271,12 +283,18 @@ function resolveMemory(id) {
 }
 
 async function save() {
+  const exp = expiryRequest(draftExpiry.value)
+  if (exp.error) {
+    error.value = exp.error
+    return
+  }
   saving.value = true
   error.value = ''
   try {
     const tags = draft.value.tags.split(',').map((t) => t.trim()).filter(Boolean)
-    await memoryClient.save({ text: draft.value.text, namespace: draft.value.namespace, tags })
+    await memoryClient.save({ text: draft.value.text, namespace: draft.value.namespace, tags, ...exp })
     draft.value = { text: '', namespace: '', tags: '' }
+    draftExpiry.value = { preset: 'none', date: '' }
     toast.success('Queued for indexing — it will appear shortly.')
   } catch (e) {
     handleError(e)
@@ -297,6 +315,7 @@ async function remove(id) {
 }
 
 watch(inspectorChanged, reload)
+watch(includeExpired, reload)
 
 onMounted(reload)
 </script>

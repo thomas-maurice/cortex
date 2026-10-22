@@ -373,7 +373,7 @@ func main() {
 }
 
 func saveCmd() *cobra.Command {
-	var namespace string
+	var namespace, expires string
 	var tags, linkTo, supersedes []string
 	cmd := &cobra.Command{
 		Use:   "save <text>",
@@ -394,6 +394,7 @@ func saveCmd() *cobra.Command {
 				Tags:           config.MergeTags(tags, config.AutoTags(saveTags, hostnameTag)),
 				LinkTo:         linkTo,
 				Supersedes:     supersedes,
+				ExpiresIn:      strings.TrimSpace(expires),
 				Source:         source,
 				ConversationId: conversationID,
 			}))
@@ -408,42 +409,57 @@ func saveCmd() *cobra.Command {
 	cmd.Flags().StringSliceVarP(&tags, "tag", "t", nil, "tag to attach (repeatable)")
 	cmd.Flags().StringSliceVarP(&linkTo, "link-to", "L", nil, "ID of an existing memory to link this one to (repeatable; applied after indexing)")
 	cmd.Flags().StringSliceVarP(&supersedes, "supersedes", "S", nil, "ID of an existing memory this one replaces (repeatable; the server deletes it once this memory is indexed)")
+	cmd.Flags().StringVar(&expires, "expires", "", `expire the memory after this long, e.g. 7d or 36h (for time-bound facts; expired memories stop being recalled)`)
 	return cmd
 }
 
 func editCmd() *cobra.Command {
-	var namespace string
+	var namespace, expires string
 	var tags []string
-	var replaceTags bool
+	var replaceTags, noExpiry bool
 	cmd := &cobra.Command{
-		Use:   "edit <id> <text>",
-		Short: "Edit an existing memory's text (re-embedded; keeps id, links, history)",
+		Use:   "edit <id> [text]",
+		Short: "Edit an existing memory's text (re-embedded; keeps id, links, history) or its expiry",
 		Long: "Replace a memory's text and re-embed it through the worker, preserving its ID, creation time,\n" +
 			"links and dedup decisions. Tags are kept unless you pass --tag (which sets --replace-tags); the\n" +
-			"namespace is kept unless you pass --namespace. The edit is queued for async re-indexing.",
-		Args: cobra.ExactArgs(2),
+			"namespace is kept unless you pass --namespace. The edit is queued for async re-indexing.\n\n" +
+			"--expires 7d sets (or extends) the memory's expiry and --no-expiry clears it. The text may be\n" +
+			"omitted when ONLY the expiry changes; that is applied immediately and does not re-embed.",
+		Args: cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			id := strings.TrimSpace(args[0])
-			text := strings.TrimSpace(args[1])
+			text := ""
+			if len(args) == 2 {
+				text = strings.TrimSpace(args[1])
+			}
 			if id == "" {
 				return fmt.Errorf("id must not be empty")
 			}
-			if text == "" {
-				return fmt.Errorf("text must not be empty")
+			if expires != "" && noExpiry {
+				return fmt.Errorf("--expires and --no-expiry are mutually exclusive")
+			}
+			if text == "" && expires == "" && !noExpiry {
+				return fmt.Errorf("text must not be empty (or pass --expires / --no-expiry to change only the expiry)")
 			}
 			// Passing --tag implies the user wants those tags applied.
 			if cmd.Flags().Changed("tag") {
 				replaceTags = true
 			}
 			resp, err := client().UpdateMemory(cmd.Context(), connect.NewRequest(&cortexv1.UpdateMemoryRequest{
-				Id:          id,
-				Text:        text,
-				Tags:        tags,
-				ReplaceTags: replaceTags,
-				Namespace:   namespace,
+				Id:              id,
+				Text:            text,
+				Tags:            tags,
+				ReplaceTags:     replaceTags,
+				Namespace:       namespace,
+				ExpiresIn:       strings.TrimSpace(expires),
+				ClearValidUntil: noExpiry,
 			}))
 			if err != nil {
 				return err
+			}
+			if resp.Msg.GetStatus() == "updated" {
+				fmt.Printf("updated %s (expiry only, not re-indexed)\n", resp.Msg.GetId())
+				return nil
 			}
 			fmt.Printf("queued %s for re-indexing\n", resp.Msg.GetId())
 			return nil
@@ -452,6 +468,8 @@ func editCmd() *cobra.Command {
 	cmd.Flags().StringVarP(&namespace, "namespace", "n", "", "move the memory to this namespace (default: keep current)")
 	cmd.Flags().StringSliceVarP(&tags, "tag", "t", nil, "replace the memory's tags with these (repeatable; implies --replace-tags)")
 	cmd.Flags().BoolVar(&replaceTags, "replace-tags", false, "replace tags even with an empty set (clears all tags)")
+	cmd.Flags().StringVar(&expires, "expires", "", "set the expiry to this long from now, e.g. 7d or 36h")
+	cmd.Flags().BoolVar(&noExpiry, "no-expiry", false, "clear the memory's expiry (it never expires)")
 	return cmd
 }
 
@@ -459,17 +477,19 @@ func listCmd() *cobra.Command {
 	var namespace string
 	var limit int
 	var tags, anyTags, excludeTags []string
+	var includeExpired bool
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List stored memories, newest first",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			resp, err := client().List(cmd.Context(), connect.NewRequest(&cortexv1.ListRequest{
-				Namespace:   namespace,
-				Limit:       int32(limit),
-				Tags:        tags,
-				AnyTags:     anyTags,
-				ExcludeTags: excludeTags,
+				Namespace:      namespace,
+				Limit:          int32(limit),
+				Tags:           tags,
+				AnyTags:        anyTags,
+				ExcludeTags:    excludeTags,
+				IncludeExpired: includeExpired,
 			}))
 			if err != nil {
 				return err
@@ -490,6 +510,7 @@ func listCmd() *cobra.Command {
 	cmd.Flags().StringSliceVarP(&tags, "tag", "t", nil, "require this tag (repeatable; memory must have all)")
 	cmd.Flags().StringSliceVarP(&anyTags, "any-tag", "T", nil, "require at least one of these tags (repeatable)")
 	cmd.Flags().StringSliceVarP(&excludeTags, "exclude-tag", "x", nil, "drop memories with this tag (repeatable)")
+	cmd.Flags().BoolVar(&includeExpired, "include-expired", false, "also list memories whose expiry has passed (hidden by default)")
 	return cmd
 }
 
@@ -535,6 +556,9 @@ func printGotMemory(w io.Writer, m *cortexv1.Memory, asJSON bool) error {
 		if ts := m.GetCreatedAt(); ts != nil {
 			rec.CreatedAt = ts.AsTime().UTC().Format(time.RFC3339)
 		}
+		if ts := m.GetValidUntil(); ts != nil {
+			rec.ValidUntil = ts.AsTime().UTC().Format(time.RFC3339)
+		}
 		b, err := json.MarshalIndent(rec, "", "  ")
 		if err != nil {
 			return err
@@ -550,6 +574,7 @@ func printGotMemory(w io.Writer, m *cortexv1.Memory, asJSON bool) error {
 	if m.GetModel() != "" {
 		meta += fmt.Sprintf("  model=%s dims=%d", m.GetModel(), m.GetDims())
 	}
+	meta += expiryNote(m)
 	if _, err := fmt.Fprintf(w, "%s\n   %s\n", line, meta); err != nil {
 		return err
 	}
@@ -566,7 +591,7 @@ func searchCmd() *cobra.Command {
 	var maxDistance float32
 	var autocut int
 	var tags, anyTags, excludeTags []string
-	var reinforce bool
+	var reinforce, includeExpired bool
 	cmd := &cobra.Command{
 		Use:   "search <query>",
 		Short: "Semantic search over stored memories",
@@ -588,7 +613,8 @@ func searchCmd() *cobra.Command {
 				// A CLI search is an ops/inspection action, not the agent recalling
 				// a memory to use it, so by default it does NOT reinforce (count as a
 				// recall); --reinforce opts in. No effect unless RERANK_WEIGHT>0.
-				NoReinforce: !reinforce,
+				NoReinforce:    !reinforce,
+				IncludeExpired: includeExpired,
 			}))
 			if err != nil {
 				return err
@@ -616,6 +642,7 @@ func searchCmd() *cobra.Command {
 	cmd.Flags().StringSliceVarP(&anyTags, "any-tag", "T", nil, "require at least one of these tags (repeatable)")
 	cmd.Flags().StringSliceVarP(&excludeTags, "exclude-tag", "x", nil, "drop memories with this tag (repeatable)")
 	cmd.Flags().BoolVar(&reinforce, "reinforce", false, `count this search as a recall (reinforces top hits when "living memory" is on); off by default for CLI`)
+	cmd.Flags().BoolVar(&includeExpired, "include-expired", false, "also return memories whose expiry has passed (hidden by default)")
 	return cmd
 }
 
@@ -652,6 +679,7 @@ type exportRecord struct {
 	ConversationID string   `json:"conversationId,omitempty"`
 	LinkedIDs      []string `json:"linkedIds,omitempty"`
 	NotDuplicateOf []string `json:"notDuplicateOf,omitempty"`
+	ValidUntil     string   `json:"validUntil,omitempty"`
 }
 
 func exportCmd() *cobra.Command {
@@ -734,6 +762,11 @@ func importCmd() *cobra.Command {
 				if r.CreatedAt != "" {
 					if t, err := time.Parse(time.RFC3339, r.CreatedAt); err == nil {
 						m.CreatedAt = timestamppb.New(t)
+					}
+				}
+				if r.ValidUntil != "" {
+					if t, err := time.Parse(time.RFC3339, r.ValidUntil); err == nil {
+						m.ValidUntil = timestamppb.New(t)
 					}
 				}
 				mems = append(mems, m)
@@ -1431,6 +1464,7 @@ func consolidateCmd() *cobra.Command {
 	var limit int
 	var maxDistance float32
 	var tags, anyTags, excludeTags []string
+	var includeExpired bool
 	cmd := &cobra.Command{
 		Use:   "consolidate <topic>",
 		Short: "Gather the cluster of memories about a topic, for review/merging",
@@ -1447,13 +1481,14 @@ func consolidateCmd() *cobra.Command {
 				return fmt.Errorf("topic must not be empty")
 			}
 			resp, err := client().Consolidate(cmd.Context(), connect.NewRequest(&cortexv1.ConsolidateRequest{
-				Topic:       topic,
-				Namespace:   namespace,
-				Limit:       int32(limit),
-				MaxDistance: maxDistance,
-				Tags:        tags,
-				AnyTags:     anyTags,
-				ExcludeTags: excludeTags,
+				Topic:          topic,
+				Namespace:      namespace,
+				Limit:          int32(limit),
+				MaxDistance:    maxDistance,
+				Tags:           tags,
+				AnyTags:        anyTags,
+				ExcludeTags:    excludeTags,
+				IncludeExpired: includeExpired,
 			}))
 			if err != nil {
 				return err
@@ -1476,6 +1511,7 @@ func consolidateCmd() *cobra.Command {
 	cmd.Flags().StringSliceVarP(&tags, "tag", "t", nil, "only consolidate memories with all of these tags (repeatable; omit = no tag filter)")
 	cmd.Flags().StringSliceVarP(&anyTags, "any-tag", "T", nil, "only consolidate memories with at least one of these tags (repeatable)")
 	cmd.Flags().StringSliceVarP(&excludeTags, "exclude-tag", "x", nil, "drop memories with this tag from the cluster (repeatable)")
+	cmd.Flags().BoolVar(&includeExpired, "include-expired", false, "also gather expired memories (skipped by default)")
 	return cmd
 }
 
@@ -1584,7 +1620,12 @@ func exportRecordsFromBackup(data []byte, namespace string) ([]exportRecord, err
 	sort.SliceStable(all, func(i, j int) bool { return all[i].CreatedAt.After(all[j].CreatedAt) })
 	recs := make([]exportRecord, 0, len(all))
 	for _, r := range all {
+		validUntil := ""
+		if !r.ValidUntil.IsZero() {
+			validUntil = r.ValidUntil.UTC().Format(time.RFC3339)
+		}
 		recs = append(recs, exportRecord{
+			ValidUntil:     validUntil,
 			ID:             r.ID,
 			Text:           r.Text,
 			Namespace:      r.Namespace,
@@ -1885,6 +1926,21 @@ func matchExcerpt(h *cortexv1.Hit) string {
 	return "…" + ex
 }
 
+// expiryNote renders "  expires=<time>" / "  EXPIRED=<time>" for a time-bound memory
+// (empty for one that never expires).
+func expiryNote(m *cortexv1.Memory) string {
+	vu := m.GetValidUntil()
+	if vu == nil {
+		return ""
+	}
+	t := vu.AsTime()
+	label := "expires"
+	if !t.After(time.Now()) {
+		label = "EXPIRED"
+	}
+	return fmt.Sprintf("  %s=%s", label, t.UTC().Format(time.RFC3339))
+}
+
 func printMemory(m *cortexv1.Memory) {
 	line := fmt.Sprintf("[%s] %s", m.GetNamespace(), m.GetText())
 	if tags := m.GetTags(); len(tags) > 0 {
@@ -1894,5 +1950,6 @@ func printMemory(m *cortexv1.Memory) {
 	if m.GetModel() != "" {
 		meta += fmt.Sprintf("  model=%s dims=%d", m.GetModel(), m.GetDims())
 	}
+	meta += expiryNote(m)
 	fmt.Printf("%s\n   %s\n", line, meta)
 }

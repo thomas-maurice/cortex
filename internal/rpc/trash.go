@@ -35,6 +35,7 @@ func trashToProto(e memory.TrashEntry) *cortexv1.TrashEntry {
 		LinkedIds:      e.LinkedIDs,
 		DeletedAt:      timestamppb.New(e.DeletedAt),
 		Reason:         e.Reason,
+		ValidUntil:     validUntilProto(e.ValidUntil),
 	}
 }
 
@@ -163,14 +164,18 @@ func (s *Service) RestoreFromTrash(ctx context.Context, req *connect.Request[cor
 		entries = append(entries, e)
 	}
 	restoring := restoringSet(entries)
-	queued := 0
+	queued, expiredQueued := 0, 0
 	for _, e := range entries {
-		if err := s.restoreEntry(ctx, ts, e, restoring); err != nil {
+		expired, err := s.restoreEntry(ctx, ts, e, restoring)
+		if err != nil {
 			return nil, fmt.Errorf("restore %s (%d already queued): %w", e.ID, queued, err)
+		}
+		if expired {
+			expiredQueued++
 		}
 		queued++
 	}
-	return connect.NewResponse(&cortexv1.RestoreFromTrashResponse{Queued: int32(queued)}), nil
+	return connect.NewResponse(&cortexv1.RestoreFromTrashResponse{Queued: int32(queued), ExpiredQueued: int32(expiredQueued)}), nil
 }
 
 func restoringSet(entries []memory.TrashEntry) map[string]bool {
@@ -216,9 +221,13 @@ func (s *Service) restoreAll(ctx context.Context, msg *cortexv1.RestoreFromTrash
 			fail(e.ID, errors.New("a live memory with this id already exists"))
 			continue
 		}
-		if err := s.restoreEntry(ctx, ts, e, restoring); err != nil {
+		expired, err := s.restoreEntry(ctx, ts, e, restoring)
+		if err != nil {
 			fail(e.ID, err)
 			continue
+		}
+		if expired {
+			out.ExpiredQueued++
 		}
 		out.Queued++
 	}
@@ -226,14 +235,15 @@ func (s *Service) restoreAll(ctx context.Context, msg *cortexv1.RestoreFromTrash
 }
 
 // restoreEntry publishes one trashed record for indexing, queues its links and
-// drops the trash copy. The index payload keeps the access history (accessCount /
+// drops the trash copy. expired reports a restored record whose expiry has lapsed
+// (it is hidden from search/list until the expiry is changed). The index payload keeps the access history (accessCount /
 // lastAccessedAt) but carries no LinkedIDs: edges are re-applied through the link
 // queue to endpoints that are live or being restored in this same call. A target
 // that is still in the trash is skipped on purpose — it keeps the reciprocal edge
 // on its own entry, so restoring it later (it then sees this record live) re-links
 // the pair without relying on the link queue outliving a long gap. A target that
 // was purged is dropped (its links were stripped at purge time).
-func (s *Service) restoreEntry(ctx context.Context, ts *store.TenantStore, e memory.TrashEntry, restoring map[string]bool) error {
+func (s *Service) restoreEntry(ctx context.Context, ts *store.TenantStore, e memory.TrashEntry, restoring map[string]bool) (expired bool, err error) {
 	rec := e.Record
 	links := rec.LinkedIDs
 	rec.LinkedIDs = nil
@@ -241,8 +251,17 @@ func (s *Service) restoreEntry(ctx context.Context, ts *store.TenantStore, e mem
 	if rec.CreatedAt.IsZero() {
 		rec.CreatedAt = time.Now().UTC()
 	}
+	// An entry the expiry sweep trashed has, by construction, a lapsed expiry: left
+	// in place it would be hidden again at once and re-trashed by the next sweep,
+	// defeating the restore. Drop it. For any other reason (a user deleted a
+	// memory that happened to be time-bound) the expiry is kept as it was, and a
+	// still-future one is always kept: the fact is still time-bound.
+	if e.Reason == memory.TrashReasonExpired && rec.Expired(time.Now()) {
+		rec.ValidUntil = time.Time{}
+	}
+	expired = rec.Expired(time.Now()) // comes back, but hidden until its expiry is changed
 	if err := bus.PublishIndex(ctx, s.js, rec); err != nil {
-		return fmt.Errorf("publish: %w", err)
+		return false, fmt.Errorf("publish: %w", err)
 	}
 	for _, target := range links {
 		if target == rec.ID {
@@ -260,9 +279,9 @@ func (s *Service) restoreEntry(ctx context.Context, ts *store.TenantStore, e mem
 	// Queued: drop the trash copy. The index message now owns the data (a failure
 	// to index dead-letters it rather than losing it).
 	if err := ts.DeleteTrash(ctx, rec.ID); err != nil {
-		return fmt.Errorf("queued but removing it from trash failed (purge it manually): %w", err)
+		return false, fmt.Errorf("queued but removing it from trash failed (purge it manually): %w", err)
 	}
-	return nil
+	return expired, nil
 }
 
 // stripDanglingLinks removes the purged ids from their live neighbours' linkedIds

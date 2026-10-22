@@ -40,7 +40,11 @@ func tagsCmd() *cobra.Command {
 				if t.GetLastActivity() != nil {
 					last = t.GetLastActivity().AsTime().Format("2006-01-02 15:04")
 				}
-				_, _ = fmt.Fprintf(w, "%s\t%d\t%s\n", displayTag(t.GetName()), t.GetMemoryCount(), last)
+				count := fmt.Sprint(t.GetMemoryCount())
+				if n := t.GetExpiredCount(); n > 0 {
+					count += fmt.Sprintf(" (+%d expired)", n)
+				}
+				_, _ = fmt.Fprintf(w, "%s\t%s\t%s\n", displayTag(t.GetName()), count, last)
 			}
 			return w.Flush()
 		},

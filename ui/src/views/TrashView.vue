@@ -26,6 +26,7 @@
         <option value="duplicate-review">duplicate-review</option>
         <option value="supersedes">supersedes</option>
         <option value="namespace-delete">namespace-delete</option>
+        <option value="expired">expired</option>
       </select>
       <Button size="sm" variant="outline" :disabled="loading" @click="applyFilters">Filter</Button>
       <Button size="sm" :disabled="loading" @click="reload">
@@ -79,6 +80,7 @@
             <TableCell class="max-w-[480px]">
               <div class="truncate" :title="e.text">{{ truncate(e.text, 140) }}</div>
               <div class="font-mono text-xs text-muted-foreground">{{ e.id }}</div>
+              <ExpiryBadge v-if="e.validUntil" :valid-until="e.validUntil" class="mt-1" />
             </TableCell>
             <TableCell class="font-mono">{{ e.namespace || '(empty)' }}</TableCell>
             <TableCell class="text-sm text-muted-foreground whitespace-nowrap">{{ e.deletedAt ? formatTimestamp(e.deletedAt) : '—' }}</TableCell>
@@ -228,13 +230,17 @@ function restoreToast(res) {
   const failed = Number(res.failed || 0)
   if (failed > 0) toast.warning(`Restored ${Number(res.queued)}; ${failed} failed: ${(res.failures || []).slice(0, 3).join('; ')}`)
   else toast.success(`Restored ${Number(res.queued)} (queued for indexing)`)
+  const expired = Number(res.expiredQueued || 0)
+  if (expired > 0) toast.warning(`${expired} of them already expired: hidden from search/list until their expiry is changed`)
 }
 
 async function restore(e) {
   if (!(await confirmDialog('Restore this memory? It is re-queued for indexing under its original id.', { title: 'Restore memory', actionLabel: 'Restore', destructive: false }))) return
   await run(async () => {
-    await memoryClient.restoreFromTrash({ ids: [e.id] })
-    toast.success('Memory restored (queued for indexing)')
+    const res = await memoryClient.restoreFromTrash({ ids: [e.id] })
+    toast.success(Number(res.expiredQueued) > 0
+      ? 'Memory restored, but already expired (hidden until its expiry is changed)'
+      : 'Memory restored (queued for indexing)')
   })
 }
 
