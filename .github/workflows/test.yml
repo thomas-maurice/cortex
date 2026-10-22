@@ -72,8 +72,15 @@ jobs:
           # tries to post a PR summary comment and 403s the whole step.
           pr_comment: false
 
+      # Unit tests: no Weaviate env, so integration tests skip and packages
+      # can run in parallel.
       - name: Test
         run: go test -race ./...
+
+      - name: Test (integration)
+        # -p 1: integration tests in several packages drop/recreate the same
+        # Weaviate classes, so those packages must not run concurrently.
+        run: go test -race -p 1 ./internal/store/... ./internal/rpc/...
         env:
           CORTEX_TEST_WEAVIATE_REST: localhost:8085
           CORTEX_TEST_WEAVIATE_GRPC: localhost:50055
