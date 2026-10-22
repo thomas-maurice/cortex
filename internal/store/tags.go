@@ -17,7 +17,11 @@ import (
 // tags (see summaryProperties), so only memories are counted.
 type TagStat struct {
 	Name        string
-	MemoryCount int
+	// MemoryCount counts LIVE memories; ExpiredCount the expired ones (hidden from
+	// search/list, awaiting the sweep) carrying the tag. A tag only on expired
+	// memories still gets a row (count 0) so it can be renamed/deleted.
+	MemoryCount  int
+	ExpiredCount int
 	// LastActivity is the newest createdAt among memories carrying the tag. Zero
 	// when none has a timestamp.
 	LastActivity time.Time
@@ -37,10 +41,12 @@ func matchesNamespace(want, got string) bool {
 // ListTags aggregates tags over the tenant's memories (cursor-scanned, so correct
 // beyond the 10k query cap), optionally limited to one namespace. Tags are
 // compared exactly (case-sensitive): that is the point, `k8s` and `K8s` show up
-// as separate rows so they can be merged. Busiest first, then alphabetical.
+// as separate rows so they can be merged. Counts are of live memories; expired ones
+// are counted separately (ExpiredCount). Busiest first, then alphabetical.
 func (ts *TenantStore) ListTags(ctx context.Context, namespace string) ([]TagStat, error) {
 	stats := map[string]*TagStat{}
-	err := ts.s.scanAll(ctx, memory.ClassName, ts.t, []string{"namespace", "tags", "createdAt"}, func(r graphql.SearchResult) {
+	now := time.Now()
+	err := ts.s.scanAll(ctx, memory.ClassName, ts.t, []string{"namespace", "tags", "createdAt", "validUntil"}, func(r graphql.SearchResult) {
 		if !matchesNamespace(namespace, propString(r.Properties, "namespace")) {
 			return
 		}
@@ -48,6 +54,7 @@ func (ts *TenantStore) ListTags(ctx context.Context, namespace string) ([]TagSta
 		if raw := propString(r.Properties, "createdAt"); raw != "" {
 			created, _ = time.Parse(time.RFC3339, raw)
 		}
+		expired := expiredProp(r.Properties, now)
 		// A memory counts once per distinct tag even if its list repeats one.
 		seen := map[string]bool{}
 		for _, tag := range propStrings(r.Properties, "tags") {
@@ -60,7 +67,11 @@ func (ts *TenantStore) ListTags(ctx context.Context, namespace string) ([]TagSta
 				st = &TagStat{Name: tag}
 				stats[tag] = st
 			}
-			st.MemoryCount++
+			if expired {
+				st.ExpiredCount++
+			} else {
+				st.MemoryCount++
+			}
 			if created.After(st.LastActivity) {
 				st.LastActivity = created
 			}

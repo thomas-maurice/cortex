@@ -188,6 +188,12 @@ so a new caller is expiry-safe by default.
   missed chunk would resurrect an expired memory); the parent is the single source of
   truth. Cost: expired parents can occupy slots in the `limit x chunkPoolFactor`
   candidate pool (generous; the chunkless fallback uses the server-side filter).
+- **Tags.** `ListTags` counts LIVE memories in `memory_count` and expired ones
+  separately in `expired_count` (so tag reuse and the delete-tag prompt are not
+  inflated by memories nobody can recall); a tag carried only by expired memories still
+  gets a row. Rename/delete apply to expired memories too. The recall preview
+  (`PreviewRecall`) goes through the same store default as the hook, so it excludes
+  expired memories.
 - **Dedup ignores expiry.** The worker's candidate search sets `IncludeExpired`: an
   expired near-duplicate is still a duplicate, and flagging it lets a review merge or
   drop the stale copy.

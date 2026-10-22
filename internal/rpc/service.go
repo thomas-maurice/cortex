@@ -1470,7 +1470,7 @@ func (s *Service) ListTags(ctx context.Context, req *connect.Request[cortexv1.Li
 	}
 	out := &cortexv1.ListTagsResponse{Tags: make([]*cortexv1.TagInfo, 0, len(stats))}
 	for _, st := range stats {
-		ti := &cortexv1.TagInfo{Name: st.Name, MemoryCount: int64(st.MemoryCount)}
+		ti := &cortexv1.TagInfo{Name: st.Name, MemoryCount: int64(st.MemoryCount), ExpiredCount: int64(st.ExpiredCount)}
 		if !st.LastActivity.IsZero() {
 			ti.LastActivity = timestamppb.New(st.LastActivity)
 		}

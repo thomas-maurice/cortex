@@ -4949,9 +4949,12 @@ func (x *DeleteNamespaceResponse) GetSummariesDeleted() int32 {
 type TagInfo struct {
 	state       protoimpl.MessageState `protogen:"open.v1"`
 	Name        string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	MemoryCount int64                  `protobuf:"varint,2,opt,name=memory_count,json=memoryCount,proto3" json:"memory_count,omitempty"` // memories carrying this tag (summaries have no tags)
+	MemoryCount int64                  `protobuf:"varint,2,opt,name=memory_count,json=memoryCount,proto3" json:"memory_count,omitempty"` // LIVE memories carrying this tag (summaries have no tags)
 	// last_activity is the newest createdAt among memories with the tag.
-	LastActivity  *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=last_activity,json=lastActivity,proto3" json:"last_activity,omitempty"`
+	LastActivity *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=last_activity,json=lastActivity,proto3" json:"last_activity,omitempty"`
+	// expired_count is how many EXPIRED memories (hidden from search/list) carry the
+	// tag; memory_count excludes them. Rename/delete still apply to them.
+	ExpiredCount  int64 `protobuf:"varint,20,opt,name=expired_count,json=expiredCount,proto3" json:"expired_count,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -5005,6 +5008,13 @@ func (x *TagInfo) GetLastActivity() *timestamppb.Timestamp {
 		return x.LastActivity
 	}
 	return nil
+}
+
+func (x *TagInfo) GetExpiredCount() int64 {
+	if x != nil {
+		return x.ExpiredCount
+	}
+	return 0
 }
 
 type ListTagsRequest struct {
@@ -7562,11 +7572,12 @@ const file_cortex_v1_cortex_proto_rawDesc = "" +
 	"\tnamespace\x18\x01 \x01(\tR\tnamespace\"q\n" +
 	"\x17DeleteNamespaceResponse\x12)\n" +
 	"\x10memories_deleted\x18\x01 \x01(\x05R\x0fmemoriesDeleted\x12+\n" +
-	"\x11summaries_deleted\x18\x02 \x01(\x05R\x10summariesDeleted\"\x81\x01\n" +
+	"\x11summaries_deleted\x18\x02 \x01(\x05R\x10summariesDeleted\"\xa6\x01\n" +
 	"\aTagInfo\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12!\n" +
 	"\fmemory_count\x18\x02 \x01(\x03R\vmemoryCount\x12?\n" +
-	"\rlast_activity\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\flastActivity\"/\n" +
+	"\rlast_activity\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\flastActivity\x12#\n" +
+	"\rexpired_count\x18\x14 \x01(\x03R\fexpiredCount\"/\n" +
 	"\x0fListTagsRequest\x12\x1c\n" +
 	"\tnamespace\x18\x01 \x01(\tR\tnamespace\":\n" +
 	"\x10ListTagsResponse\x12&\n" +

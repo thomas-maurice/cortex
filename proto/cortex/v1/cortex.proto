@@ -814,9 +814,12 @@ message DeleteNamespaceResponse {
 // TagInfo aggregates one tag's usage for the tag admin view.
 message TagInfo {
   string name = 1;
-  int64 memory_count = 2; // memories carrying this tag (summaries have no tags)
+  int64 memory_count = 2; // LIVE memories carrying this tag (summaries have no tags)
   // last_activity is the newest createdAt among memories with the tag.
   google.protobuf.Timestamp last_activity = 3;
+  // expired_count is how many EXPIRED memories (hidden from search/list) carry the
+  // tag; memory_count excludes them. Rename/delete still apply to them.
+  int64 expired_count = 20;
 }
 
 message ListTagsRequest {

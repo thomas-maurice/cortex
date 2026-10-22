@@ -779,6 +779,9 @@ func (d *deps) tagsList(ctx context.Context, _ *mcp.CallToolRequest, in TagsList
 	out := TagsListOut{Tags: make([]TagCount, 0, len(resp.Msg.GetTags()))}
 	var b strings.Builder
 	for _, t := range resp.Msg.GetTags() {
+		if t.GetMemoryCount() == 0 {
+			continue // only on expired memories: not a tag to reuse
+		}
 		out.Tags = append(out.Tags, TagCount{Tag: t.GetName(), Count: t.GetMemoryCount()})
 		fmt.Fprintf(&b, "%q: %d\n", t.GetName(), t.GetMemoryCount())
 	}

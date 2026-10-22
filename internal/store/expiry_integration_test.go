@@ -425,3 +425,31 @@ func TestCountsSplitLiveAndExpired(t *testing.T) {
 	assert.Equal(t, 0, by["b"].MemoryCount)
 	assert.Equal(t, 1, by["b"].ExpiredCount)
 }
+
+// ListTags must not inflate a tag's usage with memories nobody can recall any more
+// (that would steer tag reuse and the "delete tag from N memories" prompt), yet a tag
+// carried only by expired memories still needs a row so it can be renamed/deleted.
+func TestListTagsSplitsLiveAndExpired(t *testing.T) {
+	st, _ := trashStore(t)
+	ctx := context.Background()
+	ts := st.Tenant("tenant-a")
+	vec := []float32{1, 0, 0, 0}
+	now := time.Now()
+	for _, r := range []struct {
+		Tags []string
+		VU   time.Time
+	}{
+		{[]string{"mixed"}, time.Time{}},
+		{[]string{"mixed"}, now.Add(-time.Hour)},
+		{[]string{"only-expired"}, now.Add(-time.Hour)},
+	} {
+		rec := expRec("a", "m", r.VU)
+		rec.Tags = r.Tags
+		require.NoError(t, ts.Upsert(ctx, rec, vec))
+	}
+	m := statMap(t, ts, "")
+	assert.Equal(t, 1, m["mixed"].MemoryCount)
+	assert.Equal(t, 1, m["mixed"].ExpiredCount)
+	assert.Equal(t, 0, m["only-expired"].MemoryCount)
+	assert.Equal(t, 1, m["only-expired"].ExpiredCount)
+}

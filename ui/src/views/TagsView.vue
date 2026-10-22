@@ -57,7 +57,7 @@
               </template>
               <button v-else class="font-mono hover:underline" title="Show memories with this tag" @click="openMemories(t)">{{ t.name }}</button>
             </TableCell>
-            <TableCell class="text-right">{{ Number(t.memoryCount) }}</TableCell>
+            <TableCell class="text-right">{{ Number(t.memoryCount) }}<span v-if="Number(t.expiredCount)" class="text-muted-foreground"> (+{{ Number(t.expiredCount) }} expired)</span></TableCell>
             <TableCell class="text-sm text-muted-foreground">{{ t.lastActivity ? formatTimestamp(t.lastActivity) : '—' }}</TableCell>
             <TableCell class="text-right whitespace-nowrap">
               <template v-if="renameOf === t.name">
@@ -189,7 +189,7 @@ async function confirmRename(t) {
 async function remove(t) {
   const isPref = t.name.toLowerCase() === PREFERENCE
   const ok = await confirmDialog(
-    `Remove the tag "${t.name}" from ${Number(t.memoryCount)} memories? The memories themselves are kept.` +
+    `Remove the tag "${t.name}" from ${Number(t.memoryCount) + Number(t.expiredCount || 0)} memories? The memories themselves are kept.` +
       (isPref ? ` "${PREFERENCE}" drives the standing-preferences session hook.` : ''),
     { title: 'Delete tag', actionLabel: 'Delete', destructive: true },
   )
