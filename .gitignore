@@ -1,5 +1,12 @@
 /bin/
 /dist/
+# stray `go build ./cmd/...` outputs at the repo root (make build uses /bin)
+/cli
+/worker
+/server
+/mcp
+/cortex
+/cortex-*
 *.exe
 .DS_Store
 .env

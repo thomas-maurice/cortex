@@ -368,6 +368,13 @@ func main() {
 	}
 
 	embedder := embed.New(ollamaURL, ollamaModel)
+	trackingSince, err := bus.EnsureUsageTrackingSince(ctx, js, time.Now())
+	if err != nil {
+		// Fail conservative: "tracking started now" limits stale review rather than
+		// letting it claim history it never had.
+		log.Error("usage tracking epoch unavailable, using now", "err", err)
+		trackingSince = time.Now().UTC()
+	}
 	svc := rpc.NewService(nc, js, st, embedder, rpc.Config{
 		DefaultNamespace:   defaultNS,
 		Source:             source,
@@ -383,6 +390,7 @@ func main() {
 		S3:                 s3ConfigFromEnv(),
 		TrashRetention:     trashRetention,
 		ExpiryGrace:        expiryGrace,
+		UsageTrackingSince: trackingSince,
 	}, log)
 
 	// Hourly expiry sweep: memories expired for longer than EXPIRY_GRACE move to Trash.

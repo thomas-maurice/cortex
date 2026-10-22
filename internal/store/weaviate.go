@@ -199,6 +199,11 @@ func memoryProperties() []*models.Property {
 		{Name: "notDuplicateOf", DataType: []string{"text[]"}},
 		{Name: "accessCount", DataType: []string{"int"}},
 		{Name: "lastAccessedAt", DataType: []string{"date"}},
+		// useCount / lastUsedAt: actual-use tracking (RecordUse), the basis of stale
+		// review. Server-owned merge fields; the index path never writes them on an
+		// existing memory.
+		{Name: "useCount", DataType: []string{"int"}},
+		{Name: "lastUsedAt", DataType: []string{"date"}},
 		// indexedSeq is the JetStream stream sequence of the index message that last
 		// wrote this object: the worker's stale-write guard (an older message must
 		// not overwrite a newer one). Absent on pre-existing objects, read as 0.
@@ -647,6 +652,10 @@ func (ts *TenantStore) Upsert(ctx context.Context, rec memory.Record, vector []f
 	if !rec.LastAccessedAt.IsZero() {
 		props["lastAccessedAt"] = formatDate(rec.LastAccessedAt)
 	}
+	props["useCount"] = rec.UseCount
+	if !rec.LastUsedAt.IsZero() {
+		props["lastUsedAt"] = formatDate(rec.LastUsedAt)
+	}
 	return ts.upsertObject(ctx, memory.ClassName, rec.ID, props, vector)
 }
 
@@ -659,6 +668,7 @@ func (ts *TenantStore) Upsert(ctx context.Context, rec memory.Record, vector []f
 //	validUntil                   server SetValidUntil (written by Upsert on create only)
 //	linkedIds                    link consumer (SetLinks)
 //	accessCount, lastAccessedAt  server Reinforce
+//	useCount, lastUsedAt         server RecordUse
 //	notDuplicateOf               server DismissDuplicate (SetNotDuplicateOf)
 //
 // Weaviate applies a merge per property under the object's lock, so disjoint-field
@@ -1002,6 +1012,27 @@ func (ts *TenantStore) CountLiveExpired(ctx context.Context) (live, expired int,
 	return live, expired, nil
 }
 
+// RecordUse stamps a memory as used: useCount = count and lastUsedAt = at via a
+// Weaviate merge (PATCH) — vector and all other properties untouched, no re-embed.
+// count is the NEW absolute count (caller computes prev+1 under its per-id lock).
+func (ts *TenantStore) RecordUse(ctx context.Context, id string, count int, at time.Time) error {
+	updater := ts.s.client.Data().Updater().
+		WithMerge().
+		WithClassName(memory.ClassName).
+		WithID(id).
+		WithProperties(map[string]interface{}{
+			"useCount":   count,
+			"lastUsedAt": formatDate(at),
+		})
+	if ts.t != "" {
+		updater = updater.WithTenant(ts.t)
+	}
+	if err := updater.Do(ctx); err != nil {
+		return fmt.Errorf("record use: %w", err)
+	}
+	return nil
+}
+
 // Count returns the number of stored memories for this tenant, optionally scoped
 // to a namespace ("" counts all, expired included — see CountLiveExpired). There is no gRPC Aggregate in the stable
 // client, so it cursor-scans the class and counts the rows (correct beyond the
@@ -1063,7 +1094,7 @@ func (ts *TenantStore) ListAllSummaries(ctx context.Context) ([]memory.Summary, 
 }
 
 // memoryProps is the property set fetched for both search and list.
-var memoryProps = []string{"text", "namespace", "tags", "source", "createdAt", "model", "dims", "conversationId", "linkedIds", "dupCandidates", "notDuplicateOf", "accessCount", "lastAccessedAt", "validUntil"}
+var memoryProps = []string{"text", "namespace", "tags", "source", "createdAt", "model", "dims", "conversationId", "linkedIds", "dupCandidates", "notDuplicateOf", "accessCount", "lastAccessedAt", "validUntil", "useCount", "lastUsedAt"}
 
 // buildWhere combines exact namespace + conversationId filters with tag
 // filters: includeTags ("has ALL of these", ContainsAll) and anyTags ("has at
@@ -1614,6 +1645,7 @@ func resultToRecord(r graphql.SearchResult) memory.Record {
 		DupCandidates:  propStrings(p, "dupCandidates"),
 		NotDuplicateOf: propStrings(p, "notDuplicateOf"),
 		AccessCount:    propInt(p, "accessCount"),
+		UseCount:       propInt(p, "useCount"),
 	}
 	if ca := propString(p, "createdAt"); ca != "" {
 		rec.CreatedAt, _ = time.Parse(time.RFC3339, ca) // ignored: best-effort timestamp parse
@@ -1623,6 +1655,9 @@ func resultToRecord(r graphql.SearchResult) memory.Record {
 	}
 	if vu := propString(p, "validUntil"); vu != "" {
 		rec.ValidUntil, _ = time.Parse(time.RFC3339, vu) // ignored: best-effort timestamp parse
+	}
+	if lu := propString(p, "lastUsedAt"); lu != "" {
+		rec.LastUsedAt, _ = time.Parse(time.RFC3339, lu) // ignored: best-effort timestamp parse
 	}
 	return rec
 }
@@ -1668,6 +1703,7 @@ func objectToRecord(id string, raw models.PropertySchema) memory.Record {
 		DupCandidates:  restStrings(p, "dupCandidates"),
 		NotDuplicateOf: restStrings(p, "notDuplicateOf"),
 		AccessCount:    restInt(p, "accessCount"),
+		UseCount:       restInt(p, "useCount"),
 		IndexedSeq:     restSeq(p, "indexedSeq"),
 		IndexedStream:  restInt64(p, "indexedStream"),
 	}
@@ -1683,6 +1719,11 @@ func objectToRecord(id string, raw models.PropertySchema) memory.Record {
 	if vu := restString(p, "validUntil"); vu != "" {
 		if t, err := time.Parse(time.RFC3339, vu); err == nil {
 			rec.ValidUntil = t
+		}
+	}
+	if lu := restString(p, "lastUsedAt"); lu != "" {
+		if t, err := time.Parse(time.RFC3339, lu); err == nil {
+			rec.LastUsedAt = t
 		}
 	}
 	return rec

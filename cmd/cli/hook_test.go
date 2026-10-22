@@ -4,15 +4,20 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	cortexv1 "github.com/thomas-maurice/cortex/gen/cortex/v1"
+	"github.com/thomas-maurice/cortex/gen/cortex/v1/cortexv1connect"
 	"github.com/thomas-maurice/cortex/internal/recall"
 	"github.com/thomas-maurice/cortex/internal/recallstate"
 )
@@ -213,4 +218,111 @@ func TestPrintRecallPreview(t *testing.T) {
 	printRecallPreview(&b, &cortexv1.PreviewRecallResponse{Skipped: true, SkipReason: recall.SkipTooShort, Note: "n"}, "*", nil, false)
 	assert.Contains(t, b.String(), "SKIP")
 	assert.NotContains(t, b.String(), "Would inject")
+}
+
+type hookServer struct {
+	cortexv1connect.UnimplementedMemoryServiceHandler
+	hits     []*cortexv1.Hit
+	useErr   error
+	useDelay time.Duration // RecordUse blocks this long (or until the client gives up)
+	mu       sync.Mutex
+	usedIDs  []string
+	usedSrc  string
+	useCalls int
+}
+
+func (h *hookServer) Search(context.Context, *connect.Request[cortexv1.SearchRequest]) (*connect.Response[cortexv1.SearchResponse], error) {
+	return connect.NewResponse(&cortexv1.SearchResponse{Hits: h.hits}), nil
+}
+
+func (h *hookServer) RecordUse(ctx context.Context, r *connect.Request[cortexv1.RecordUseRequest]) (*connect.Response[cortexv1.RecordUseResponse], error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.useCalls++
+	h.usedIDs = append(h.usedIDs, r.Msg.GetIds()...)
+	h.usedSrc = r.Msg.GetSource()
+	if h.useDelay > 0 {
+		h.mu.Unlock()
+		select {
+		case <-time.After(h.useDelay):
+		case <-ctx.Done():
+		}
+		h.mu.Lock()
+	}
+	if h.useErr != nil {
+		return nil, h.useErr
+	}
+	return connect.NewResponse(&cortexv1.RecordUseResponse{Recorded: int32(len(r.Msg.GetIds()))}), nil
+}
+
+func runHook(t *testing.T, srv *hookServer, stateDB string) string {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.Handle(cortexv1connect.NewMemoryServiceHandler(srv))
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+	oldURL, oldTok := serverURL, authToken
+	serverURL, authToken = ts.URL, ""
+	t.Cleanup(func() { serverURL, authToken = oldURL, oldTok })
+
+	cmd := hookRecallCmd()
+	require.NoError(t, cmd.Flags().Set("state-db", stateDB))
+	var out bytes.Buffer
+	cmd.SetContext(context.Background())
+	cmd.SetOut(&out)
+	cmd.SetIn(strings.NewReader(`{"session_id":"s1","prompt":"why does the palette show no results in prod?"}`))
+	require.NoError(t, cmd.RunE(cmd, nil), "hook must be fail-open: never return an error")
+	return out.String()
+}
+
+// The hook records use ONLY for memories it actually injected (not ones filtered
+// by session dedup), and a failing RecordUse must leave the output untouched and
+// the hook's exit clean (fail-open).
+func TestHookRecordsUseForInjectedIDsOnly(t *testing.T) {
+	mk := func(id string) *cortexv1.Hit {
+		return &cortexv1.Hit{Memory: &cortexv1.Memory{Id: id, Text: "text " + id, Namespace: "ns"}, Distance: 0.1}
+	}
+	db := filepath.Join(t.TempDir(), "state.db")
+	seen := recallstate.Load(db, "s1")
+	seen.Add("already")
+
+	ok := &hookServer{hits: []*cortexv1.Hit{mk("fresh1"), mk("already")}}
+	outOK := runHook(t, ok, db)
+	assert.Contains(t, outOK, "id=fresh1")
+	assert.NotContains(t, outOK, "id=already")
+	assert.Equal(t, []string{"fresh1"}, ok.usedIDs, "only injected ids count as used")
+	assert.Equal(t, "hook", ok.usedSrc)
+
+	// Same scenario, RecordUse failing: identical output, no panic/error.
+	db2 := filepath.Join(t.TempDir(), "state2.db")
+	recallstate.Load(db2, "s1").Add("already")
+	bad := &hookServer{hits: ok.hits, useErr: connect.NewError(connect.CodeInternal, errors.New("boom"))}
+	outBad := runHook(t, bad, db2)
+	assert.Equal(t, outOK, outBad, "RecordUse failure must not change the injected block")
+	assert.Equal(t, 1, bad.useCalls)
+
+	// Nothing injected (everything already seen) => no RecordUse call at all.
+	db3 := filepath.Join(t.TempDir(), "state3.db")
+	recallstate.Load(db3, "s1").Add("already")
+	none := &hookServer{hits: []*cortexv1.Hit{mk("already")}}
+	assert.Empty(t, runHook(t, none, db3))
+	assert.Zero(t, none.useCalls)
+}
+
+// RecordUse runs on every injecting prompt, so a slow server must cost the user at
+// most hookUseTimeout, and must not change what was printed.
+func TestHookRecordUseSlowServerIsCapped(t *testing.T) {
+	hits := []*cortexv1.Hit{{Memory: &cortexv1.Memory{Id: "fresh1", Text: "text", Namespace: "ns"}, Distance: 0.1}}
+	fast := runHook(t, &hookServer{hits: hits}, filepath.Join(t.TempDir(), "a.db"))
+
+	slow := &hookServer{hits: hits, useDelay: 10 * time.Second}
+	start := time.Now()
+	out := runHook(t, slow, filepath.Join(t.TempDir(), "b.db"))
+	elapsed := time.Since(start)
+
+	assert.Equal(t, fast, out, "a slow RecordUse must not change stdout")
+	assert.Less(t, elapsed, 3*time.Second, "hook must not wait for a slow RecordUse (cap %s)", hookUseTimeout)
+	slow.mu.Lock()
+	defer slow.mu.Unlock()
+	assert.Equal(t, 1, slow.useCalls)
 }

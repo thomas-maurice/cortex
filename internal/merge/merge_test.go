@@ -26,6 +26,12 @@ func (f *fakeStore) Reinforce(_ context.Context, id string, c int, at time.Time)
 	f.recs[id] = r
 	return nil
 }
+func (f *fakeStore) RecordUse(_ context.Context, id string, c int, at time.Time) error {
+	r := f.recs[id]
+	r.UseCount, r.LastUsedAt = c, at
+	f.recs[id] = r
+	return nil
+}
 func (f *fakeStore) SetNotDuplicateOf(_ context.Context, id string, ids []string) error {
 	r := f.recs[id]
 	r.NotDuplicateOf = ids
@@ -71,6 +77,33 @@ func TestCarryDismissalsAndStats(t *testing.T) {
 	assert.Equal(t, []string{keep}, st.recs[c].NotDuplicateOf)
 	assert.Equal(t, 6, st.recs[keep].AccessCount)
 	assert.True(t, st.recs[keep].LastAccessedAt.Equal(time.Unix(90, 0)))
+}
+
+// Usage (stale review's actual-use signal) must survive a merge exactly like the
+// access stats: summed counts and the latest use. Otherwise a merged memory built
+// from heavily used sources would look "never used" and be flagged for deletion.
+func TestCarryUsageStats(t *testing.T) {
+	const keep, a, b = "k", "a", "b"
+	st := &fakeStore{recs: map[string]memory.Record{
+		keep: {ID: keep, UseCount: 1, LastUsedAt: time.Unix(10, 0)},
+		a:    {ID: a, UseCount: 2, LastUsedAt: time.Unix(500, 0)},
+		b:    {ID: b, UseCount: 4, LastUsedAt: time.Unix(90, 0)},
+	}}
+	noPub := func(memory.LinkOp, string, string) error { return nil }
+	for _, src := range []string{a, b} {
+		require.NoError(t, Carry(context.Background(), st, keep, src, []string{a, b}, noPub, []string{keep, a, b}))
+	}
+	assert.Equal(t, 7, st.recs[keep].UseCount)
+	assert.True(t, st.recs[keep].LastUsedAt.Equal(time.Unix(500, 0)), "latest use wins, regardless of source order")
+
+	// A source that was never used must not touch the survivor's usage.
+	st2 := &fakeStore{recs: map[string]memory.Record{
+		keep: {ID: keep, UseCount: 3, LastUsedAt: time.Unix(10, 0)},
+		a:    {ID: a},
+	}}
+	require.NoError(t, Carry(context.Background(), st2, keep, a, []string{a}, noPub, []string{keep, a}))
+	assert.Equal(t, 3, st2.recs[keep].UseCount)
+	assert.True(t, st2.recs[keep].LastUsedAt.Equal(time.Unix(10, 0)))
 }
 
 func TestCarryMissingKeepFails(t *testing.T) {

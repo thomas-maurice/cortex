@@ -21,7 +21,7 @@ func TestExportRecordsFromBackup(t *testing.T) {
 		"tenants": []any{map[string]any{
 			"tenant": "u1",
 			"memories": []memory.Record{
-				{ID: "old", Text: "a", Namespace: "alpha", Tags: []string{"x"}, CreatedAt: t0, Dims: 4, LinkedIDs: []string{"new"}, NotDuplicateOf: []string{"z"}},
+				{ID: "old", Text: "a", Namespace: "alpha", Tags: []string{"x"}, CreatedAt: t0, Dims: 4, LinkedIDs: []string{"new"}, NotDuplicateOf: []string{"z"}, UseCount: 3, LastUsedAt: t0.Add(24 * time.Hour)},
 				{ID: "new", Text: "b", Namespace: "alpha", CreatedAt: t0.Add(time.Hour)},
 				{ID: "other", Text: "c", Namespace: "beta", CreatedAt: t0.Add(2 * time.Hour)},
 			},
@@ -44,6 +44,7 @@ func TestExportRecordsFromBackup(t *testing.T) {
 	assert.Equal(t, exportRecord{
 		ID: "old", Text: "a", Namespace: "alpha", Tags: []string{"x"},
 		CreatedAt: "2026-01-02T03:04:05Z", Dims: 4, LinkedIDs: []string{"new"}, NotDuplicateOf: []string{"z"},
+		UseCount: 3, LastUsedAt: "2026-01-03T03:04:05Z", // usage history must survive export/import
 	}, old)
 
 	// Round-trips through the JSON that `cortex import` parses.

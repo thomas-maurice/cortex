@@ -85,7 +85,7 @@ user/pass check for a user store and emit per-user claims.
 
 | Route | View | RPCs used |
 |-------|------|-----------|
-| `/` | **Memories** — search/list (search hits on long memories show a highlighted `matched:` excerpt; the inspector highlights the matched span in the full text), add (New Memory form, expiry picker), delete, *Include expired* toggle | `Search`, `List`, `Save`, `Delete` |
+| `/` | **Memories** — search/list (search hits on long memories show a highlighted `matched:` excerpt; the inspector highlights the matched span in the full text), add (New Memory form, expiry picker), delete, *Include expired* toggle | `Search`, `List`, `Save`, `Delete`, `DeleteMany`, `RestoreFromTrash` |
 | `/graph` | **Graph** — memory map + explicit links | `List`, `Search`, `Link`, `Unlink` |
 | `/explore` | **Explore** — query → relevance cloud | `Search` |
 | `/recall-preview` | **Recall preview** — what would the recall hook inject for a prompt? | `PreviewRecall` |
@@ -132,6 +132,17 @@ dialog prefilled with both texts, the union of tags and the left namespace, and 
 with `supersedes` = both ids (the worker trashes both originals only after the merge is
 indexed and carries their links over to the merged memory; the pair is hidden locally meanwhile). **Keep left/right** calls `MergeInto` (carries links, dismissals, stats, createdAt onto the kept memory before trashing the other). A side that is a `global` + `preference` memory gets a badge and a warning when the result would no longer be one. The truncation banner uses the server's `truncated` flag. Namespace filter is server-side
 (`*` = all). No pair distance is shown (the RPC does not return it). No nav badge.
+
+### Memories: stale review and bulk trash (`ui/src/views/MemoriesView.vue`)
+
+The **Stale** select (Off / Never used / Not used in 30, 90, 180 days) switches
+the view to the server-side stale scan (`List` with `stale`, by actual use (`useCount` /
+`lastUsedAt`), 50 per page with
+Previous/Next; semantic search is disabled in this mode; memories younger than 30 days
+are never listed). Cards show use count and last-used (or "never used"). A "usage tracked since" line (with a limited-results warning when tracking is younger than the window) and an "Include preference memories" checkbox appear above the list. Bulk delete sends reason `stale-review`.
+Every card has a checkbox, plus "Select all on page"; **Move N to trash** asks for
+confirmation, calls `DeleteMany`, and the toast offers **Undo** (`RestoreFromTrash` with
+the same ids). Selection clears on any reload/page change.
 
 ### Trash (`ui/src/views/TrashView.vue`)
 

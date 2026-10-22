@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -25,6 +26,92 @@ type fakeClient struct {
 	mem *cortexv1.Memory
 	// match, when set, is attached to the search hit (a chunk-found hit).
 	match *cortexv1.Match
+	uses  *useLog
+}
+
+// useLog collects RecordUse calls (they are fire-and-forget goroutines).
+type useLog struct {
+	mu   sync.Mutex
+	ids  []string
+	call chan struct{}
+}
+
+func newUseLog() *useLog { return &useLog{call: make(chan struct{}, 16)} }
+
+func (f fakeClient) RecordUse(_ context.Context, r *connect.Request[cortexv1.RecordUseRequest]) (*connect.Response[cortexv1.RecordUseResponse], error) {
+	if f.uses != nil {
+		f.uses.mu.Lock()
+		f.uses.ids = append(f.uses.ids, r.Msg.GetSource()+":"+strings.Join(r.Msg.GetIds(), ","))
+		f.uses.mu.Unlock()
+		f.uses.call <- struct{}{}
+	}
+	return connect.NewResponse(&cortexv1.RecordUseResponse{}), nil
+}
+
+func (f fakeClient) Consolidate(context.Context, *connect.Request[cortexv1.ConsolidateRequest]) (*connect.Response[cortexv1.ConsolidateResponse], error) {
+	return connect.NewResponse(&cortexv1.ConsolidateResponse{Cluster: []*cortexv1.Memory{f.mem}, Manifest: []string{f.mem.GetId()}}), nil
+}
+
+func (f fakeClient) RecallSession(context.Context, *connect.Request[cortexv1.RecallSessionRequest]) (*connect.Response[cortexv1.RecallSessionResponse], error) {
+	return connect.NewResponse(&cortexv1.RecallSessionResponse{Matched: true, Summary: &cortexv1.ConversationSummary{Text: "s"}, Facts: []*cortexv1.Memory{f.mem}}), nil
+}
+
+// waitUse blocks for the next RecordUse call and returns everything logged so far.
+func (l *useLog) waitUse(t *testing.T) []string {
+	t.Helper()
+	select {
+	case <-l.call:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected a RecordUse call")
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string(nil), l.ids...)
+}
+
+// noUse asserts no further RecordUse arrives shortly.
+func (l *useLog) noUse(t *testing.T) {
+	t.Helper()
+	select {
+	case <-l.call:
+		t.Fatal("unexpected RecordUse call")
+	case <-time.After(150 * time.Millisecond):
+	}
+}
+
+// Only memories delivered with FULL text count as used: get, a first search, a
+// fresh=true re-fetch, recall_session facts and consolidate clusters do; a stub
+// (already in context) does not, or a repeated search would inflate "use".
+func TestRecordUseOnlyForFullDeliveries(t *testing.T) {
+	mem := &cortexv1.Memory{Id: "m1", Text: strings.Repeat("x", 500), Namespace: "ns"}
+	log := newUseLog()
+	d := &deps{client: fakeClient{mem: mem, uses: log}, seen: map[string]bool{}, defaultSearchLimit: 5}
+	ctx := context.Background()
+
+	_, _, err := d.search(ctx, nil, SearchIn{Query: "q"})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"mcp-search:m1"}, log.waitUse(t))
+
+	_, out, err := d.search(ctx, nil, SearchIn{Query: "q"})
+	require.NoError(t, err)
+	require.True(t, out.Hits[0].Stub)
+	log.noUse(t)
+
+	_, _, err = d.search(ctx, nil, SearchIn{Query: "q", Fresh: true})
+	require.NoError(t, err)
+	assert.Len(t, log.waitUse(t), 2, "fresh=true re-delivers full text")
+
+	_, _, err = d.get(ctx, nil, GetIn{ID: "m1"})
+	require.NoError(t, err)
+	assert.Equal(t, "mcp-get:m1", log.waitUse(t)[2])
+
+	_, _, err = d.consolidate(ctx, nil, ConsolidateIn{Topic: "t"})
+	require.NoError(t, err)
+	assert.Equal(t, "mcp-consolidate:m1", log.waitUse(t)[3])
+
+	_, _, err = d.recall(ctx, nil, RecallIn{Query: "q"})
+	require.NoError(t, err)
+	assert.Equal(t, "mcp-recall-session:m1", log.waitUse(t)[4])
 }
 
 func (f fakeClient) GetMemory(context.Context, *connect.Request[cortexv1.GetMemoryRequest]) (*connect.Response[cortexv1.GetMemoryResponse], error) {
@@ -219,4 +306,21 @@ func TestTagsListTool(t *testing.T) {
 	b, err := json.Marshal(res.StructuredContent)
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"tags":[{"tag":"k8s","count":5},{"tag":"kubernetes","count":2}]}`, string(b))
+}
+
+// A slow server must not make RecordUse goroutines pile up: when every slot is
+// busy the record is dropped (it is a best-effort signal), never queued.
+func TestRecordUseDropsWhenSaturated(t *testing.T) {
+	for range recordUseSlots {
+		recordUseSem <- struct{}{}
+	}
+	t.Cleanup(func() {
+		for range recordUseSlots {
+			<-recordUseSem
+		}
+	})
+	log := newUseLog()
+	d := &deps{client: fakeClient{mem: &cortexv1.Memory{Id: "m1"}, uses: log}}
+	d.recordUse("mcp-get", []string{"m1"})
+	log.noUse(t)
 }

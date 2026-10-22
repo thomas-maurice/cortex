@@ -221,6 +221,12 @@ port as the Connect API; open the server's address in a browser. Views:
   lands here first. List with deletion time and reason, **restore** (re-queued for
   indexing under the same id), **purge** one or all (confirm dialogs). Entries
   expire after `TRASH_RETENTION`.
+- **Stale review** (Memories view, "Stale" filter) — never used / not used in
+  30, 90 or 180 days (actual use: hook injection or full delivery to the agent; browsing
+  doesn't count), oldest last use first, with use count and last-used time on each card,
+  a "usage tracked since" notice (with a limited-results warning) and an opt-in for
+  `preference` memories. Multi-select (with "select all on page") and **Move to trash**
+  in bulk; the success toast offers **Undo** (restores the same ids from the trash).
 - **Preferences** — standing, cross-project preferences: the memories in the
   `global` namespace tagged `preference`. Add / edit / delete them here without
   touching namespace or tags (both are managed for you). These are what the
@@ -693,7 +699,8 @@ authenticate with `--token` / `CORTEX_AUTH_TOKEN`.
 | `cortex get <id> [--json]` | Show one memory by id (incl. linked ids); `--json` uses the `export` record shape. |
 | `cortex search "<q>" [-d 0.6] [-t tag] [-x tag] [--include-expired]` | Semantic search with a relevance cutoff and tag filters. Prints the matched excerpt (`matched: …`) under hits on long memories. Expired memories are hidden unless `--include-expired`. |
 | `cortex consolidate "<topic>" [-n '*'] [-l N] [-t tag] [-x tag] [--include-expired]` | Print the cluster of memories about a topic + their manifest (read-only gather; the LLM does the merge). No tag flag = no tag filter (whole cluster). |
-| `cortex delete <id>` | Delete a memory by ID (moved to the trash). |
+| `cortex list --stale [--since 90d] [--min-age 30d] [--include-preferences] [--include-expired] [-n ns] [-l N]` | Stale-memory review by ACTUAL USE: memories never used (or, with `--since`, not used for that long), oldest last-use first; only memories older than `--min-age` (default 30d, measured from the later of creation and tracking start; `0` disables) count; `preference`-tagged memories hidden unless `--include-preferences`; expired memories are skipped unless `--include-expired` (the expiry sweep handles them). Prints use count + last use, and "usage tracked since" with a limited-results warning. See "Stale-memory review". |
+| `cortex delete <id>...` | Delete memories by ID (moved to the trash). Several ids use one `DeleteMany` call (max 500) with per-id results; non-zero exit if any failed. |
 | `cortex tags [-n ns]` | List tags with memory counts and last activity. `tags rename <from> <to> [-n ns]` fixes drift (`k8s` / `kubernetes`; merges into an existing tag), `tags delete <tag> [-n ns] [--yes]` removes a tag from every memory. Touching the reserved `preference` tag needs `--yes`. |
 | `cortex trash ls [-n ns] [--reason r]` / `trash restore <id>... \| --all [-n ns] [--reason r]` / `trash purge <id>... \| --all [-n ns] [--reason r] [--yes]` | Soft-delete trash: list trashed memories, restore them (re-queued for indexing, same id, with their recall history; ids are rejected if a live memory has that id; `--all` restores every match independently and reports failures) or purge them permanently. `cortex status` shows the trash count. |
 | `cortex export -o backup.json` | Dump all memories (text + metadata, no vectors) to JSON. |
@@ -854,6 +861,55 @@ true. Give them an expiry:
   restored from the trash whose (non-`expired`-reason) expiry has lapsed likewise comes
   back hidden, and the restore says so. Memory counts
   (Status, Namespaces) cover live memories only, with expired ones shown separately.
+
+## Stale-memory review
+
+Memories that are never (or no longer) **used** are candidates for cleanup or merging.
+"Used" is tracked separately from search ranking: the `useCount` / `lastUsedAt` Memory
+properties are bumped by the `RecordUse` RPC, independent of `RERANK_WEIGHT` and of
+reinforcement (`accessCount` / `lastAccessedAt`, which only move when reranking is on and
+only for the top reinforcing hit). **What counts as a use** — a memory delivered with its
+FULL text into an agent's context:
+
+- the `cortex hook recall` prompt hook injecting it (only the memories it actually
+  printed, after session dedup);
+- the MCP server delivering it from `cortex_memory_search` (not stubs of already-delivered
+  memories), `cortex_memory_get`, `cortex_recall_session` facts or `cortex_consolidate` clusters.
+
+It does **not** count: UI or CLI searches/browsing, `cortex list`, the SessionStart
+preferences load, `SearchSimilar`. Calls are fire-and-forget and fail-open.
+
+**Tracking epoch.** The server records when usage tracking first started (`usage_tracking_since`
+in the `cortex_meta` JetStream KV bucket, set once at first start). A never-used memory's
+reference time is `max(createdAt, trackingSince)`, the min-age guard runs from that same
+reference, and `List` returns `tracking_since`; the UI and CLI show "usage tracked since
+<date>" and a notice when tracking began less than the requested window ago (results are
+limited). Right after upgrading, expect an (almost) empty stale list for a while — that is
+honest, not a bug. Memories used before tracking began are not remembered.
+
+**Client versions matter.** Usage is only recorded by up-to-date clients: the `cortex` hook
+and `cortex-mcp` must be recent enough to call `RecordUse` (run `cortex upgrade` on every
+machine that uses Cortex). Memories used through older clients, or only found via CLI/UI
+search, can look unused and be flagged; the tracking start date is server-wide, not
+per client.
+
+**Expiry.** Expired memories (`valid_until` passed) are skipped by the stale scan unless
+`include_expired` is set: the expiry sweep owns them (trash reason `expired`), so bulk-trashing
+them as `stale-review` would double-handle them.
+
+`List` takes additive `stale` (`NEVER_RECALLED` = never used; `NOT_RECALLED_SINCE` +
+`stale_days` = last use, or for never-used memories the reference time, older than N days),
+`min_age_days` (default 30; 0 disables), `offset`, `include_preferences`; the response
+carries `total` and `tracking_since`. Memories tagged `preference` are hidden unless
+`include_preferences` (standing instructions are loaded wholesale, so they look unused).
+Results are oldest-last-use first. It is a server-side cursor scan filtered in Go (an
+`IsNull` filter would need `indexNullState` on existing classes), so it is correct beyond
+10k memories; cost is one pass over the tenant per call, single-flight per tenant.
+`DeleteMany` (max 500 ids, per-tenant single-flight, per-id results `deleted` / `not found` /
+`failed`, other tenants' ids = "not found", optional `reason`, `stale-review` from the UI)
+moves each id to the trash through the normal delete path (`reason` must be on the `Delete` allow-list: `delete`, `stale-review`, `duplicate-review`). `RecordUse` (max 100 ids)
+increments under an in-process per-id lock (see docs/DESIGN.md). `useCount`/`lastUsedAt`
+travel with backups, `cortex export`/`import`, and the trash, so history survives restore.
 
 ## Request size limit
 

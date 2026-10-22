@@ -160,7 +160,7 @@ source later re-applies ITS trashed links to still-existing endpoints (so it is 
 back to its old neighbours), while the merged memory keeps the links it inherited.
 
 **What else a merge carries** (`internal/merge`, shared by the worker and the
-`MergeInto` RPC): `accessCount` = sum and `lastAccessedAt` = max (server-owned; written
+`MergeInto` RPC): `accessCount` = sum and `lastAccessedAt` = max, and likewise `useCount` = sum / `lastUsedAt` = max via `RecordUse` (stale review's usage signal; server-owned; written
 via `Reinforce`; summed, so a crash between carry and delete can over-count once);
 `notDuplicateOf` = union of the sources' dismissals, with each counterpart C rewritten
 source -> merged so reviewed pairs stay dismissed; `createdAt` = oldest of the merged
@@ -473,7 +473,16 @@ integration test), which is why server-side merges need no KV lock.
 | chunks (`MemoryChunk`) | index (worker) | replaced under the lock |
 | `linkedIds` | link consumer (`SetLinks`, under both ids' locks) | never writes |
 | `accessCount`, `lastAccessedAt` | server `Reinforce` (merge) | never writes |
+| `useCount`, `lastUsedAt` | server `RecordUse` (merge; actual-use tracking for stale review, independent of reinforcement) | never writes on an existing memory (a CREATE from import/restore carries them); the merge carry-over (`internal/merge`) sums them onto the survivor, like `accessCount` |
 | `notDuplicateOf` | server `DismissDuplicate` (merge) | never writes |
+
+`RecordUse` read-modify-writes `useCount` under an in-process per-(tenant,id) striped
+mutex, not the NATS lock: a lock round trip per delivery would cost more than the signal
+is worth, and with several SERVER replicas a concurrent pair can lose a count — harmless,
+because stale review only needs "used at all" and "last used". Usage tracking has a
+server-wide epoch (`usage_tracking_since` in the `cortex_meta` KV bucket, create-once at
+server start): usage before it was invisible, so never-used memories are judged from
+`max(createdAt, epoch)`.
 
 `tags` has two writers. Tag rename/delete is a read-modify-write of a field the
 index path also rewrites, so the server takes the SAME per-memory KV lock the

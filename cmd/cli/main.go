@@ -7,12 +7,14 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -478,19 +480,40 @@ func listCmd() *cobra.Command {
 	var limit int
 	var tags, anyTags, excludeTags []string
 	var includeExpired bool
+	var stale, includePrefs bool
+	var since, minAge string
 	cmd := &cobra.Command{
 		Use:   "list",
-		Short: "List stored memories, newest first",
-		Args:  cobra.NoArgs,
+		Short: "List stored memories, newest first (or --stale: never/no-longer recalled)",
+		Long: "List stored memories, newest first.\n\n" +
+			"--stale switches to review mode, based on ACTUAL USE (a memory counts as used when the\n" +
+			"recall hook injects it or an MCP search/get/recall/consolidate delivers its full text;\n" +
+			"UI/CLI browsing does not count): memories never used (or, with --since, not used for that\n" +
+			"long), oldest last-use first. Usage is only tracked since the date printed at the end, so\n" +
+			"a young deployment has limited results. Only memories older than --min-age (default 30d,\n" +
+			"measured from the later of creation and tracking start) count; `preference`-tagged\n" +
+			"memories are hidden unless --include-preferences. Durations are whole days: 90d, 12w, or\n" +
+			"Go durations like 2160h. Clean up with `cortex delete <id>...`.",
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			resp, err := client().List(cmd.Context(), connect.NewRequest(&cortexv1.ListRequest{
+			req := &cortexv1.ListRequest{
 				Namespace:      namespace,
 				Limit:          int32(limit),
 				Tags:           tags,
 				AnyTags:        anyTags,
 				ExcludeTags:    excludeTags,
 				IncludeExpired: includeExpired,
-			}))
+			}
+			if !stale && (since != "" || minAge != "") {
+				return fmt.Errorf("--since and --min-age require --stale")
+			}
+			if stale {
+				if err := applyStaleFlags(req, since, minAge); err != nil {
+					return err
+				}
+				req.IncludePreferences = includePrefs
+			}
+			resp, err := client().List(cmd.Context(), connect.NewRequest(req))
 			if err != nil {
 				return err
 			}
@@ -501,10 +524,21 @@ func listCmd() *cobra.Command {
 			}
 			for _, m := range mems {
 				printMemory(m)
+				if stale {
+					printRecallStats(m)
+				}
+			}
+			if stale {
+				fmt.Printf("\n%d of %d stale\n", len(mems), resp.Msg.GetTotal())
+				fmt.Println(trackingNotice(resp.Msg.GetTrackingSince().AsTime(), resp.Msg.GetTrackingSince() != nil, staleWindowDays(req), time.Now()))
 			}
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&stale, "stale", false, "review mode: list memories never used (or not used for --since), oldest last-use first")
+	cmd.Flags().BoolVar(&includePrefs, "include-preferences", false, "with --stale: also list memories tagged \"preference\" (hidden by default)")
+	cmd.Flags().StringVar(&since, "since", "", "with --stale: not used for this long, e.g. 90d (default: never used)")
+	cmd.Flags().StringVar(&minAge, "min-age", "", "with --stale: only memories created more than this long ago (default 30d; 0 disables)")
 	cmd.Flags().StringVarP(&namespace, "namespace", "n", "", `namespace filter; "*" for all namespaces`)
 	cmd.Flags().IntVarP(&limit, "limit", "l", 20, "max memories to list")
 	cmd.Flags().StringSliceVarP(&tags, "tag", "t", nil, "require this tag (repeatable; memory must have all)")
@@ -552,6 +586,10 @@ func printGotMemory(w io.Writer, m *cortexv1.Memory, asJSON bool) error {
 			ConversationID: m.GetConversationId(),
 			LinkedIDs:      m.GetLinkedIds(),
 			NotDuplicateOf: m.GetNotDuplicateOf(),
+			UseCount:       m.GetUseCount(),
+		}
+		if ts := m.GetLastUsedAt(); ts != nil {
+			rec.LastUsedAt = ts.AsTime().UTC().Format(time.RFC3339)
 		}
 		if ts := m.GetCreatedAt(); ts != nil {
 			rec.CreatedAt = ts.AsTime().UTC().Format(time.RFC3339)
@@ -648,22 +686,162 @@ func searchCmd() *cobra.Command {
 
 func deleteCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "delete <id>",
-		Short: "Delete a memory by ID (moved to the trash; see `cortex trash`)",
-		Args:  cobra.ExactArgs(1),
+		Use:   "delete <id>...",
+		Short: "Delete memories by ID (moved to the trash; see `cortex trash`)",
+		Long: "Delete one or more memories by ID. Deleted memories go to the trash and stay\n" +
+			"restorable (`cortex trash restore`). With several ids a single DeleteMany call is\n" +
+			"made (max 500); failures are reported per id and the exit status is non-zero if any failed.",
+		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			id := strings.TrimSpace(args[0])
-			if id == "" {
-				return fmt.Errorf("id must not be empty")
-			}
-			if _, err := client().Delete(cmd.Context(), connect.NewRequest(&cortexv1.DeleteRequest{Id: id})); err != nil {
-				return err
-			}
-			fmt.Println("deleted", id, "(moved to trash; `cortex trash restore` to undo)")
-			return nil
+			return runDelete(cmd.Context(), client(), os.Stdout, args)
 		},
 	}
 	return cmd
+}
+
+// deleteAPI is the slice of the memory client runDelete needs.
+type deleteAPI interface {
+	Delete(context.Context, *connect.Request[cortexv1.DeleteRequest]) (*connect.Response[cortexv1.DeleteResponse], error)
+	DeleteMany(context.Context, *connect.Request[cortexv1.DeleteManyRequest]) (*connect.Response[cortexv1.DeleteManyResponse], error)
+}
+
+// runDelete deletes one id via Delete, several via DeleteMany (one round trip,
+// per-id results). It returns an error when any id failed so scripts can tell.
+func runDelete(ctx context.Context, c deleteAPI, w io.Writer, args []string) error {
+	ids := make([]string, 0, len(args))
+	for _, a := range args {
+		if id := strings.TrimSpace(a); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		return fmt.Errorf("id must not be empty")
+	}
+	if len(ids) == 1 {
+		if _, err := c.Delete(ctx, connect.NewRequest(&cortexv1.DeleteRequest{Id: ids[0]})); err != nil {
+			return err
+		}
+		_, err := fmt.Fprintln(w, "deleted", ids[0], "(moved to trash; `cortex trash restore` to undo)")
+		return err
+	}
+	resp, err := c.DeleteMany(ctx, connect.NewRequest(&cortexv1.DeleteManyRequest{Ids: ids}))
+	if err != nil {
+		return err
+	}
+	failed := 0
+	for _, r := range resp.Msg.GetResults() {
+		if r.GetDeleted() {
+			_, _ = fmt.Fprintln(w, "deleted", r.GetId())
+		} else {
+			failed++
+			_, _ = fmt.Fprintf(w, "FAILED  %s: %s\n", r.GetId(), r.GetError())
+		}
+	}
+	_, _ = fmt.Fprintf(w, "%d deleted, %d failed (moved to trash; `cortex trash restore` to undo)\n", resp.Msg.GetDeleted(), failed)
+	if failed > 0 {
+		return fmt.Errorf("%d of %d deletes failed", failed, len(resp.Msg.GetResults()))
+	}
+	return nil
+}
+
+// parseAgeDays parses a whole-day age such as "90d", "12w" or a Go duration
+// ("2160h"; rounded UP to whole days). "0" means zero. The server works in days.
+func parseAgeDays(s string) (int32, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, fmt.Errorf("empty duration")
+	}
+	var d time.Duration
+	switch {
+	case s == "0":
+		return 0, nil
+	case strings.HasSuffix(s, "d") || strings.HasSuffix(s, "w"):
+		n, err := strconv.Atoi(s[:len(s)-1])
+		if err != nil || n < 0 {
+			return 0, fmt.Errorf("invalid duration %q (want e.g. 90d, 12w, 2160h)", s)
+		}
+		mult := 1
+		if s[len(s)-1] == 'w' {
+			mult = 7
+		}
+		if n > 36500/mult {
+			return 0, fmt.Errorf("duration %q too large", s)
+		}
+		return int32(n * mult), nil
+	default:
+		var err error
+		if d, err = time.ParseDuration(s); err != nil || d < 0 {
+			return 0, fmt.Errorf("invalid duration %q (want e.g. 90d, 12w, 2160h)", s)
+		}
+	}
+	days := (d + 24*time.Hour - 1) / (24 * time.Hour)
+	if days > 36500 {
+		return 0, fmt.Errorf("duration %q too large", s)
+	}
+	return int32(days), nil
+}
+
+// applyStaleFlags turns --since/--min-age into the stale fields of a ListRequest.
+func applyStaleFlags(req *cortexv1.ListRequest, since, minAge string) error {
+	req.Stale = cortexv1.StaleMode_STALE_MODE_NEVER_RECALLED
+	if since != "" {
+		days, err := parseAgeDays(since)
+		if err != nil {
+			return fmt.Errorf("--since: %w", err)
+		}
+		if days == 0 {
+			return fmt.Errorf("--since must be at least 1d (omit it for never-recalled)")
+		}
+		req.Stale = cortexv1.StaleMode_STALE_MODE_NOT_RECALLED_SINCE
+		req.StaleDays = days
+	}
+	if minAge != "" {
+		days, err := parseAgeDays(minAge)
+		if err != nil {
+			return fmt.Errorf("--min-age: %w", err)
+		}
+		req.MinAgeDays = &days
+	}
+	return nil
+}
+
+// staleWindowDays is the span the user asked to judge: the idle threshold in
+// not-used-since mode, else the min-age guard (default 30).
+func staleWindowDays(req *cortexv1.ListRequest) int32 {
+	if req.GetStale() == cortexv1.StaleMode_STALE_MODE_NOT_RECALLED_SINCE {
+		return req.GetStaleDays()
+	}
+	if req.MinAgeDays != nil {
+		return req.GetMinAgeDays()
+	}
+	return 30
+}
+
+// trackingNotice tells the user how far back "unused" can be judged: usage is
+// only recorded since the server started tracking, so a window longer than that
+// is limited. known is false when the server did not report the date.
+func trackingNotice(since time.Time, known bool, windowDays int32, now time.Time) string {
+	if !known {
+		return "usage tracking start date unknown to the server"
+	}
+	msg := "usage tracked since " + since.Local().Format("2006-01-02")
+	if now.Sub(since) < time.Duration(windowDays)*24*time.Hour {
+		msg += fmt.Sprintf(" — LESS than the %d-day window: results are limited (memories can't be judged unused before tracking began)", windowDays)
+	}
+	return msg
+}
+
+// printRecallStats prints the usage signal under a stale-review entry.
+func printRecallStats(m *cortexv1.Memory) {
+	last := "never used"
+	if ts := m.GetLastUsedAt(); ts != nil {
+		last = "last used " + ts.AsTime().Local().Format("2006-01-02")
+	}
+	created := ""
+	if ts := m.GetCreatedAt(); ts != nil {
+		created = "  created " + ts.AsTime().Local().Format("2006-01-02")
+	}
+	fmt.Printf("   uses=%d  %s%s\n", m.GetUseCount(), last, created)
 }
 
 // exportRecord is the stable JSON shape for `cortex export` (no vectors).
@@ -680,6 +858,16 @@ type exportRecord struct {
 	LinkedIDs      []string `json:"linkedIds,omitempty"`
 	NotDuplicateOf []string `json:"notDuplicateOf,omitempty"`
 	ValidUntil     string   `json:"validUntil,omitempty"`
+	UseCount       int32    `json:"useCount,omitempty"`
+	LastUsedAt     string   `json:"lastUsedAt,omitempty"`
+}
+
+// formatUsedAt renders a last-used time for export JSON ("" when never used).
+func formatUsedAt(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339)
 }
 
 func exportCmd() *cobra.Command {
@@ -758,6 +946,12 @@ func importCmd() *cobra.Command {
 					ConversationId: r.ConversationID,
 					LinkedIds:      r.LinkedIDs,
 					NotDuplicateOf: r.NotDuplicateOf,
+					UseCount:       r.UseCount,
+				}
+				if r.LastUsedAt != "" {
+					if t, err := time.Parse(time.RFC3339, r.LastUsedAt); err == nil {
+						m.LastUsedAt = timestamppb.New(t)
+					}
 				}
 				if r.CreatedAt != "" {
 					if t, err := time.Parse(time.RFC3339, r.CreatedAt); err == nil {
@@ -1637,6 +1831,8 @@ func exportRecordsFromBackup(data []byte, namespace string) ([]exportRecord, err
 			ConversationID: r.ConversationID,
 			LinkedIDs:      r.LinkedIDs,
 			NotDuplicateOf: r.NotDuplicateOf,
+			UseCount:       int32(r.UseCount),
+			LastUsedAt:     formatUsedAt(r.LastUsedAt),
 		})
 	}
 	return recs, nil

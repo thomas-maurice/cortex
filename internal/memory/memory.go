@@ -192,6 +192,15 @@ type Record struct {
 	// Stored as a Weaviate property, carried on the index payload like AccessCount.
 	LastAccessedAt time.Time `json:"lastAccessedAt"`
 
+	// UseCount / LastUsedAt are the ACTUAL-USE signal behind stale review: how many
+	// times (and when last) the memory was delivered with full text into an agent's
+	// context (RecordUse). Independent of AccessCount/LastAccessedAt (ranking
+	// reinforcement, RERANK_WEIGHT-gated). Owned by the server's RecordUse merge:
+	// the index path creates a missing memory with whatever the payload carries
+	// (import/restore keep history) but NEVER writes these on an existing one.
+	UseCount   int       `json:"useCount,omitempty"`
+	LastUsedAt time.Time `json:"lastUsedAt"`
+
 	// IndexedSeq is the JetStream stream sequence of the index message that last
 	// wrote this object (the worker's stale-write guard). It is set by the worker
 	// from message metadata under the id lock and persisted as a Weaviate
