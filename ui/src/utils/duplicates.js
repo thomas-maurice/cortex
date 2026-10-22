@@ -1,0 +1,48 @@
+// Pure helpers for the Duplicates review view (no Vue / RPC imports so they can
+// be exercised with plain node).
+
+export const MERGE_SEPARATOR = '\n\n---\n\n'
+
+function tsKey(m) {
+  const t = m && m.createdAt
+  if (!t) return 0
+  return Number(t.seconds ?? 0) * 1e9 + Number(t.nanos ?? 0)
+}
+
+// The server returns directed groups: memory A lists B as a candidate, and B
+// usually lists A back. A reviewer must see the pair once, so collapse by the
+// unordered id pair. The older memory goes on the left (stable, so the layout
+// does not flip between reloads); first-seen order of pairs is preserved.
+export function buildPairs(groups) {
+  const seen = new Map()
+  for (const g of groups || []) {
+    const a = g.memory
+    if (!a) continue
+    for (const b of g.candidates || []) {
+      if (!b || a.id === b.id) continue
+      const key = a.id < b.id ? `${a.id}|${b.id}` : `${b.id}|${a.id}`
+      if (seen.has(key)) continue
+      const [left, right] = tsKey(a) < tsKey(b) || (tsKey(a) === tsKey(b) && a.id < b.id) ? [a, b] : [b, a]
+      seen.set(key, { key, left, right })
+    }
+  }
+  return [...seen.values()]
+}
+
+export function unionTags(...lists) {
+  const out = []
+  for (const l of lists) for (const t of l || []) if (!out.includes(t)) out.push(t)
+  return out
+}
+
+// Draft for the merge dialog: both texts, union of tags, the left namespace,
+// and supersedes = both originals (the worker trashes them once the merged
+// memory is durably indexed).
+export function mergeDraft(pair) {
+  return {
+    text: pair.left.text + MERGE_SEPARATOR + pair.right.text,
+    namespace: pair.left.namespace,
+    tags: unionTags(pair.left.tags, pair.right.tags),
+    supersedes: [pair.left.id, pair.right.id],
+  }
+}

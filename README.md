@@ -211,6 +211,13 @@ port as the Connect API; open the server's address in a browser. Views:
 - **Expiry** — New memory and the inspector's edit mode have an expiry picker
   (never / 1 day / 1 week / 1 month / custom date); memories show an "expires in 3d"
   or "expired" badge, and the Memories view has an *Include expired memories* toggle.
+- **Duplicates** — review the pairs the worker flagged as likely duplicates
+  (`DEDUP_DISTANCE`), side by side (text, namespace, tags, date, link count; a pair
+  shows once even if both sides flag each other). Per pair: **Not duplicates**
+  (dismiss, never re-flagged), **Keep left / right** (deletes the other into the
+  trash, with an undo toast), or **Merge…** (editor prefilled with both texts, saved
+  with `supersedes` = both ids so they move to the trash once the merge is indexed).
+  CLI/MCP equivalents: `cortex candidates`, `cortex_review_candidates`.
 - **Trash** — every deleted memory (explicit delete, `supersedes`, namespace delete)
   lands here first. List with deletion time and reason, **restore** (re-queued for
   indexing under the same id), **purge** one or all (confirm dialogs). Entries
@@ -1069,7 +1076,7 @@ internal/
   embed/           Ollama embeddings client
   store/           Weaviate: schema, upsert, chunk-based gRPC search, links, delete
   rpc/             Connect service impl, auth (token+JWT), login, JWT, client helper
-ui/                embedded Vue 3 SPA (Memories, Graph, Explore, Recall preview, Sessions, Namespaces, Tags, Trash, Preferences, Backup, Indexing, Status)
+ui/                embedded Vue 3 SPA (Memories, Graph, Explore, Recall preview, Sessions, Namespaces, Tags, Duplicates, Trash, Preferences, Backup, Indexing, Status)
 testdata/          fake seed memories for a dev stack (cortex import format)
 docker-compose.yml   nats + weaviate + ollama + worker + server
 deploy/truenas/      TrueNAS Scale compose (non-root, host bind mounts, Traefik h2c)

@@ -245,6 +245,7 @@ Package map: `internal/recall` (hook query logic, shared by hook + server), `int
 `internal/memory` (shared model + stream/class names), `internal/config` (viper).
 UI in `ui/src/views/*.vue` wired through `ui/src/router/index.js` + the navbar in
 `ui/src/App.vue`; RPC client in `ui/src/utils/connect.js`.
+The **Duplicates** view (`DuplicatesView.vue`, /duplicates under Organize) reviews worker-flagged pairs via `ListDuplicateCandidates`/`DismissDuplicate`/`Delete`/`Save{supersedes}`; pair-grouping lives in the pure `ui/src/utils/duplicates.js` (no JS test harness — verify with a throwaway node script).
 
 ## 4b. Multi-tenancy (DEFAULT ON) + migration (`cortex migrate-mt`)
 
