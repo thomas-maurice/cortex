@@ -15,7 +15,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strings"
 	"time"
 
 	"connectrpc.com/connect"
@@ -43,28 +42,6 @@ func parseHookEvent(r io.Reader) (hookEvent, error) {
 	return ev, nil
 }
 
-// formatRecall renders hits as the context block injected into the prompt. Each
-// memory carries its id so the model can edit/link/delete it, and the preamble
-// warns that matches are semantic and possibly stale.
-func formatRecall(hits []*cortexv1.Hit, maxChars int) string {
-	if len(hits) == 0 {
-		return ""
-	}
-	var b strings.Builder
-	b.WriteString("<cortex-recall>\n")
-	b.WriteString("Memories auto-recalled from Cortex for this prompt (semantic matches — possibly stale or irrelevant; verify before relying on them). Use cortex_memory_search for more.\n")
-	for _, h := range hits {
-		m := h.GetMemory()
-		text := strings.TrimSpace(m.GetText())
-		if maxChars > 0 && len(text) > maxChars {
-			text = text[:maxChars] + "… [truncated]"
-		}
-		fmt.Fprintf(&b, "\n### [%s] dist=%.2f id=%s\n%s\n", m.GetNamespace(), h.GetDistance(), m.GetId(), text)
-	}
-	b.WriteString("</cortex-recall>\n")
-	return b.String()
-}
-
 func hookCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "hook",
@@ -88,6 +65,8 @@ func hookRecallCmd() *cobra.Command {
 		maxQueryChunks int
 		dryRun         bool
 		dryPrompt      string
+		drySession     string
+		dryBlock       bool
 	)
 	cmd := &cobra.Command{
 		Use:   "recall",
@@ -104,8 +83,8 @@ func hookRecallCmd() *cobra.Command {
 					timeout = dryRunDefaultTimeout
 				}
 				return runRecallDryRun(cmd, recallDryRunOpts{
-					prompt: dryPrompt, namespace: namespace, timeout: timeout, maxChars: maxChars,
-					params: recall.Params{Limit: limit, MaxDistance: maxDistance, MinChars: minChars, MaxQueryChunks: maxQueryChunks},
+					prompt: dryPrompt, sessionID: drySession, showBlock: dryBlock, stateDB: stateDB, namespace: namespace, timeout: timeout,
+					params: recall.Params{Limit: limit, MaxDistance: maxDistance, MinChars: minChars, MaxQueryChunks: maxQueryChunks, MaxChars: maxChars},
 				})
 			}
 			ev, err := parseHookEvent(cmd.InOrStdin())
@@ -127,11 +106,13 @@ func hookRecallCmd() *cobra.Command {
 	cmd.Flags().IntVarP(&limit, "limit", "l", recall.DefaultLimit, "max memories injected per prompt")
 	cmd.Flags().Float32VarP(&maxDistance, "max-distance", "d", recall.DefaultMaxDistance, "relevance cutoff; stricter than interactive search so silence is the common case")
 	cmd.Flags().IntVar(&minChars, "min-chars", recall.DefaultMinChars, "skip prompts shorter than this (short continuations need no recall)")
-	cmd.Flags().IntVar(&maxChars, "max-chars", 1500, "truncate each injected memory to this many characters (0 = no cap)")
+	cmd.Flags().IntVar(&maxChars, "max-chars", recall.DefaultMaxChars, "truncate each injected memory to this many characters (0 = no cap)")
 	cmd.Flags().BoolVar(&reinforce, "reinforce", false, "count injections as recalls for the living-memory signal")
 	cmd.Flags().StringVar(&stateDB, "state-db", recallstate.DefaultPath(), "bbolt database for per-session dedup state, shared with the MCP server (empty disables dedup)")
 	cmd.Flags().IntVar(&maxQueryChunks, "max-query-chunks", recall.DefaultMaxQueryChunks, "long prompts are split into ~512-token chunks searched concurrently; beyond this many, chunks are sampled (first + last + evenly spaced middles). 0 = search every chunk")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "preview what the hook WOULD inject (server-side PreviewRecall) and print a table (--timeout defaults to 30s here; --limit 0 previews with 50); the prompt comes from --prompt or stdin (raw text or hook-event JSON); writes no recall state")
+	cmd.Flags().StringVar(&drySession, "session-id", "", "with --dry-run: session whose local recall state marks already-injected memories (default: session_id of hook-event JSON on stdin); read-only")
+	cmd.Flags().BoolVar(&dryBlock, "show-block", false, "with --dry-run: also print the exact <cortex-recall> block the hook would inject")
 	cmd.Flags().StringVar(&dryPrompt, "prompt", "", "with --dry-run: the prompt to preview (default: read stdin)")
 	return cmd
 }
@@ -183,6 +164,6 @@ func runRecall(ctx context.Context, out io.Writer, s recall.Searcher, ev hookEve
 	if len(fresh) == 0 {
 		return
 	}
-	_, _ = fmt.Fprint(out, formatRecall(fresh, maxChars))
+	_, _ = fmt.Fprint(out, recall.FormatBlock(fresh, maxChars))
 	seen.Add(freshIDs...)
 }

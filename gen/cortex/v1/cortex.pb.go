@@ -890,8 +890,11 @@ type PreviewRecallRequest struct {
 	MaxDistance    *float32               `protobuf:"fixed32,4,opt,name=max_distance,json=maxDistance,proto3,oneof" json:"max_distance,omitempty"`           // 0..2; 0 = no cutoff
 	MinChars       *int32                 `protobuf:"varint,5,opt,name=min_chars,json=minChars,proto3,oneof" json:"min_chars,omitempty"`                     // 0..10000: shorter prompts are skipped
 	MaxQueryChunks *int32                 `protobuf:"varint,6,opt,name=max_query_chunks,json=maxQueryChunks,proto3,oneof" json:"max_query_chunks,omitempty"` // 0..32; 0 = every chunk, capped at 32
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// max_chars truncates each injected memory in injected_block (hook
+	// --max-chars): 0..100000, 0 = no cap. Unset = the hook default (1500).
+	MaxChars      *int32 `protobuf:"varint,20,opt,name=max_chars,json=maxChars,proto3,oneof" json:"max_chars,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *PreviewRecallRequest) Reset() {
@@ -966,6 +969,13 @@ func (x *PreviewRecallRequest) GetMaxQueryChunks() int32 {
 	return 0
 }
 
+func (x *PreviewRecallRequest) GetMaxChars() int32 {
+	if x != nil && x.MaxChars != nil {
+		return *x.MaxChars
+	}
+	return 0
+}
+
 type RecallPreviewHit struct {
 	state    protoimpl.MessageState `protogen:"open.v1"`
 	Memory   *Memory                `protobuf:"bytes,1,opt,name=memory,proto3" json:"memory,omitempty"`
@@ -975,7 +985,11 @@ type RecallPreviewHit struct {
 	QueryIndex int32 `protobuf:"varint,3,opt,name=query_index,json=queryIndex,proto3" json:"query_index,omitempty"`
 	// reason is set on near misses only: "over_max_distance" (farther than the
 	// cutoff) or "over_limit" (within the cutoff but beyond the injection limit).
-	Reason        string `protobuf:"bytes,4,opt,name=reason,proto3" json:"reason,omitempty"`
+	Reason string `protobuf:"bytes,4,opt,name=reason,proto3" json:"reason,omitempty"`
+	// truncated is true when the hook would cut this memory's text to max_chars;
+	// text_chars is the memory's full (trimmed) length in bytes. Injected hits only.
+	Truncated     bool  `protobuf:"varint,20,opt,name=truncated,proto3" json:"truncated,omitempty"`
+	TextChars     int32 `protobuf:"varint,21,opt,name=text_chars,json=textChars,proto3" json:"text_chars,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1038,6 +1052,20 @@ func (x *RecallPreviewHit) GetReason() string {
 	return ""
 }
 
+func (x *RecallPreviewHit) GetTruncated() bool {
+	if x != nil {
+		return x.Truncated
+	}
+	return false
+}
+
+func (x *RecallPreviewHit) GetTextChars() int32 {
+	if x != nil {
+		return x.TextChars
+	}
+	return 0
+}
+
 type PreviewRecallResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// skipped is true when the hook would not search at all; skip_reason is
@@ -1054,7 +1082,11 @@ type PreviewRecallResponse struct {
 	MinChars       int32   `protobuf:"varint,9,opt,name=min_chars,json=minChars,proto3" json:"min_chars,omitempty"`
 	MaxQueryChunks int32   `protobuf:"varint,10,opt,name=max_query_chunks,json=maxQueryChunks,proto3" json:"max_query_chunks,omitempty"`
 	// note flags what the preview cannot know (per-session dedup).
-	Note          string `protobuf:"bytes,11,opt,name=note,proto3" json:"note,omitempty"`
+	Note string `protobuf:"bytes,11,opt,name=note,proto3" json:"note,omitempty"`
+	// injected_block is the EXACT text the hook would print for context injection
+	// (the <cortex-recall> block, truncation included); empty when nothing is injected.
+	InjectedBlock string `protobuf:"bytes,20,opt,name=injected_block,json=injectedBlock,proto3" json:"injected_block,omitempty"`
+	MaxChars      int32  `protobuf:"varint,21,opt,name=max_chars,json=maxChars,proto3" json:"max_chars,omitempty"` // effective per-memory cap (0 = none)
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1164,6 +1196,20 @@ func (x *PreviewRecallResponse) GetNote() string {
 		return x.Note
 	}
 	return ""
+}
+
+func (x *PreviewRecallResponse) GetInjectedBlock() string {
+	if x != nil {
+		return x.InjectedBlock
+	}
+	return ""
+}
+
+func (x *PreviewRecallResponse) GetMaxChars() int32 {
+	if x != nil {
+		return x.MaxChars
+	}
+	return 0
 }
 
 type GetMemoryRequest struct {
@@ -6089,25 +6135,31 @@ const file_cortex_v1_cortex_proto_rawDesc = "" +
 	"\x0eSearchResponse\x12\"\n" +
 	"\x04hits\x18\x01 \x03(\v2\x0e.cortex.v1.HitR\x04hits\";\n" +
 	"\x15SearchSimilarResponse\x12\"\n" +
-	"\x04hits\x18\x01 \x03(\v2\x0e.cortex.v1.HitR\x04hits\"\x9e\x02\n" +
+	"\x04hits\x18\x01 \x03(\v2\x0e.cortex.v1.HitR\x04hits\"\xce\x02\n" +
 	"\x14PreviewRecallRequest\x12\x16\n" +
 	"\x06prompt\x18\x01 \x01(\tR\x06prompt\x12\x1c\n" +
 	"\tnamespace\x18\x02 \x01(\tR\tnamespace\x12\x19\n" +
 	"\x05limit\x18\x03 \x01(\x05H\x00R\x05limit\x88\x01\x01\x12&\n" +
 	"\fmax_distance\x18\x04 \x01(\x02H\x01R\vmaxDistance\x88\x01\x01\x12 \n" +
 	"\tmin_chars\x18\x05 \x01(\x05H\x02R\bminChars\x88\x01\x01\x12-\n" +
-	"\x10max_query_chunks\x18\x06 \x01(\x05H\x03R\x0emaxQueryChunks\x88\x01\x01B\b\n" +
+	"\x10max_query_chunks\x18\x06 \x01(\x05H\x03R\x0emaxQueryChunks\x88\x01\x01\x12 \n" +
+	"\tmax_chars\x18\x14 \x01(\x05H\x04R\bmaxChars\x88\x01\x01B\b\n" +
 	"\x06_limitB\x0f\n" +
 	"\r_max_distanceB\f\n" +
 	"\n" +
 	"_min_charsB\x13\n" +
-	"\x11_max_query_chunks\"\x92\x01\n" +
+	"\x11_max_query_chunksB\f\n" +
+	"\n" +
+	"_max_chars\"\xcf\x01\n" +
 	"\x10RecallPreviewHit\x12)\n" +
 	"\x06memory\x18\x01 \x01(\v2\x11.cortex.v1.MemoryR\x06memory\x12\x1a\n" +
 	"\bdistance\x18\x02 \x01(\x02R\bdistance\x12\x1f\n" +
 	"\vquery_index\x18\x03 \x01(\x05R\n" +
 	"queryIndex\x12\x16\n" +
-	"\x06reason\x18\x04 \x01(\tR\x06reason\"\x9a\x03\n" +
+	"\x06reason\x18\x04 \x01(\tR\x06reason\x12\x1c\n" +
+	"\ttruncated\x18\x14 \x01(\bR\ttruncated\x12\x1d\n" +
+	"\n" +
+	"text_chars\x18\x15 \x01(\x05R\ttextChars\"\xde\x03\n" +
 	"\x15PreviewRecallResponse\x12\x18\n" +
 	"\askipped\x18\x01 \x01(\bR\askipped\x12\x1f\n" +
 	"\vskip_reason\x18\x02 \x01(\tR\n" +
@@ -6122,7 +6174,9 @@ const file_cortex_v1_cortex_proto_rawDesc = "" +
 	"\tmin_chars\x18\t \x01(\x05R\bminChars\x12(\n" +
 	"\x10max_query_chunks\x18\n" +
 	" \x01(\x05R\x0emaxQueryChunks\x12\x12\n" +
-	"\x04note\x18\v \x01(\tR\x04note\"\"\n" +
+	"\x04note\x18\v \x01(\tR\x04note\x12%\n" +
+	"\x0einjected_block\x18\x14 \x01(\tR\rinjectedBlock\x12\x1b\n" +
+	"\tmax_chars\x18\x15 \x01(\x05R\bmaxChars\"\"\n" +
 	"\x10GetMemoryRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\">\n" +
 	"\x11GetMemoryResponse\x12)\n" +

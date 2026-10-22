@@ -22,6 +22,7 @@ const (
 	previewMaxLimit       = 50
 	previewMaxMinChars    = 10000
 	previewMaxQueryChunks = 32
+	previewMaxChars       = 100000
 	previewMaxDistanceCap = 2 // cosine distance range is [0, 2]
 
 	// previewDedupNote is returned on every response: the hook's per-session
@@ -41,6 +42,13 @@ func previewParams(req *cortexv1.PreviewRecallRequest) (recall.Params, error) {
 		MaxDistance:    recall.DefaultMaxDistance,
 		MinChars:       recall.DefaultMinChars,
 		MaxQueryChunks: recall.DefaultMaxQueryChunks,
+		MaxChars:       recall.DefaultMaxChars,
+	}
+	if req.MaxChars != nil {
+		p.MaxChars = int(*req.MaxChars)
+		if p.MaxChars < 0 || p.MaxChars > previewMaxChars {
+			return p, invalidArg("max_chars must be between 0 and %d (0 = no cap)", previewMaxChars)
+		}
 	}
 	if req.Limit != nil {
 		p.Limit = int(*req.Limit)
@@ -140,6 +148,7 @@ func (s *Service) PreviewRecall(ctx context.Context, req *connect.Request[cortex
 		MaxDistance:    p.MaxDistance,
 		MinChars:       int32(p.MinChars),
 		MaxQueryChunks: int32(p.MaxQueryChunks),
+		MaxChars:       int32(p.MaxChars),
 		Note:           previewDedupNote,
 	}
 	if reason := recall.SkipReason(prompt, p.MinChars); reason != "" {
@@ -168,11 +177,16 @@ func (s *Service) PreviewRecall(ctx context.Context, req *connect.Request[cortex
 
 	out.Queries = res.Queries
 	out.TotalChunks = int32(res.Total)
+	injectedHits := make([]*cortexv1.Hit, 0, len(res.Injected))
 	for _, m := range res.Injected {
+		n := recall.TextLen(m.Hit)
 		out.Injected = append(out.Injected, &cortexv1.RecallPreviewHit{
 			Memory: m.Hit.GetMemory(), Distance: m.Hit.GetDistance(), QueryIndex: int32(m.Query),
+			Truncated: p.MaxChars > 0 && n > p.MaxChars, TextChars: int32(n),
 		})
+		injectedHits = append(injectedHits, m.Hit)
 	}
+	out.InjectedBlock = recall.FormatBlock(injectedHits, p.MaxChars)
 	for _, nm := range misses {
 		out.NearMisses = append(out.NearMisses, &cortexv1.RecallPreviewHit{
 			Memory: nm.Match.Hit.GetMemory(), Distance: nm.Match.Hit.GetDistance(), QueryIndex: int32(nm.Match.Query), Reason: nm.Reason,

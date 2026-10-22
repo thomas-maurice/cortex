@@ -153,7 +153,7 @@ hook would skip (slash/bang command, under min chars) says so. Read-only: tenant
 scoped, no reinforcement. **Per-session dedup is not simulated** (client-local
 bbolt state the server cannot see) and the view says so. Near-miss distances come
 from a second, wider search, so they can differ slightly from the injected set's.
-CLI twin: `cortex hook recall --dry-run`.
+Each injected hit shows a *truncated to N of M chars* badge when the hook's `--max-chars` would cut it, and a "Show injected text" expander prints the exact `<cortex-recall>` block (`injected_block`, built by the same `recall.FormatBlock` the hook uses). An empty namespace is sent as `*` (the hook's scope). CLI twin: `cortex hook recall --dry-run`.
 
 ## Memory linking — three ways things get connected
 

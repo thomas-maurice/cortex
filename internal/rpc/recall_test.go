@@ -40,6 +40,8 @@ func TestPreviewRecallValidation(t *testing.T) {
 		"negative distance":   {Prompt: "a valid prompt here", MaxDistance: ptr(float32(-0.1))},
 		"distance too high":   {Prompt: "a valid prompt here", MaxDistance: ptr(float32(2.5))},
 		"negative min chars":  {Prompt: "a valid prompt here", MinChars: ptr(int32(-1))},
+		"negative max chars":  {Prompt: "a valid prompt here", MaxChars: ptr(int32(-1))},
+		"max chars too high":  {Prompt: "a valid prompt here", MaxChars: ptr(int32(previewMaxChars + 1))},
 		"min chars too high":  {Prompt: "a valid prompt here", MinChars: ptr(int32(previewMaxMinChars + 1))},
 		"negative chunks":     {Prompt: "a valid prompt here", MaxQueryChunks: ptr(int32(-1))},
 		"too many max chunks": {Prompt: "a valid prompt here", MaxQueryChunks: ptr(int32(previewMaxQueryChunks + 1))},
@@ -169,6 +171,23 @@ func TestPreviewRecallIntegration(t *testing.T) {
 		assert.Equal(t, recall.ReasonOverLimit, nm.GetReason(), "cutoff is wide, so the limit is the only reason")
 	}
 	assert.Equal(t, []string{"alice recall hook near memory"}, got.GetQueries())
+
+	t.Run("injected block is the exact hook output and flags truncation", func(t *testing.T) {
+		got := preview(alice, &cortexv1.PreviewRecallRequest{
+			Prompt: "alice recall hook near memory", Namespace: "*", Limit: ptr(int32(1)), MaxDistance: ptr(float32(2)), MaxChars: ptr(int32(10)),
+		})
+		require.Len(t, got.GetInjected(), 1)
+		h := got.GetInjected()[0]
+		assert.True(t, h.GetTruncated(), "text is longer than 10 chars")
+		assert.Equal(t, int32(len("alice recall hook near memory")), h.GetTextChars())
+		assert.Equal(t, int32(10), got.GetMaxChars())
+		assert.Equal(t, recall.FormatBlock([]*cortexv1.Hit{{Memory: h.GetMemory(), Distance: h.GetDistance()}}, 10), got.GetInjectedBlock())
+		assert.Contains(t, got.GetInjectedBlock(), "alice reca… [truncated]")
+
+		full := preview(alice, &cortexv1.PreviewRecallRequest{Prompt: "alice recall hook near memory", Namespace: "*", Limit: ptr(int32(1)), MaxDistance: ptr(float32(2))})
+		assert.False(t, full.GetInjected()[0].GetTruncated(), "default 1500 cap does not cut a short memory")
+		assert.Equal(t, int32(recall.DefaultMaxChars), full.GetMaxChars())
+	})
 
 	t.Run("another tenant sees nothing", func(t *testing.T) {
 		got := preview(bob, &cortexv1.PreviewRecallRequest{

@@ -323,6 +323,9 @@ message PreviewRecallRequest {
   optional float max_distance = 4;     // 0..2; 0 = no cutoff
   optional int32 min_chars = 5;        // 0..10000: shorter prompts are skipped
   optional int32 max_query_chunks = 6; // 0..32; 0 = every chunk, capped at 32
+  // max_chars truncates each injected memory in injected_block (hook
+  // --max-chars): 0..100000, 0 = no cap. Unset = the hook default (1500).
+  optional int32 max_chars = 20;
 }
 
 message RecallPreviewHit {
@@ -334,6 +337,10 @@ message RecallPreviewHit {
   // reason is set on near misses only: "over_max_distance" (farther than the
   // cutoff) or "over_limit" (within the cutoff but beyond the injection limit).
   string reason = 4;
+  // truncated is true when the hook would cut this memory's text to max_chars;
+  // text_chars is the memory's full (trimmed) length in bytes. Injected hits only.
+  bool truncated = 20;
+  int32 text_chars = 21;
 }
 
 message PreviewRecallResponse {
@@ -352,6 +359,10 @@ message PreviewRecallResponse {
   int32 max_query_chunks = 10;
   // note flags what the preview cannot know (per-session dedup).
   string note = 11;
+  // injected_block is the EXACT text the hook would print for context injection
+  // (the <cortex-recall> block, truncation included); empty when nothing is injected.
+  string injected_block = 20;
+  int32 max_chars = 21; // effective per-memory cap (0 = none)
 }
 
 message GetMemoryRequest {

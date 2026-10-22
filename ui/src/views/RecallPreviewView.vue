@@ -34,6 +34,10 @@
         <Label class="text-xs" title="long prompts are sampled down to this many chunks; 0 = every chunk (hook --max-query-chunks)">Max query chunks</Label>
         <Input v-model.number="maxQueryChunks" type="number" min="0" max="32" />
       </div>
+      <div class="grid gap-1.5" style="width: 100px">
+        <Label class="text-xs" title="each injected memory is cut to this many characters; 0 = no cap (hook --max-chars)">Max chars</Label>
+        <Input v-model.number="maxChars" type="number" min="0" max="100000" />
+      </div>
       <Button :disabled="loading || !prompt.trim()" @click="run">
         <Loader2 v-if="loading" class="size-4 animate-spin" /><Eye v-else class="size-4" />Preview
       </Button>
@@ -68,6 +72,11 @@
           </ol>
         </details>
 
+        <details v-if="result.injectedBlock" class="text-sm">
+          <summary class="cursor-pointer text-muted-foreground">Show injected text (exactly what the model sees)</summary>
+          <pre class="mt-2 max-h-96 overflow-auto whitespace-pre-wrap rounded border p-2 text-xs">{{ result.injectedBlock }}</pre>
+        </details>
+
         <section class="space-y-2">
           <h2 class="text-sm font-semibold">Would be injected ({{ result.injected.length }})</h2>
           <div v-if="result.injected.length === 0" class="rounded-md border border-dashed py-6 text-center text-muted-foreground">
@@ -80,6 +89,9 @@
                 <span class="font-mono text-xs">dist {{ h.distance.toFixed(3) }}</span>
                 <Badge variant="secondary" :style="nsChipStyle(h.memory.namespace, theme === 'dark')">{{ h.memory.namespace }}</Badge>
                 <span v-if="result.queries.length > 1" class="text-xs text-muted-foreground">matched chunk #{{ h.queryIndex }}</span>
+                <Badge v-if="h.truncated" variant="outline" title="the hook cuts each memory to max chars; the relevant part may be past the cut">
+                  truncated to {{ result.maxChars }} of {{ h.textChars }} chars
+                </Badge>
               </div>
               <button type="button" class="block w-full text-left text-sm hover:underline" @click="openInspector(h.memory)">
                 {{ truncate(h.memory.text, 300) }}
@@ -154,7 +166,7 @@ const router = useRouter()
 const auth = useAuthStore()
 
 // Defaults mirror `cortex hook recall` (internal/recall Default* constants).
-const DEFAULTS = { limit: 3, maxDistance: 0.5, minChars: 12, maxQueryChunks: 4 }
+const DEFAULTS = { limit: 3, maxDistance: 0.5, minChars: 12, maxQueryChunks: 4, maxChars: 1500 }
 
 const prompt = ref('')
 const namespace = ref('*')
@@ -162,6 +174,7 @@ const limit = ref(DEFAULTS.limit)
 const maxDistance = ref(DEFAULTS.maxDistance)
 const minChars = ref(DEFAULTS.minChars)
 const maxQueryChunks = ref(DEFAULTS.maxQueryChunks)
+const maxChars = ref(DEFAULTS.maxChars)
 const loading = ref(false)
 const error = ref('')
 const result = ref(null)
@@ -169,6 +182,8 @@ const result = ref(null)
 let reqId = 0
 
 function resetDefaults() {
+  namespace.value = '*'
+  maxChars.value = DEFAULTS.maxChars
   limit.value = DEFAULTS.limit
   maxDistance.value = DEFAULTS.maxDistance
   minChars.value = DEFAULTS.minChars
@@ -193,11 +208,13 @@ async function run() {
     // PreviewRecall is read-only: tenant-scoped, never reinforces.
     const res = await memoryClient.previewRecall({
       prompt: prompt.value,
-      namespace: namespace.value,
+      // The hook searches '*'; the server would map '' to its default namespace.
+      namespace: namespace.value.trim() || '*',
       limit: limit.value,
       maxDistance: maxDistance.value,
       minChars: minChars.value,
       maxQueryChunks: maxQueryChunks.value,
+      maxChars: maxChars.value,
     })
     if (my !== reqId) return
     result.value = res

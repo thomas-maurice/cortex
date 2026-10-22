@@ -14,6 +14,7 @@ import (
 
 	cortexv1 "github.com/thomas-maurice/cortex/gen/cortex/v1"
 	"github.com/thomas-maurice/cortex/internal/recall"
+	"github.com/thomas-maurice/cortex/internal/recallstate"
 )
 
 func TestParseHookEvent(t *testing.T) {
@@ -34,11 +35,11 @@ func hit(id string, dist float32) *cortexv1.Hit {
 // and honor the truncation cap (memories can be pages long; the hook must not
 // flood the context).
 func TestFormatRecall(t *testing.T) {
-	assert.Empty(t, formatRecall(nil, 100))
+	assert.Empty(t, recall.FormatBlock(nil, 100))
 
 	long := hit("mem-1", 0.25)
 	long.Memory.Text = strings.Repeat("x", 200)
-	out := formatRecall([]*cortexv1.Hit{long}, 50)
+	out := recall.FormatBlock([]*cortexv1.Hit{long}, 50)
 	assert.Contains(t, out, "id=mem-1")
 	assert.Contains(t, out, "[ns]")
 	assert.Contains(t, out, "[truncated]")
@@ -161,28 +162,52 @@ func TestHookRecallCommandFailsOpenWhenServerDown(t *testing.T) {
 	assert.Empty(t, out.String())
 }
 
-func TestPromptFromInput(t *testing.T) {
-	assert.Equal(t, "hello from the hook", promptFromInput(`{"session_id":"x","prompt":"hello from the hook"}`))
-	assert.Equal(t, "raw text prompt", promptFromInput("raw text prompt"))
-	assert.Equal(t, `{"not":"an event"}`, promptFromInput(`{"not":"an event"}`), "JSON without a prompt is treated as raw text")
+func TestParseDryRunInput(t *testing.T) {
+	p, sess := parseDryRunInput(`{"session_id":"x","prompt":"hello from the hook"}`)
+	assert.Equal(t, "hello from the hook", p)
+	assert.Equal(t, "x", sess, "session id travels with a replayed hook event")
+	p, sess = parseDryRunInput("raw text prompt")
+	assert.Equal(t, "raw text prompt", p)
+	assert.Empty(t, sess)
+	p, _ = parseDryRunInput(`{"not":"an event"}`)
+	assert.Equal(t, `{"not":"an event"}`, p, "JSON without a prompt is treated as raw text")
 }
 
 func TestPrintRecallPreview(t *testing.T) {
+	resp := &cortexv1.PreviewRecallResponse{
+		Queries: []string{"q"}, TotalChunks: 1, Limit: 2, MaxDistance: 0.5, MinChars: 12, MaxQueryChunks: 4, MaxChars: 100,
+		Injected: []*cortexv1.RecallPreviewHit{
+			{Memory: &cortexv1.Memory{Id: "m1", Namespace: "ns", Text: "hello"}, Distance: 0.1, TextChars: 5},
+			{Memory: &cortexv1.Memory{Id: "m-seen", Namespace: "ns", Text: "long"}, Distance: 0.2, TextChars: 900, Truncated: true},
+		},
+		NearMisses:    []*cortexv1.RecallPreviewHit{{Memory: &cortexv1.Memory{Id: "m2", Text: "x"}, Distance: 0.7, Reason: recall.ReasonOverMaxDistance}},
+		InjectedBlock: "<cortex-recall>BLOCK</cortex-recall>",
+		Note:          "dedup not simulated",
+	}
+
+	// Session state written the way the hook writes it, then read back read-only.
+	db := filepath.Join(t.TempDir(), "state.db")
+	recallstate.Load(db, "sess").Add("m-seen")
+	seen := recallstate.LoadReadOnly(db, "sess")
+
 	var b bytes.Buffer
-	printRecallPreview(&b, &cortexv1.PreviewRecallResponse{
-		Queries: []string{"q"}, TotalChunks: 1, Limit: 1, MaxDistance: 0.5, MinChars: 12, MaxQueryChunks: 4,
-		Injected:   []*cortexv1.RecallPreviewHit{{Memory: &cortexv1.Memory{Id: "m1", Namespace: "ns", Text: "hello"}, Distance: 0.1}},
-		NearMisses: []*cortexv1.RecallPreviewHit{{Memory: &cortexv1.Memory{Id: "m2", Text: "x"}, Distance: 0.7, Reason: recall.ReasonOverMaxDistance}},
-		Note:       "dedup not simulated",
-	}, "*", 1500)
+	printRecallPreview(&b, resp, "*", seen, true)
 	out := b.String()
-	assert.Contains(t, out, "Would inject (1)")
-	assert.Contains(t, out, "m1")
+	assert.Contains(t, out, "Would inject (2)")
+	assert.Contains(t, out, "100 of 900 (TRUNCATED)", "the model sees only the first max-chars of a long memory")
+	assert.Contains(t, out, "m-seen: already injected this session (dedup)")
+	assert.NotContains(t, out, "m1: already injected")
 	assert.Contains(t, out, "over_max_distance")
+	assert.Contains(t, out, "<cortex-recall>BLOCK</cortex-recall>")
 	assert.Contains(t, out, "dedup not simulated")
 
 	b.Reset()
-	printRecallPreview(&b, &cortexv1.PreviewRecallResponse{Skipped: true, SkipReason: recall.SkipTooShort, Note: "n"}, "*", 1500)
+	printRecallPreview(&b, resp, "*", nil, false)
+	assert.NotContains(t, b.String(), "BLOCK")
+	assert.NotContains(t, b.String(), "already injected")
+
+	b.Reset()
+	printRecallPreview(&b, &cortexv1.PreviewRecallResponse{Skipped: true, SkipReason: recall.SkipTooShort, Note: "n"}, "*", nil, false)
 	assert.Contains(t, b.String(), "SKIP")
 	assert.NotContains(t, b.String(), "Would inject")
 }

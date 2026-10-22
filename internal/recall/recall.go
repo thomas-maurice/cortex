@@ -10,6 +10,7 @@ package recall
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"sort"
 	"strings"
@@ -25,6 +26,7 @@ const (
 	DefaultMaxDistance    = float32(0.5)
 	DefaultMinChars       = 12
 	DefaultMaxQueryChunks = 4
+	DefaultMaxChars       = 1500
 
 	// NearMissCount is how many results beyond the injection set a preview shows.
 	NearMissCount = 5
@@ -56,6 +58,7 @@ type Params struct {
 	MaxDistance    float32
 	MinChars       int
 	MaxQueryChunks int
+	MaxChars       int // per-memory truncation of the injected block; only FormatBlock/previews use it
 }
 
 // SkipReason reports why a prompt is not worth searching, or "" if it is. Slash
@@ -292,3 +295,33 @@ func Preview(ctx context.Context, s Searcher, prompt string, p Params) (Result, 
 	}
 	return res, misses
 }
+
+// FormatBlock renders hits as the context block the hook injects. Each memory
+// carries its id so the model can edit/link/delete it, and the preamble warns
+// that matches are semantic and possibly stale. maxChars <= 0 = no truncation.
+func FormatBlock(hits []*cortexv1.Hit, maxChars int) string {
+	if len(hits) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("<cortex-recall>\n")
+	b.WriteString("Memories auto-recalled from Cortex for this prompt (semantic matches — possibly stale or irrelevant; verify before relying on them). Use cortex_memory_search for more.\n")
+	for _, h := range hits {
+		m := h.GetMemory()
+		text := Truncate(strings.TrimSpace(m.GetText()), maxChars)
+		fmt.Fprintf(&b, "\n### [%s] dist=%.2f id=%s\n%s\n", m.GetNamespace(), h.GetDistance(), m.GetId(), text)
+	}
+	b.WriteString("</cortex-recall>\n")
+	return b.String()
+}
+
+// Truncate cuts already-trimmed text to maxChars bytes the way the hook does.
+func Truncate(text string, maxChars int) string {
+	if maxChars > 0 && len(text) > maxChars {
+		return text[:maxChars] + "… [truncated]"
+	}
+	return text
+}
+
+// TextLen is the length FormatBlock compares against maxChars.
+func TextLen(h *cortexv1.Hit) int { return len(strings.TrimSpace(h.GetMemory().GetText())) }
