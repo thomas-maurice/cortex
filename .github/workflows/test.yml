@@ -77,7 +77,9 @@ jobs:
           CORTEX_TEST_WEAVIATE_GRPC: localhost:50055
 
       - name: Test (multi-tenant)
-        run: go test -race ./internal/store/...
+        # -p 1: store and rpc integration tests both drop/recreate the same
+        # Weaviate classes, so their packages must not run concurrently.
+        run: go test -race -p 1 ./internal/store/... ./internal/rpc/...
         env:
           CORTEX_TEST_WEAVIATE_REST: localhost:8085
           CORTEX_TEST_WEAVIATE_GRPC: localhost:50055

@@ -754,6 +754,82 @@ export class SearchSimilarResponse extends Message<SearchSimilarResponse> {
 }
 
 /**
+ * @generated from message cortex.v1.GetMemoryRequest
+ */
+export class GetMemoryRequest extends Message<GetMemoryRequest> {
+  /**
+   * the memory's UUID
+   *
+   * @generated from field: string id = 1;
+   */
+  id = "";
+
+  constructor(data?: PartialMessage<GetMemoryRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "cortex.v1.GetMemoryRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): GetMemoryRequest {
+    return new GetMemoryRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): GetMemoryRequest {
+    return new GetMemoryRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): GetMemoryRequest {
+    return new GetMemoryRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: GetMemoryRequest | PlainMessage<GetMemoryRequest> | undefined, b: GetMemoryRequest | PlainMessage<GetMemoryRequest> | undefined): boolean {
+    return proto3.util.equals(GetMemoryRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message cortex.v1.GetMemoryResponse
+ */
+export class GetMemoryResponse extends Message<GetMemoryResponse> {
+  /**
+   * @generated from field: cortex.v1.Memory memory = 1;
+   */
+  memory?: Memory;
+
+  constructor(data?: PartialMessage<GetMemoryResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "cortex.v1.GetMemoryResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "memory", kind: "message", T: Memory },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): GetMemoryResponse {
+    return new GetMemoryResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): GetMemoryResponse {
+    return new GetMemoryResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): GetMemoryResponse {
+    return new GetMemoryResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: GetMemoryResponse | PlainMessage<GetMemoryResponse> | undefined, b: GetMemoryResponse | PlainMessage<GetMemoryResponse> | undefined): boolean {
+    return proto3.util.equals(GetMemoryResponse, a, b);
+  }
+}
+
+/**
  * @generated from message cortex.v1.ListRequest
  */
 export class ListRequest extends Message<ListRequest> {

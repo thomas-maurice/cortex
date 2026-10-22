@@ -155,7 +155,7 @@ The MCP client also stamps each save with the Claude Code session ID (read from
 > `http://localhost:8088`.
 
 Verify it's connected with `/mcp` inside Claude — you should see `cortex` with
-its tools: `cortex_memory_save`, `cortex_memory_search`, `cortex_memory_delete`,
+its tools: `cortex_memory_save`, `cortex_memory_search`, `cortex_memory_get`, `cortex_memory_delete`,
 `cortex_memory_link`, `cortex_memory_unlink`, `cortex_consolidate`,
 `cortex_review_candidates`, `cortex_dismiss_duplicate`, `cortex_session_summarize`,
 and `cortex_recall_session`.
@@ -450,6 +450,7 @@ The MCP server exposes these tools to Claude:
 |------|--------------|
 | `cortex_memory_save` | Queue a memory for indexing. Args: `text`, `namespace?`, `tags?`, `linkTo?` (ids to bidirectionally link this memory to — queued and applied once both ends are indexed, so targets need not exist yet), `supersedes?` (ids this memory replaces — the worker deletes them once this one is indexed). Returns its `id`. |
 | `cortex_memory_search` | **Hybrid** search (BM25 keyword + vector, blended by `SEARCH_ALPHA`, default 0.5) so exact tokens/codenames resolve, not just semantic matches. Args: `query`, `namespace?` (`*` = all namespaces), `limit?`, `tags?` (must have all), `excludeTags?`, `maxDistance?` (relevance cutoff). Each hit includes its `id`, any `linkedIds`, and any `dupCandidates` (flagged likely-duplicates — the output hints when consolidation would help). When **living memory** is enabled (`RERANK_WEIGHT`>0, off by default), search also re-orders results by recency-decayed usage and reinforces its top hit(s) — frequently-recalled memories float up over time. See [`docs/DESIGN.md`](docs/DESIGN.md#living-memory--decay--reinforcement-opt-in). |
+| `cortex_memory_get` | Fetch ONE memory by `id`, full text (follow `linkedIds` from search hits, or ids from `cortex_consolidate` / `cortex_review_candidates`). Same shape as a search hit; counts as delivered for session dedup so later searches stub it; does not reinforce. |
 | `cortex_memory_delete` | Delete a memory by `id` (get the `id` from a `cortex_memory_search` result first). |
 | `cortex_memory_link` | Explicitly link two related memories (bidirectional) so they connect in the graph. Args: `id`, `targetId` — from a prior search/recall, or an id just returned by `cortex_memory_save`. The edge is queued on the `memory.link` subject and applied once both endpoints are indexed (it waits for them), so out-of-order/just-saved ids link correctly. Claude is told to do this proactively when two memories are meaningfully related. |
 | `cortex_memory_unlink` | Remove the link between two memories (queued, applied asynchronously). Args: `id`, `targetId`. |
@@ -629,6 +630,7 @@ authenticate with `--token` / `CORTEX_AUTH_TOKEN`.
 |---------|--------------|
 | `cortex save "<text>" -n <ns> -t tag [-S <id>]` | Queue a memory (server publishes to NATS). `-S/--supersedes` lists ids this memory replaces (deleted after indexing). |
 | `cortex list -n '*' [-t tag] [-x tag]` | List memories newest-first; filter by namespace/tags. |
+| `cortex get <id> [--json]` | Show one memory by id (incl. linked ids); `--json` uses the `export` record shape. |
 | `cortex search "<q>" [-d 0.6] [-t tag] [-x tag]` | Semantic search with a relevance cutoff and tag filters. |
 | `cortex consolidate "<topic>" [-n '*'] [-l N] [-t tag] [-x tag]` | Print the cluster of memories about a topic + their manifest (read-only gather; the LLM does the merge). No tag flag = no tag filter (whole cluster). |
 | `cortex delete <id>` | Delete a memory by ID. |

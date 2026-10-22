@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strings"
@@ -363,7 +364,7 @@ func main() {
 		pf.StringVar(s.target, s.key, s.def, s.usage)
 	}
 
-	root.AddCommand(saveCmd(), editCmd(), listCmd(), searchCmd(), deleteCmd(), exportCmd(), importCmd(), reindexCmd(), deadCmd(), statusCmd(), doctorCmd(), summarizeCmd(), summariesCmd(), recallCmd(), candidatesCmd(), consolidateCmd(), hashPasswordCmd(), configCmd(), onboardCmd(), migrateMTCmd(), usersCmd(), upgradeCmd(), versionCmd(), backupCmd(), restoreCmd(), hookCmd(), stateCmd())
+	root.AddCommand(saveCmd(), editCmd(), listCmd(), getCmd(), searchCmd(), deleteCmd(), exportCmd(), importCmd(), reindexCmd(), deadCmd(), statusCmd(), doctorCmd(), summarizeCmd(), summariesCmd(), recallCmd(), candidatesCmd(), consolidateCmd(), hashPasswordCmd(), configCmd(), onboardCmd(), migrateMTCmd(), usersCmd(), upgradeCmd(), versionCmd(), backupCmd(), restoreCmd(), hookCmd(), stateCmd())
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -490,6 +491,73 @@ func listCmd() *cobra.Command {
 	cmd.Flags().StringSliceVarP(&anyTags, "any-tag", "T", nil, "require at least one of these tags (repeatable)")
 	cmd.Flags().StringSliceVarP(&excludeTags, "exclude-tag", "x", nil, "drop memories with this tag (repeatable)")
 	return cmd
+}
+
+func getCmd() *cobra.Command {
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "get <id>",
+		Short: "Show one memory by ID (follow linked ids from list or search)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			id := strings.TrimSpace(args[0])
+			if id == "" {
+				return fmt.Errorf("id must not be empty")
+			}
+			resp, err := client().GetMemory(cmd.Context(), connect.NewRequest(&cortexv1.GetMemoryRequest{Id: id}))
+			if err != nil {
+				return err
+			}
+			return printGotMemory(os.Stdout, resp.Msg.GetMemory(), asJSON)
+		},
+	}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "print the memory as JSON")
+	return cmd
+}
+
+// printGotMemory renders a single fetched memory: the JSON shape matches
+// `cortex export`; the text form is printMemory's plus the link/provenance
+// lines that make following a graph edge possible.
+func printGotMemory(w io.Writer, m *cortexv1.Memory, asJSON bool) error {
+	if asJSON {
+		rec := exportRecord{
+			ID:             m.GetId(),
+			Text:           m.GetText(),
+			Namespace:      m.GetNamespace(),
+			Tags:           m.GetTags(),
+			Source:         m.GetSource(),
+			Model:          m.GetModel(),
+			Dims:           m.GetDims(),
+			ConversationID: m.GetConversationId(),
+			LinkedIDs:      m.GetLinkedIds(),
+			NotDuplicateOf: m.GetNotDuplicateOf(),
+		}
+		if ts := m.GetCreatedAt(); ts != nil {
+			rec.CreatedAt = ts.AsTime().UTC().Format(time.RFC3339)
+		}
+		b, err := json.MarshalIndent(rec, "", "  ")
+		if err != nil {
+			return err
+		}
+		_, err = fmt.Fprintln(w, string(b))
+		return err
+	}
+	line := fmt.Sprintf("[%s] %s", m.GetNamespace(), m.GetText())
+	if tags := m.GetTags(); len(tags) > 0 {
+		line += "  #" + strings.Join(tags, " #")
+	}
+	meta := "id=" + m.GetId()
+	if m.GetModel() != "" {
+		meta += fmt.Sprintf("  model=%s dims=%d", m.GetModel(), m.GetDims())
+	}
+	if _, err := fmt.Fprintf(w, "%s\n   %s\n", line, meta); err != nil {
+		return err
+	}
+	if links := m.GetLinkedIds(); len(links) > 0 {
+		_, err := fmt.Fprintf(w, "   links=%s\n", strings.Join(links, ","))
+		return err
+	}
+	return nil
 }
 
 func searchCmd() *cobra.Command {

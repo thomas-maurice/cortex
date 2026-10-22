@@ -243,6 +243,7 @@ and scripting without going through Claude. Global flags: `--server`
 | `save "<text>" [-n ns] [-t tag]… [-L <id>]… [-S <id>]…` | Queue a memory. `-L/--link-to` links to existing ids (applied after indexing); `-S/--supersedes` deletes the ids it replaces once indexed. |
 | `edit <id> "<text>" [-n ns] [-t tag]… [--replace-tags]` | Replace text (re-embeds), keeping id/links/history. Tags kept unless `-t` given; namespace kept unless `-n`. |
 | `list [-n '*'] [-l N] [-t tag] [-T anyTag] [-x excludeTag]` | List newest-first with tag/namespace filters. |
+| `get <id> [--json]` | Show one memory by id (full text + linked ids) via the `GetMemory` RPC (tenant-scoped; NotFound for unknown/other-tenant ids; no reinforcement). Same RPC backs the `cortex_memory_get` MCP tool, which also marks the id delivered in recallstate. |
 | `search "<q>" [-n '*'] [-l N] [-d 0.6] [--autocut N] [-t/-T/-x tag] [--reinforce]` | Hybrid (BM25+vector) semantic search. `-d` = distance cutoff. CLI does NOT reinforce by default. |
 | `delete <id>` | Delete one memory by id. |
 | `export [-n '*'] [-o file]` | Dump memories (text+metadata, no vectors) to JSON (stdout by default). |

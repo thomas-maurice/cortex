@@ -407,6 +407,33 @@ func (s *Service) List(ctx context.Context, req *connect.Request[cortexv1.ListRe
 	return connect.NewResponse(out), nil
 }
 
+// GetMemory returns one memory by id from the caller's tenant. The lookup is
+// tenant-scoped, so another tenant's id is indistinguishable from an unknown one
+// (both NotFound). It deliberately does NOT reinforce: reading a known id is not
+// a search hit and must not inflate the usage signal ranking depends on.
+func (s *Service) GetMemory(ctx context.Context, req *connect.Request[cortexv1.GetMemoryRequest]) (*connect.Response[cortexv1.GetMemoryResponse], error) {
+	id := strings.TrimSpace(req.Msg.GetId())
+	if id == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New(errIDEmpty))
+	}
+	// Weaviate object ids are UUIDs; anything else would surface as a backend 422.
+	if _, err := uuid.Parse(id); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("id %q is not a valid UUID", id))
+	}
+	ts, err := s.tenantStore(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rec, ok, err := ts.Get(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("memory %s not found", id))
+	}
+	return connect.NewResponse(&cortexv1.GetMemoryResponse{Memory: recordToProto(rec)}), nil
+}
+
 func (s *Service) Delete(ctx context.Context, req *connect.Request[cortexv1.DeleteRequest]) (*connect.Response[cortexv1.DeleteResponse], error) {
 	id := strings.TrimSpace(req.Msg.GetId())
 	if id == "" {

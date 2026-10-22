@@ -4,6 +4,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -619,8 +620,24 @@ func (ts *TenantStore) Get(ctx context.Context, id string) (memory.Record, bool,
 	}
 	exists, err := checker.Do(ctx)
 	if err != nil {
+		// The existence check is a HEAD request, so Weaviate's "tenant not found"
+		// 422 arrives with an empty body and isTenantNotFound can't see the message.
+		// A bare 422 is ambiguous (absent tenant, inactive/offloaded tenant, bad
+		// input), so ask the schema API whether the tenant really is absent.
 		if isTenantNotFound(err) {
 			return memory.Record{}, false, nil
+		}
+		if ts.t != "" && isStatus422(err) {
+			absent, cerr := tenantAbsent(ctx, func(ctx context.Context) (bool, error) {
+				return ts.s.client.Schema().TenantsExists().
+					WithClassName(memory.ClassName).WithTenant(ts.t).Do(ctx)
+			})
+			if cerr == nil && absent {
+				return memory.Record{}, false, nil
+			}
+			if cerr != nil {
+				err = errors.Join(err, fmt.Errorf("tenant existence check: %w", cerr))
+			}
 		}
 		return memory.Record{}, false, fmt.Errorf("check object: %w", err)
 	}

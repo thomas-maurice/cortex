@@ -3,7 +3,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { AdminCreateApiKeyRequest, AdminCreateApiKeyResponse, AdminDeleteApiKeyRequest, AdminDeleteApiKeyResponse, AdminListApiKeysRequest, AdminListApiKeysResponse, BackupAllRequest, BackupAllResponse, BackupSelfRequest, BackupSelfResponse, ConsolidateRequest, ConsolidateResponse, CreateApiKeyRequest, CreateApiKeyResponse, CreateUserRequest, CreateUserResponse, DeadRequest, DeadResponse, DeleteApiKeyRequest, DeleteApiKeyResponse, DeleteBackupRequest, DeleteBackupResponse, DeleteNamespaceRequest, DeleteNamespaceResponse, DeleteRequest, DeleteResponse, DeleteUserRequest, DeleteUserResponse, DismissDuplicateRequest, DismissDuplicateResponse, DoctorRequest, DoctorResponse, DownloadBackupRequest, DownloadBackupResponse, GetVersionRequest, GetVersionResponse, IndexQueueRequest, IndexQueueResponse, LinkRequest, LinkResponse, ListApiKeysRequest, ListApiKeysResponse, ListBackupsRequest, ListBackupsResponse, ListDuplicateCandidatesRequest, ListDuplicateCandidatesResponse, ListNamespacesRequest, ListNamespacesResponse, ListRequest, ListResponse, ListS3BackupsRequest, ListS3BackupsResponse, ListSummariesRequest, ListSummariesResponse, ListUsersRequest, ListUsersResponse, MigrateMTRequest, MigrateMTResponse, PullModelRequest, PullModelResponse, RecallSessionRequest, RecallSessionResponse, ReindexRequest, ReindexResponse, RenameNamespaceRequest, RenameNamespaceResponse, ResetUserPasswordRequest, ResetUserPasswordResponse, RestoreAllRequest, RestoreAllResponse, RestoreMemoriesRequest, RestoreMemoriesResponse, RestoreSelfRequest, RestoreSelfResponse, SaveRequest, SaveResponse, SearchRequest, SearchResponse, SearchSimilarRequest, SearchSimilarResponse, SetUserRoleRequest, SetUserRoleResponse, StatusRequest, StatusResponse, SummarizeSessionRequest, SummarizeSessionResponse, UnlinkRequest, UnlinkResponse, UpdateMemoryRequest, UpdateMemoryResponse } from "./cortex_pb.js";
+import { AdminCreateApiKeyRequest, AdminCreateApiKeyResponse, AdminDeleteApiKeyRequest, AdminDeleteApiKeyResponse, AdminListApiKeysRequest, AdminListApiKeysResponse, BackupAllRequest, BackupAllResponse, BackupSelfRequest, BackupSelfResponse, ConsolidateRequest, ConsolidateResponse, CreateApiKeyRequest, CreateApiKeyResponse, CreateUserRequest, CreateUserResponse, DeadRequest, DeadResponse, DeleteApiKeyRequest, DeleteApiKeyResponse, DeleteBackupRequest, DeleteBackupResponse, DeleteNamespaceRequest, DeleteNamespaceResponse, DeleteRequest, DeleteResponse, DeleteUserRequest, DeleteUserResponse, DismissDuplicateRequest, DismissDuplicateResponse, DoctorRequest, DoctorResponse, DownloadBackupRequest, DownloadBackupResponse, GetMemoryRequest, GetMemoryResponse, GetVersionRequest, GetVersionResponse, IndexQueueRequest, IndexQueueResponse, LinkRequest, LinkResponse, ListApiKeysRequest, ListApiKeysResponse, ListBackupsRequest, ListBackupsResponse, ListDuplicateCandidatesRequest, ListDuplicateCandidatesResponse, ListNamespacesRequest, ListNamespacesResponse, ListRequest, ListResponse, ListS3BackupsRequest, ListS3BackupsResponse, ListSummariesRequest, ListSummariesResponse, ListUsersRequest, ListUsersResponse, MigrateMTRequest, MigrateMTResponse, PullModelRequest, PullModelResponse, RecallSessionRequest, RecallSessionResponse, ReindexRequest, ReindexResponse, RenameNamespaceRequest, RenameNamespaceResponse, ResetUserPasswordRequest, ResetUserPasswordResponse, RestoreAllRequest, RestoreAllResponse, RestoreMemoriesRequest, RestoreMemoriesResponse, RestoreSelfRequest, RestoreSelfResponse, SaveRequest, SaveResponse, SearchRequest, SearchResponse, SearchSimilarRequest, SearchSimilarResponse, SetUserRoleRequest, SetUserRoleResponse, StatusRequest, StatusResponse, SummarizeSessionRequest, SummarizeSessionResponse, UnlinkRequest, UnlinkResponse, UpdateMemoryRequest, UpdateMemoryResponse } from "./cortex_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -75,6 +75,20 @@ export const MemoryService = {
       name: "List",
       I: ListRequest,
       O: ListResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * GetMemory fetches ONE memory by id (full record, tenant-scoped). Use it to
+     * follow `linked_ids` from search results or ids from dedup candidates and
+     * consolidate manifests. It is a plain read: unlike Search it never
+     * reinforces the memory. NotFound for an unknown id or another tenant's id.
+     *
+     * @generated from rpc cortex.v1.MemoryService.GetMemory
+     */
+    getMemory: {
+      name: "GetMemory",
+      I: GetMemoryRequest,
+      O: GetMemoryResponse,
       kind: MethodKind.Unary,
     },
     /**
