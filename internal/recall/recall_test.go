@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -276,4 +277,63 @@ func TestSearchConcurrencyBounded(t *testing.T) {
 	Run(context.Background(), g, long, Params{Limit: 3, MaxDistance: 0.5})
 	assert.LessOrEqual(t, int(g.max.Load()), MaxConcurrency)
 	assert.Greater(t, int(g.max.Load()), 1, "still concurrent")
+}
+
+// A long memory that matched in a LATE chunk must be injected with that excerpt
+// (the prefix alone would be unrelated to the prompt, and the memory is then marked
+// delivered, so later searches would stub it). No match -> output unchanged.
+func TestFormatBlockLeadsWithMatchedExcerpt(t *testing.T) {
+	h := hit("mem-1", 0.25)
+	h.Memory.Text = strings.Repeat("prefix filler. ", 100) + "THE NEEDLE FACT."
+	h.Match = &cortexv1.Match{ChunkIndex: 3, Text: "THE NEEDLE FACT."}
+	out := FormatBlock([]*cortexv1.Hit{h}, 300)
+	assert.Contains(t, out, "[partial memory] matched: THE NEEDLE FACT.")
+	assert.Contains(t, out, "[start of memory] prefix filler.")
+	assert.Contains(t, out, "[truncated]")
+
+	// Excerpt alone fills the budget.
+	h.Match.Text = strings.Repeat("n", 500)
+	out = FormatBlock([]*cortexv1.Hit{h}, 100)
+	assert.Contains(t, out, "[partial memory] matched: "+strings.Repeat("n", 100)+"… [truncated]")
+	assert.NotContains(t, out, "[start of memory]")
+
+	// No match: byte-for-byte the plain truncated text.
+	h.Match = nil
+	out = FormatBlock([]*cortexv1.Hit{h}, 300)
+	assert.NotContains(t, out, "matched:")
+	assert.Contains(t, out, strings.TrimSpace(h.Memory.Text)[:300]+"… [truncated]")
+}
+
+// Cases where the excerpt adds nothing must leave the plain output untouched.
+func TestFormatBlockPlainWhenExcerptRedundant(t *testing.T) {
+	plainOf := func(h *cortexv1.Hit, n int) string {
+		c := &cortexv1.Hit{Memory: h.Memory, Distance: h.Distance}
+		return FormatBlock([]*cortexv1.Hit{c}, n)
+	}
+	mk := func(text, ex string) *cortexv1.Hit {
+		h := hit("mem-1", 0.25)
+		h.Memory.Text = text
+		h.Match = &cortexv1.Match{Text: ex}
+		return h
+	}
+
+	fits := mk("short memory. with a match.", "with a match.")
+	assert.Equal(t, plainOf(fits, 500), FormatBlock([]*cortexv1.Hit{fits}, 500), "text fits the budget")
+
+	// Source separates sentences with \n\n, the chunk text joins them with a space.
+	text := "First sentence here.\n\nSecond sentence here.\n\n" + strings.Repeat("filler. ", 100)
+	inPrefix := mk(text, "First sentence here. Second sentence here.")
+	assert.Equal(t, plainOf(inPrefix, 100), FormatBlock([]*cortexv1.Hit{inPrefix}, 100), "prefix already contains the excerpt")
+
+	whole := mk(strings.Repeat("w ", 200), strings.TrimSpace(strings.Repeat("w ", 200)))
+	assert.Equal(t, plainOf(whole, 50), FormatBlock([]*cortexv1.Hit{whole}, 50), "excerpt is the whole text")
+}
+
+// Truncation must not split a multi-byte rune (invalid UTF-8 in the context).
+func TestCutBytesRuneSafe(t *testing.T) {
+	s := "aé😀"
+	for n := 0; n <= len(s); n++ {
+		assert.True(t, utf8.ValidString(cutBytes(s, n)), "n=%d", n)
+	}
+	assert.Equal(t, "a", cutBytes(s, 2))
 }

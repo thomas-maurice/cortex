@@ -178,6 +178,7 @@ func TestPrintRecallPreview(t *testing.T) {
 		Queries: []string{"q"}, TotalChunks: 1, Limit: 2, MaxDistance: 0.5, MinChars: 12, MaxQueryChunks: 4, MaxChars: 100,
 		Injected: []*cortexv1.RecallPreviewHit{
 			{Memory: &cortexv1.Memory{Id: "m1", Namespace: "ns", Text: "hello"}, Distance: 0.1, TextChars: 5},
+			{Memory: &cortexv1.Memory{Id: "m-late", Namespace: "ns", Text: "start of a long memory"}, Distance: 0.15, TextChars: 900, Truncated: true, ExcerptFirst: true, Match: &cortexv1.Match{Text: "LATE NEEDLE"}},
 			{Memory: &cortexv1.Memory{Id: "m-seen", Namespace: "ns", Text: "long"}, Distance: 0.2, TextChars: 900, Truncated: true},
 		},
 		NearMisses:    []*cortexv1.RecallPreviewHit{{Memory: &cortexv1.Memory{Id: "m2", Text: "x"}, Distance: 0.7, Reason: recall.ReasonOverMaxDistance}},
@@ -193,8 +194,10 @@ func TestPrintRecallPreview(t *testing.T) {
 	var b bytes.Buffer
 	printRecallPreview(&b, resp, "*", seen, true)
 	out := b.String()
-	assert.Contains(t, out, "Would inject (2)")
+	assert.Contains(t, out, "Would inject (3)")
 	assert.Contains(t, out, "100 of 900 (TRUNCATED)", "the model sees only the first max-chars of a long memory")
+	assert.Contains(t, out, "(EXCERPT FIRST)", "hits whose injected text leads with the matched excerpt are marked")
+	assert.Contains(t, out, "LATE NEEDLE")
 	assert.Contains(t, out, "m-seen: already injected this session (dedup)")
 	assert.NotContains(t, out, "m1: already injected")
 	assert.Contains(t, out, "over_max_distance")

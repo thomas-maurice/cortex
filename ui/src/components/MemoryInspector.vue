@@ -28,7 +28,16 @@
 
         <!-- Read mode -->
         <template v-else>
-          <div class="markdown-body text-sm" v-html="renderMarkdown(m.text)"></div>
+          <!-- Search hit with a located excerpt: render before / matched / after as three
+               separately sanitized markdown blocks; the highlight wrapper is static. -->
+          <div v-if="parts" class="text-sm">
+            <div v-if="parts.before.trim()" class="markdown-body" v-html="renderMarkdown(parts.before)"></div>
+            <div ref="matchEl" class="my-1 rounded-md border-l-2 border-amber-500 bg-amber-500/10 px-3 py-1">
+              <div class="markdown-body" v-html="renderMarkdown(parts.hit)"></div>
+            </div>
+            <div v-if="parts.after.trim()" class="markdown-body" v-html="renderMarkdown(parts.after)"></div>
+          </div>
+          <div v-else class="markdown-body text-sm" v-html="renderMarkdown(m.text)"></div>
 
           <div class="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
             <span v-if="m.source">src: {{ m.source }}</span>
@@ -74,12 +83,13 @@
 
 <script setup>
 import { timestampDate } from '@bufbuild/protobuf/wkt'
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { Code, ConnectError } from '@connectrpc/connect'
 import { toast } from 'vue-sonner'
 import { memoryClient } from '@/utils/connect'
 import { renderMarkdown } from '@/utils/markdown'
+import { splitByMatch } from '@/utils/text'
 import { useAuthStore } from '@/stores/auth'
 import { confirmDialog } from '@/lib/confirm'
 import {
@@ -101,6 +111,15 @@ const router = useRouter()
 const auth = useAuthStore()
 
 const m = computed(() => inspectorMemory.value)
+
+// Highlight the search match (if any) within the full text. Not while editing.
+const parts = computed(() => splitByMatch(m.value?.text, m.value?._match))
+const matchEl = ref(null)
+watch(parts, async (p) => {
+  if (!p) return
+  await nextTick()
+  matchEl.value?.scrollIntoView({ block: 'center' })
+})
 
 const editing = ref(false)
 const editText = ref('')
@@ -183,7 +202,8 @@ async function saveEdit() {
     editing.value = false
     // Reflect the edit in the open sheet immediately — the server copy catches
     // up asynchronously via the re-index queue.
-    inspectorMemory.value = { ...m.value, text: editText.value, ...(tagsChanged ? { tags } : {}), namespace: editNamespace.value }
+    // _match offsets refer to the OLD text, so drop them.
+    inspectorMemory.value = { ...m.value, text: editText.value, ...(tagsChanged ? { tags } : {}), namespace: editNamespace.value, _match: undefined }
     toast.success('Queued for re-indexing — changes appear shortly')
     bumpInspectorChanged()
   } catch (e) {

@@ -447,7 +447,7 @@ never delay or block a prompt. Behavior details (all tunable via flags on the
   retries, so concurrent sessions (multiple MCP servers + hook runs) interleave
   safely. The MCP server plays the same game: `cortex_memory_search` returns a
   memory's full text only the first time it reaches a session's context —
-  afterwards it comes back as a ~120-char **stub** (`fresh=true` re-fetches in
+  afterwards it comes back as a **stub** (the part that matched the new query, else a ~120-char prefix; `fresh=true` re-fetches in
   full, e.g. after compaction dropped the earlier copy). Hook and MCP share the
   per-conversation bucket when the MCP knows the real session id
   (`CLAUDE_CODE_SESSION_ID` / `CORTEX_CONVERSATION_ID` in its env); without it
@@ -487,7 +487,7 @@ The MCP server exposes these tools to Claude:
 | Tool | What it does |
 |------|--------------|
 | `cortex_memory_save` | Queue a memory for indexing. Args: `text`, `namespace?`, `tags?`, `linkTo?` (ids to bidirectionally link this memory to — queued and applied once both ends are indexed, so targets need not exist yet), `supersedes?` (ids this memory replaces — the worker deletes them once this one is indexed). Returns its `id`. |
-| `cortex_memory_search` | **Hybrid** search (BM25 keyword + vector, blended by `SEARCH_ALPHA`, default 0.5) so exact tokens/codenames resolve, not just semantic matches. Args: `query`, `namespace?` (`*` = all namespaces), `limit?`, `tags?` (must have all), `excludeTags?`, `maxDistance?` (relevance cutoff). Each hit includes its `id`, any `linkedIds`, and any `dupCandidates` (flagged likely-duplicates — the output hints when consolidation would help). When **living memory** is enabled (`RERANK_WEIGHT`>0, off by default), search also re-orders results by recency-decayed usage and reinforces its top hit(s) — frequently-recalled memories float up over time. See [`docs/DESIGN.md`](docs/DESIGN.md#living-memory--decay--reinforcement-opt-in). |
+| `cortex_memory_search` | **Hybrid** search (BM25 keyword + vector, blended by `SEARCH_ALPHA`, default 0.5) so exact tokens/codenames resolve, not just semantic matches. Args: `query`, `namespace?` (`*` = all namespaces), `limit?`, `tags?` (must have all), `excludeTags?`, `maxDistance?` (relevance cutoff). Each hit includes its `id`, any `linkedIds`, `matched` (for long, chunk-indexed memories: the excerpt that matched the query; omitted when it is the whole text), and any `dupCandidates` (flagged likely-duplicates — the output hints when consolidation would help). When **living memory** is enabled (`RERANK_WEIGHT`>0, off by default), search also re-orders results by recency-decayed usage and reinforces its top hit(s) — frequently-recalled memories float up over time. See [`docs/DESIGN.md`](docs/DESIGN.md#living-memory--decay--reinforcement-opt-in). |
 | `cortex_tags_list` | **Read-only** tag listing (`namespace?`): each tag in use with its memory count, most used first. Call it before saving to REUSE an existing tag instead of inventing `k8s`/`kubernetes` variants. Rename/delete are intentionally not exposed over MCP (use the CLI/UI). |
 | `cortex_memory_get` | Fetch ONE memory by `id`, full text (follow `linkedIds` from search hits, or ids from `cortex_consolidate` / `cortex_review_candidates`). Same shape as a search hit; counts as delivered for session dedup so later searches stub it; does not reinforce. |
 | `cortex_memory_delete` | Delete a memory by `id` (get the `id` from a `cortex_memory_search` result first). The memory goes to the **trash** (restorable for `TRASH_RETENTION`, default 7 days), not into the void. |
@@ -672,7 +672,7 @@ authenticate with `--token` / `CORTEX_AUTH_TOKEN`.
 | `cortex save "<text>" -n <ns> -t tag [-S <id>]` | Queue a memory (server publishes to NATS). `-S/--supersedes` lists ids this memory replaces (deleted after indexing). |
 | `cortex list -n '*' [-t tag] [-x tag]` | List memories newest-first; filter by namespace/tags. |
 | `cortex get <id> [--json]` | Show one memory by id (incl. linked ids); `--json` uses the `export` record shape. |
-| `cortex search "<q>" [-d 0.6] [-t tag] [-x tag]` | Semantic search with a relevance cutoff and tag filters. |
+| `cortex search "<q>" [-d 0.6] [-t tag] [-x tag]` | Semantic search with a relevance cutoff and tag filters. Prints the matched excerpt (`matched: …`) under hits on long memories. |
 | `cortex consolidate "<topic>" [-n '*'] [-l N] [-t tag] [-x tag]` | Print the cluster of memories about a topic + their manifest (read-only gather; the LLM does the merge). No tag flag = no tag filter (whole cluster). |
 | `cortex delete <id>` | Delete a memory by ID (moved to the trash). |
 | `cortex tags [-n ns]` | List tags with memory counts and last activity. `tags rename <from> <to> [-n ns]` fixes drift (`k8s` / `kubernetes`; merges into an existing tag), `tags delete <tag> [-n ns] [--yes]` removes a tag from every memory. Touching the reserved `preference` tag needs `--yes`. |

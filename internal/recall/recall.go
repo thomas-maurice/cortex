@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	cortexv1 "github.com/thomas-maurice/cortex/gen/cortex/v1"
 	"github.com/thomas-maurice/cortex/internal/chunk"
@@ -308,19 +309,50 @@ func FormatBlock(hits []*cortexv1.Hit, maxChars int) string {
 	b.WriteString("Memories auto-recalled from Cortex for this prompt (semantic matches — possibly stale or irrelevant; verify before relying on them). Use cortex_memory_search for more.\n")
 	for _, h := range hits {
 		m := h.GetMemory()
-		text := Truncate(strings.TrimSpace(m.GetText()), maxChars)
+		text, _ := InjectedText(h, maxChars)
 		fmt.Fprintf(&b, "\n### [%s] dist=%.2f id=%s\n%s\n", m.GetNamespace(), h.GetDistance(), m.GetId(), text)
 	}
 	b.WriteString("</cortex-recall>\n")
 	return b.String()
 }
 
-// Truncate cuts already-trimmed text to maxChars bytes the way the hook does.
-func Truncate(text string, maxChars int) string {
-	if maxChars > 0 && len(text) > maxChars {
-		return text[:maxChars] + "… [truncated]"
+// cutBytes shortens s to at most n bytes without splitting a UTF-8 rune.
+func cutBytes(s string, n int) string {
+	if len(s) <= n {
+		return s
 	}
-	return text
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
+}
+
+// squash collapses whitespace runs to single spaces: chunk text joins sentences
+// with one space while the source may separate them with blank lines.
+func squash(s string) string { return strings.Join(strings.Fields(s), " ") }
+
+// InjectedText is the memory text FormatBlock injects for a hit, within
+// maxChars bytes (<= 0 = no cap). When the hit matched a chunk that a plain
+// prefix cut would drop (a late section of a long memory), the matched excerpt
+// leads — it is the part relevant to the prompt — followed by as much of the
+// start of the memory as the budget allows, clearly marked partial, and
+// excerptFirst is true. Otherwise it is the plain (possibly truncated) text.
+func InjectedText(h *cortexv1.Hit, maxChars int) (text string, excerptFirst bool) {
+	full := strings.TrimSpace(h.GetMemory().GetText())
+	plain := full
+	if maxChars > 0 && len(full) > maxChars {
+		plain = cutBytes(full, maxChars) + "… [truncated]"
+	}
+	ex := strings.TrimSpace(h.GetMatch().GetText())
+	if ex == "" || ex == full || maxChars <= 0 || len(full) <= maxChars || strings.Contains(squash(plain), squash(ex)) {
+		return plain, false
+	}
+	head := "[partial memory] matched: "
+	if len(ex) >= maxChars {
+		return head + cutBytes(ex, maxChars) + "… [truncated]", true
+	}
+	// len(ex) < maxChars here, so the remaining budget is > 0.
+	return head + ex + "\n[start of memory] " + cutBytes(full, maxChars-len(ex)) + "… [truncated]", true
 }
 
 // TextLen is the length FormatBlock compares against maxChars.

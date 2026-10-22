@@ -325,6 +325,19 @@ message SearchSimilarRequest {
 message Hit {
   Memory memory = 1;
   float distance = 2;
+  // The best-matching chunk of a long memory. Unset for hits that matched the
+  // whole-memory vector (un-chunked memories, chunking disabled, find-similar).
+  Match match = 3;
+}
+
+// Match locates the part of a memory that a search matched.
+message Match {
+  int32 chunk_index = 1;
+  string text = 2;  // the chunk text (the excerpt)
+  // Character (Unicode code point) offsets of the excerpt within memory.text,
+  // [start, end). Both 0 when the excerpt could not be located in the text.
+  int32 start = 3;
+  int32 end = 4;
 }
 
 message SearchResponse {
@@ -363,6 +376,12 @@ message RecallPreviewHit {
   // text_chars is the memory's full (trimmed) length in bytes. Injected hits only.
   bool truncated = 20;
   int32 text_chars = 21;
+  // match is the chunk that matched best (injected and near-miss hits; unset for
+  // whole-memory hits). excerpt_first is true when the injected text leads with
+  // that excerpt instead of the memory's start (a late-chunk match a plain
+  // max_chars cut would drop). Injected hits only.
+  Match match = 22;
+  bool excerpt_first = 23;
 }
 
 message PreviewRecallResponse {

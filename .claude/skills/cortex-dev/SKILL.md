@@ -169,7 +169,7 @@ should encode *why* the behaviour matters, not just what it does (Rule 9).
   (`SearchMemoryVectors`) and find-similar (`SearchByID`). Toggle: `CHUNKING_ENABLED`
   (default true), set the SAME on worker (writes chunks) and server (searches them);
   false = pre-chunking whole-memory search. Delete / namespace-rename / -delete
-  cascade to chunks. See docs/CHUNKING.md.
+  cascade to chunks. `store.Search` keeps each parent's winning chunk as `memory.Hit.Match` (chunk index, text, rune offsets via `chunk.Locate`; proto `Hit.match`; none for fallback hits) — surfaced by the UI (highlight), CLI and MCP (`matched`; stubs carry the excerpt instead of the 120-char prefix). See docs/CHUNKING.md.
 - **Weaviate runs with `AUTOSCHEMA_ENABLED=false`** (compose, TrueNAS compose, CI,
   `scripts/wv-test.sh`). Schema lives only in code: a new property written by ANY path
   must be declared in `memoryProperties`/`chunkProperties`/`summaryProperties`/`trashProperties`/

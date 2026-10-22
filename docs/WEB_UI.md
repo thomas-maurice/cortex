@@ -85,7 +85,7 @@ user/pass check for a user store and emit per-user claims.
 
 | Route | View | RPCs used |
 |-------|------|-----------|
-| `/` | **Memories** — search/list, add (New Memory form), delete | `Search`, `List`, `Save`, `Delete` |
+| `/` | **Memories** — search/list (search hits on long memories show a highlighted `matched:` excerpt; the inspector highlights the matched span in the full text), add (New Memory form), delete | `Search`, `List`, `Save`, `Delete` |
 | `/graph` | **Graph** — memory map + explicit links | `List`, `Search`, `Link`, `Unlink` |
 | `/explore` | **Explore** — query → relevance cloud | `Search` |
 | `/recall-preview` | **Recall preview** — what would the recall hook inject for a prompt? | `PreviewRecall` |

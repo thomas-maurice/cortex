@@ -96,6 +96,10 @@
               <button type="button" class="block w-full text-left text-sm hover:underline" @click="openInspector(h.memory)">
                 {{ truncate(h.memory.text, 300) }}
               </button>
+              <div v-if="h.match?.text" class="rounded border-l-2 border-primary bg-muted/40 px-2 py-1 text-xs">
+                <span class="font-semibold">{{ h.excerptFirst ? 'Injected leads with the matched excerpt:' : 'Matched excerpt:' }}</span>
+                {{ truncate(h.match.text, 300) }}
+              </div>
               <div class="font-mono text-xs text-muted-foreground">{{ h.memory.id }}</div>
             </CardContent>
           </Card>

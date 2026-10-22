@@ -29,7 +29,11 @@
           @select="openHit(h)"
         >
           <Database class="size-4 shrink-0" />
-          <span class="min-w-0 flex-1 truncate">{{ h.memory.text }}</span>
+          <!-- plain-text interpolation (escaped): excerpt of the matched part when it is not the whole text -->
+          <span class="min-w-0 flex-1 truncate">
+            <template v-if="excerpt(h)"><span class="font-medium text-amber-700 dark:text-amber-400">matched:</span> {{ excerpt(h) }}</template>
+            <template v-else>{{ h.memory.text }}</template>
+          </span>
           <Badge variant="secondary" class="ml-2 shrink-0">{{ h.memory.namespace }}</Badge>
         </CommandItem>
       </CommandGroup>
@@ -141,8 +145,15 @@ function go(route) {
   router.push({ name: route })
 }
 
+// The matched chunk as one line, or '' when absent / identical to the text.
+function excerpt(h) {
+  const ex = (h.match?.text ?? '').replace(/\s+/g, ' ').trim()
+  if (!ex || ex === (h.memory.text ?? '').replace(/\s+/g, ' ').trim()) return ''
+  return ex
+}
+
 function openHit(h) {
   open.value = false
-  openInspector(h.memory)
+  openInspector({ ...h.memory, _match: h.match })
 }
 </script>

@@ -180,16 +180,18 @@ func (s *Service) PreviewRecall(ctx context.Context, req *connect.Request[cortex
 	injectedHits := make([]*cortexv1.Hit, 0, len(res.Injected))
 	for _, m := range res.Injected {
 		n := recall.TextLen(m.Hit)
+		_, excerptFirst := recall.InjectedText(m.Hit, p.MaxChars)
 		out.Injected = append(out.Injected, &cortexv1.RecallPreviewHit{
 			Memory: m.Hit.GetMemory(), Distance: m.Hit.GetDistance(), QueryIndex: int32(m.Query),
 			Truncated: p.MaxChars > 0 && n > p.MaxChars, TextChars: int32(n),
+			Match: m.Hit.GetMatch(), ExcerptFirst: excerptFirst,
 		})
 		injectedHits = append(injectedHits, m.Hit)
 	}
 	out.InjectedBlock = recall.FormatBlock(injectedHits, p.MaxChars)
 	for _, nm := range misses {
 		out.NearMisses = append(out.NearMisses, &cortexv1.RecallPreviewHit{
-			Memory: nm.Match.Hit.GetMemory(), Distance: nm.Match.Hit.GetDistance(), QueryIndex: int32(nm.Match.Query), Reason: nm.Reason,
+			Memory: nm.Match.Hit.GetMemory(), Distance: nm.Match.Hit.GetDistance(), QueryIndex: int32(nm.Match.Query), Reason: nm.Reason, Match: nm.Match.Hit.GetMatch(),
 		})
 	}
 	return connect.NewResponse(out), nil

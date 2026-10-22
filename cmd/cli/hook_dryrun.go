@@ -153,7 +153,12 @@ func printRecallPreview(w io.Writer, r *cortexv1.PreviewRecallResponse, namespac
 			if h.GetTruncated() {
 				chars = fmt.Sprintf("%d of %d (TRUNCATED)", r.GetMaxChars(), h.GetTextChars())
 			}
-			fpf(tw, "  %.3f\t%d\t%s\t%s\t%s\t%s\n", h.GetDistance(), h.GetQueryIndex(), h.GetMemory().GetNamespace(), h.GetMemory().GetId(), chars, snippet(h.GetMemory().GetText(), 70))
+			text := h.GetMemory().GetText()
+			if h.GetExcerptFirst() {
+				chars += " (EXCERPT FIRST)"
+				text = h.GetMatch().GetText()
+			}
+			fpf(tw, "  %.3f\t%d\t%s\t%s\t%s\t%s\n", h.GetDistance(), h.GetQueryIndex(), h.GetMemory().GetNamespace(), h.GetMemory().GetId(), chars, snippet(text, 70))
 		}
 		_ = tw.Flush()
 		if seen != nil {

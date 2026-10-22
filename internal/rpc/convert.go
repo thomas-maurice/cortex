@@ -75,10 +75,19 @@ func lastAccessedProto(t time.Time) *timestamppb.Timestamp {
 
 // hitToProto maps a search hit (record + distance) to its wire form.
 func hitToProto(h memory.Hit) *cortexv1.Hit {
-	return &cortexv1.Hit{
+	out := &cortexv1.Hit{
 		Memory:   recordToProto(h.Record),
 		Distance: h.Distance,
 	}
+	if h.Match != nil {
+		out.Match = &cortexv1.Match{
+			ChunkIndex: int32(h.Match.ChunkIndex),
+			Text:       h.Match.Text,
+			Start:      int32(h.Match.Start),
+			End:        int32(h.Match.End),
+		}
+	}
+	return out
 }
 
 // deadToProto maps a dead-lettered record to its wire form.

@@ -8,6 +8,7 @@ import (
 	"github.com/weaviate/weaviate-go-client/v5/weaviate/filters"
 	"github.com/weaviate/weaviate/entities/models"
 
+	"github.com/thomas-maurice/cortex/internal/chunk"
 	"github.com/thomas-maurice/cortex/internal/memory"
 )
 
@@ -143,7 +144,7 @@ func (ts *TenantStore) Search(ctx context.Context, vector []float32, opts Search
 
 	query := ts.s.client.Experimental().Search().
 		WithCollection(memory.ChunkClassName).
-		WithProperties("memoryId").
+		WithProperties("memoryId", "text", "chunkIndex").
 		WithLimit(fetch)
 	if ts.t != "" {
 		query = query.WithTenant(ts.t)
@@ -170,6 +171,7 @@ func (ts *TenantStore) Search(ctx context.Context, vector []float32, opts Search
 	// Weaviate returns chunk hits best-first, so the FIRST time a parent appears is
 	// at its best distance — record that and the parent's order.
 	bestDist := make(map[string]float32, len(res))
+	bestChunk := make(map[string]*memory.Match, len(res))
 	order := make([]string, 0, len(res))
 	for _, r := range res {
 		dist, ok := effectiveDistance(r.Metadata.Distance, r.Metadata.Score, hybrid, opts.MaxDistance)
@@ -182,6 +184,10 @@ func (ts *TenantStore) Search(ctx context.Context, vector []float32, opts Search
 		}
 		if _, seen := bestDist[mid]; !seen {
 			bestDist[mid] = dist
+			bestChunk[mid] = &memory.Match{
+				ChunkIndex: propInt(r.Properties, "chunkIndex"),
+				Text:       propString(r.Properties, "text"),
+			}
 			order = append(order, mid)
 		}
 	}
@@ -201,7 +207,11 @@ func (ts *TenantStore) Search(ctx context.Context, vector []float32, opts Search
 		if !found {
 			continue // parent deleted since its chunk was indexed
 		}
-		hits = append(hits, memory.Hit{Record: rec, Distance: bestDist[mid]})
+		m := bestChunk[mid]
+		// ok intentionally ignored: an unlocatable chunk leaves Start=End=0, which
+		// clients read as "show the excerpt, no highlight".
+		m.Start, m.End, _ = chunk.Locate(rec.Text, m.Text, m.ChunkIndex)
+		hits = append(hits, memory.Hit{Record: rec, Distance: bestDist[mid], Match: m})
 		if len(hits) >= want {
 			break
 		}

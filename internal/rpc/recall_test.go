@@ -181,7 +181,7 @@ func TestPreviewRecallIntegration(t *testing.T) {
 		assert.True(t, h.GetTruncated(), "text is longer than 10 chars")
 		assert.Equal(t, int32(len("alice recall hook near memory")), h.GetTextChars())
 		assert.Equal(t, int32(10), got.GetMaxChars())
-		assert.Equal(t, recall.FormatBlock([]*cortexv1.Hit{{Memory: h.GetMemory(), Distance: h.GetDistance()}}, 10), got.GetInjectedBlock())
+		assert.Equal(t, recall.FormatBlock([]*cortexv1.Hit{{Memory: h.GetMemory(), Distance: h.GetDistance(), Match: h.GetMatch()}}, 10), got.GetInjectedBlock())
 		assert.Contains(t, got.GetInjectedBlock(), "alice reca… [truncated]")
 
 		full := preview(alice, &cortexv1.PreviewRecallRequest{Prompt: "alice recall hook near memory", Namespace: "*", Limit: ptr(int32(1)), MaxDistance: ptr(float32(2))})

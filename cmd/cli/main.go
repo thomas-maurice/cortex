@@ -601,6 +601,9 @@ func searchCmd() *cobra.Command {
 			for i, h := range hits {
 				fmt.Printf("%d. (dist %.3f) ", i+1, h.GetDistance())
 				printMemory(h.GetMemory())
+				if ex := matchExcerpt(h); ex != "" {
+					fmt.Printf("   matched: %s\n", ex)
+				}
 			}
 			return nil
 		},
@@ -1866,6 +1869,20 @@ func printApiKey(k *cortexv1.ApiKeyInfo) {
 		lastUsed = k.GetLastUsedAt().AsTime().UTC().Format(time.RFC3339)
 	}
 	fmt.Printf("%-20s prefix=%s id=%s created=%s last_used=%s\n", label, k.GetPrefix(), k.GetId(), created, lastUsed)
+}
+
+// matchExcerpt returns the hit's matched chunk as a single trimmed line ("…" when
+// cut), or "" when there is none or it is the whole memory text (nothing to add).
+func matchExcerpt(h *cortexv1.Hit) string {
+	ex := strings.Join(strings.Fields(h.GetMatch().GetText()), " ")
+	if ex == "" || ex == strings.Join(strings.Fields(h.GetMemory().GetText()), " ") {
+		return ""
+	}
+	const maxRunes = 240
+	if r := []rune(ex); len(r) > maxRunes {
+		ex = string(r[:maxRunes]) + "…"
+	}
+	return "…" + ex
 }
 
 func printMemory(m *cortexv1.Memory) {
