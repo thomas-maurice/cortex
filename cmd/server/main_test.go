@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -9,8 +11,14 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
+	"connectrpc.com/connect"
+
+	cortexv1 "github.com/thomas-maurice/cortex/gen/cortex/v1"
+	"github.com/thomas-maurice/cortex/gen/cortex/v1/cortexv1connect"
 	"github.com/thomas-maurice/cortex/internal/obs"
+	"github.com/thomas-maurice/cortex/internal/rpc"
 )
 
 // TestInitialBackupDelay pins the restart-resilient scheduling rule: the first
@@ -157,4 +165,39 @@ func TestMetricsOptIn(t *testing.T) {
 	assert.Equal(t, http.StatusTeapot, serve())
 	t.Setenv("METRICS_ENABLED", "true")
 	assert.Equal(t, http.StatusOK, serve(), "METRICS_ENABLED=true must serve /metrics")
+}
+
+// TestRequestSizeLimit pins the server-wide cap: without it an authenticated
+// tenant could send an arbitrarily large restore payload and exhaust server
+// memory for everyone. Uses the production option builder with a tiny limit.
+func TestRequestSizeLimit(t *testing.T) {
+	svc := rpc.NewService(nil, nil, nil, nil, rpc.Config{}, slog.Default())
+	mux := http.NewServeMux()
+	mux.Handle(cortexv1connect.NewMemoryServiceHandler(svc, rpcHandlerOptions(1024, nil)...))
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	client := cortexv1connect.NewMemoryServiceClient(http.DefaultClient, srv.URL)
+
+	call := func(n int) error {
+		_, err := client.RestoreSelf(context.Background(),
+			connect.NewRequest(&cortexv1.RestoreSelfRequest{Data: []byte(strings.Repeat("x", n))}))
+		return err
+	}
+
+	// Under the limit the request reaches the handler (which rejects the
+	// garbage payload as a bad backup format, not as too large).
+	require.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(call(100)))
+	// Over the limit it is refused before the handler runs.
+	require.Equal(t, connect.CodeResourceExhausted, connect.CodeOf(call(4096)))
+}
+
+func TestMaxRequestBytesFromEnv(t *testing.T) {
+	t.Setenv("CORTEX_MAX_REQUEST_BYTES", "")
+	assert.Equal(t, 256<<20, maxRequestBytesFromEnv())
+	t.Setenv("CORTEX_MAX_REQUEST_BYTES", "1048576")
+	assert.Equal(t, 1048576, maxRequestBytesFromEnv())
+	for _, bad := range []string{"0", "-5", "abc"} {
+		t.Setenv("CORTEX_MAX_REQUEST_BYTES", bad)
+		assert.Equal(t, 256<<20, maxRequestBytesFromEnv(), bad)
+	}
 }

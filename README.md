@@ -729,6 +729,15 @@ cortex --server http://localhost:8088 migrate-mt --yes
 - All migrated data lands in the bootstrap admin's tenant. Redistributing data
   across multiple users is out of scope; this is a single-tenant-to-MT bootstrap.
 
+## Request size limit
+
+The RPC handler rejects any request larger than `CORTEX_MAX_REQUEST_BYTES`
+(default `268435456` = 256 MiB) with `resource_exhausted`. Restore uploads carry
+a whole backup (bytes travel base64-encoded in the JSON the web UI sends, ~+33%),
+so if a restore of a very large store fails with that error, raise it on the
+server, e.g. `CORTEX_MAX_REQUEST_BYTES=1073741824`. Self-restore additionally caps
+the backup payload at 100 MiB. See the trust model in `docs/DESIGN.md`.
+
 ## Observability (metrics + health)
 
 Server (same port as the API, **unauthenticated** — keep them off the public internet; `/metrics` is disabled unless `METRICS_ENABLED=true`):

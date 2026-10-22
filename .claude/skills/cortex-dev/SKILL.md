@@ -229,6 +229,12 @@ already MT (one-shot). Safe to re-run `cortex import <backup>` if it stalls (ups
 The migration targets ONE tenant (the bootstrap admin). Redistributing data across
 multiple users is a manual/out-of-scope operation.
 
+**Resource guards** (internal/rpc/gate.go): BackupSelf, RestoreSelf and Reindex allow ONE
+in-flight call per tenant; BackupAll/RestoreAll/MigrateMT ONE server-wide. A second call
+gets `ResourceExhausted`. Gates are per server process. Connect requests are capped by
+`CORTEX_MAX_REQUEST_BYTES` (default 256 MiB — raise it for very large `restore` uploads).
+There is still no per-tenant storage quota or rate limit (see docs/DESIGN.md trust model).
+
 **Integration test gate:** `CORTEX_TEST_WEAVIATE_REST` + `CORTEX_TEST_WEAVIATE_GRPC`
 without `CORTEX_TEST_MULTI_TENANT` (migration starts from a non-MT Weaviate).
 

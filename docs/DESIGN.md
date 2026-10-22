@@ -142,6 +142,7 @@ automatically without per-call bookkeeping.
 | `CORTEX_UI_USER` | `admin` | server (web UI login) |
 | `CORTEX_UI_PASSWORD` | _(empty = UI login disabled)_ | server |
 | `CORTEX_JWT_SECRET` | derived from `CORTEX_AUTH_TOKEN`, else random | server (signs UI JWTs) |
+| `CORTEX_MAX_REQUEST_BYTES` | `268435456` (256 MiB) | server (max RPC request body; raise for very large restores) |
 
 ## Living memory — decay + reinforcement (opt-in)
 
@@ -293,6 +294,29 @@ handles the two cases differently:
   10 for `indexer` / 50 for `linker`, the same filter subjects) and an explicit
   start: new messages only, or `DeliverByStartSequence` at the first sequence that
   still needs processing. The worker then resumes without a restart.
+
+## Multi-tenancy trust model and resource guards
+
+Tenants are isolated for **data** (every store call is scoped to the authenticated
+user's Weaviate tenant). They are **not** isolated for resources: there is no
+per-tenant storage quota and no per-tenant rate limit yet, so an authenticated
+tenant can grow its store arbitrarily. Because "fetch everything" paths are cursor
+paged (no row cap), these guards bound what one tenant can do to the shared server:
+
+- **Single-flight per tenant** (`tenantGate`, `internal/rpc/gate.go`): at most one
+  concurrent `BackupSelf`, one `Reindex` and one `RestoreSelf` per tenant (separate
+  gates per operation). A second concurrent call gets `resource_exhausted`. The key is
+  the authenticated `UserID` from the request context, never a request field;
+  single-tenant mode uses a constant key.
+- **One admin bulk operation server-wide**: `BackupAll`, `RestoreAll` and `MigrateMT`
+  share one gate (nothing serialised them before). The scheduled periodic backup is
+  not gated.
+- **Request size limit**: `connect.WithReadMaxBytes` from `CORTEX_MAX_REQUEST_BYTES`
+  (default 256 MiB). `/auth/login` keeps its own much smaller `MaxBytesReader`.
+
+The gates live in process memory: with several server replicas the limits apply
+**per replica**, not cluster-wide. Cross-tenant fairness (quotas, rate limits) is
+deferred.
 
 ## Failure behavior
 

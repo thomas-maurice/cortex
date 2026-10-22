@@ -121,6 +121,34 @@ type Service struct {
 	// search hits are reinforced, so two concurrent searches reinforcing the same
 	// memory cannot both read the old count and lose an increment.
 	reinforceMu sync.Mutex
+
+	// Single-flight guards (see tenantGate): one in-flight backup / reindex /
+	// restore per tenant, and one admin bulk operation server-wide, so no tenant
+	// can multiply the memory/Ollama cost of "fetch everything" RPCs.
+	backupGate, reindexGate, restoreGate, adminGate tenantGate
+	// afterGate, when non-nil, runs right after a gate is acquired; a non-nil
+	// return aborts the call. Test seam only (lets a test hold a call in flight).
+	afterGate func() error
+}
+
+// gated acquires g for the caller's tenant (or the server-wide admin key when
+// admin is true) and runs the test seam. The returned release must be deferred.
+func (s *Service) gated(ctx context.Context, g *tenantGate, admin bool, busyMsg string) (func(), error) {
+	key := gateKey(ctx)
+	if admin {
+		key = adminGateKey
+	}
+	release, err := acquire(g, key, busyMsg)
+	if err != nil {
+		return nil, err
+	}
+	if s.afterGate != nil {
+		if err := s.afterGate(); err != nil {
+			release()
+			return nil, err
+		}
+	}
+	return release, nil
 }
 
 // NewService wires the handler with its backing clients.
@@ -600,6 +628,11 @@ func (s *Service) Doctor(ctx context.Context, _ *connect.Request[cortexv1.Doctor
 }
 
 func (s *Service) Reindex(ctx context.Context, req *connect.Request[cortexv1.ReindexRequest]) (*connect.Response[cortexv1.ReindexResponse], error) {
+	release, err := s.gated(ctx, &s.reindexGate, false, "a reindex is already running for this account; try again when it finishes")
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	ns := resolveNamespace(req.Msg.GetNamespace(), s.cfg.DefaultNamespace)
 
 	ts, err := s.tenantStore(ctx)
@@ -1369,6 +1402,11 @@ func (s *Service) MigrateMT(ctx context.Context, _ *connect.Request[cortexv1.Mig
 	// tenant their own JWT/api-key resolves to, so they actually see the data).
 	// Using the caller's id, not a fixed sentinel, is what makes the migrated
 	// memories visible to the admin afterwards.
+	release, err := s.gated(ctx, &s.adminGate, true, "another admin bulk operation (backup/restore/migrate) is already running; try again when it finishes")
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	caller, _ := identity.From(ctx)
 	targetTenant := caller.UserID
 

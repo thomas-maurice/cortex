@@ -110,6 +110,28 @@ func envBool(key string, def bool) bool {
 // unauthenticated, so it defaults to OFF and must be enabled explicitly.
 func metricsEnabledFromEnv() bool { return envBool("METRICS_ENABLED", false) }
 
+// defaultMaxRequestBytes bounds one RPC request body. Restore uploads carry a
+// whole backup, so it is generous; it exists to stop unbounded payloads.
+const defaultMaxRequestBytes = 256 << 20
+
+// maxRequestBytesFromEnv returns CORTEX_MAX_REQUEST_BYTES (a positive byte
+// count), falling back to the 256 MiB default when unset or invalid.
+func maxRequestBytesFromEnv() int {
+	if n := envInt("CORTEX_MAX_REQUEST_BYTES", defaultMaxRequestBytes); n > 0 {
+		return n
+	}
+	return defaultMaxRequestBytes
+}
+
+// rpcHandlerOptions are the Connect handler options: the interceptor chain plus
+// the server-wide request size cap.
+func rpcHandlerOptions(maxBytes int, interceptors []connect.Interceptor) []connect.HandlerOption {
+	return []connect.HandlerOption{
+		connect.WithInterceptors(interceptors...),
+		connect.WithReadMaxBytes(maxBytes),
+	}
+}
+
 // envDuration reads a Go duration env var (e.g. "24h", "30m"), returning def
 // when unset or unparseable. An empty string or "0" effectively disables a
 // feature guarded by duration > 0.
@@ -353,7 +375,7 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
-	path, handler := cortexv1connect.NewMemoryServiceHandler(svc, connect.WithInterceptors(interceptors...))
+	path, handler := cortexv1connect.NewMemoryServiceHandler(svc, rpcHandlerOptions(maxRequestBytesFromEnv(), interceptors)...)
 	mux.Handle(path, handler)
 	// Unauthenticated ops endpoints (the Connect auth interceptor above only wraps
 	// the RPC handler). Mounted before the "/" UI catch-all.
