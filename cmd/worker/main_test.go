@@ -4,42 +4,21 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"os"
 	"testing"
 	"time"
 
-	"github.com/nats-io/nats.go"
-	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/thomas-maurice/cortex/internal/memory"
 )
 
-// stubMsg is a minimal jetstream.Msg implementation for unit tests. It records
-// whether Term or Nak was called so tests can assert the correct ack path was
-// taken without a live NATS server.
-type stubMsg struct {
-	data    []byte
-	subject string
-	termed  bool
-	nakked  bool
+func TestMain(m *testing.M) {
+	// Fast pull/backoff so the replica tests do not idle on a real fetch expiry.
+	fetchWait, errBackoff = 500*time.Millisecond, 100*time.Millisecond
+	os.Exit(m.Run())
 }
-
-func (s *stubMsg) Data() []byte                              { return s.data }
-func (s *stubMsg) Subject() string                           { return s.subject }
-func (s *stubMsg) Headers() nats.Header                      { return nil }
-func (s *stubMsg) Reply() string                             { return "" }
-func (s *stubMsg) Ack() error                                { return nil }
-func (s *stubMsg) DoubleAck(_ context.Context) error         { return nil }
-func (s *stubMsg) Nak() error                                { s.nakked = true; return nil }
-func (s *stubMsg) NakWithDelay(_ time.Duration) error        { s.nakked = true; return nil }
-func (s *stubMsg) InProgress() error                         { return nil }
-func (s *stubMsg) Term() error                               { s.termed = true; return nil }
-func (s *stubMsg) TermWithReason(_ string) error             { s.termed = true; return nil }
-func (s *stubMsg) Metadata() (*jetstream.MsgMetadata, error) { return nil, errors.New("stub") }
-
-// compile-time assertion that stubMsg satisfies the interface
-var _ jetstream.Msg = (*stubMsg)(nil)
 
 // applyEdge is the correctness core of the async link path: an add must produce a
 // bidirectional edge (each endpoint points at the other), a remove must clear
@@ -117,7 +96,7 @@ func TestDeadLetterMalformed(t *testing.T) {
 		// WHY: a Term after a successful dead-letter publish is the correct outcome —
 		// the bytes are preserved and NATS should not redeliver a fundamentally broken
 		// payload that would only fail again.
-		msg := &stubMsg{data: rawPayload}
+		msg := &fakeMsg{data: rawPayload}
 		var captured memory.DeadLetter
 		pub := func(dl memory.DeadLetter) error {
 			captured = dl
@@ -126,8 +105,8 @@ func TestDeadLetterMalformed(t *testing.T) {
 
 		deadLetterMalformed(context.Background(), slog.Default(), nil, kindIndex, pub, msg, unmarshalErr)
 
-		require.True(t, msg.termed, "message must be Term'd after a successful dead-letter publish so NATS does not redeliver it")
-		assert.False(t, msg.nakked, "must not also Nak when Term succeeded")
+		require.NotZero(t, msg.termed.Load(), "message must be Term'd after a successful dead-letter publish so NATS does not redeliver it")
+		assert.Zero(t, msg.nakked.Load(), "must not also Nak when Term succeeded")
 
 		// The raw bytes must survive intact so the operator can inspect the original payload.
 		assert.Equal(t, string(rawPayload), captured.Record.Text, "raw bytes must be preserved verbatim in the dead-letter record")
@@ -141,14 +120,14 @@ func TestDeadLetterMalformed(t *testing.T) {
 		// WHY: if we cannot write to the dead-letter subject we must NOT Term the
 		// message — that would silently drop it. NAK causes NATS to redeliver so
 		// we get another attempt to preserve the bytes.
-		msg := &stubMsg{data: rawPayload}
+		msg := &fakeMsg{data: rawPayload}
 		pub := func(dl memory.DeadLetter) error {
 			return errors.New("nats unavailable")
 		}
 
 		deadLetterMalformed(context.Background(), slog.Default(), nil, kindIndex, pub, msg, unmarshalErr)
 
-		require.True(t, msg.nakked, "must Nak when the dead-letter publish fails so NATS redelivers and we can retry preservation")
-		assert.False(t, msg.termed, "must not Term when the dead-letter publish failed — that would permanently lose the bytes")
+		require.NotZero(t, msg.nakked.Load(), "must Nak when the dead-letter publish fails so NATS redelivers and we can retry preservation")
+		assert.Zero(t, msg.termed.Load(), "must not Term when the dead-letter publish failed — that would permanently lose the bytes")
 	})
 }

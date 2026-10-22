@@ -190,6 +190,14 @@ func memoryProperties() []*models.Property {
 		{Name: "notDuplicateOf", DataType: []string{"text[]"}},
 		{Name: "accessCount", DataType: []string{"int"}},
 		{Name: "lastAccessedAt", DataType: []string{"date"}},
+		// indexedSeq is the JetStream stream sequence of the index message that last
+		// wrote this object: the worker's stale-write guard (an older message must
+		// not overwrite a newer one). Absent on pre-existing objects, read as 0.
+		{Name: "indexedSeq", DataType: []string{"int"}},
+		// indexedStream identifies the JetStream stream indexedSeq belongs to (its
+		// creation time, unix microseconds), so a recreated stream (sequences restart
+		// at 1) is not mistaken for "older than everything stored".
+		{Name: "indexedStream", DataType: []string{"int"}},
 	}
 }
 
@@ -222,6 +230,9 @@ func summaryProperties() []*models.Property {
 		{Name: "updatedAt", DataType: []string{"date"}},
 		{Name: "model", DataType: []string{"text"}},
 		{Name: "dims", DataType: []string{"int"}},
+		// indexedSeq/indexedStream: stale-write guard, see memoryProperties.
+		{Name: "indexedSeq", DataType: []string{"int"}},
+		{Name: "indexedStream", DataType: []string{"int"}},
 	}
 }
 
@@ -536,22 +547,41 @@ func (ts *TenantStore) upsertObject(ctx context.Context, className, id string, p
 	return nil
 }
 
-// Upsert writes a record with its precomputed vector into the Memory class.
-func (ts *TenantStore) Upsert(ctx context.Context, rec memory.Record, vector []float32) error {
-	props := map[string]interface{}{
+// indexOwnedProps is the property set the INDEX path owns (see UpdateIndexFields):
+// the single source for both the create (Upsert) and the update (merge) paths.
+// nil slices become [] so a merge clears them rather than sending null.
+func indexOwnedProps(rec memory.Record) map[string]interface{} {
+	tags, dups := rec.Tags, rec.DupCandidates
+	if tags == nil {
+		tags = []string{}
+	}
+	if dups == nil {
+		dups = []string{}
+	}
+	return map[string]interface{}{
 		"text":           rec.Text,
 		"namespace":      rec.Namespace,
-		"tags":           rec.Tags,
+		"tags":           tags,
 		"source":         rec.Source,
 		"createdAt":      rec.CreatedAt.UTC().Format(time.RFC3339),
 		"model":          rec.Model,
 		"dims":           rec.Dims,
 		"conversationId": rec.ConversationID,
-		"linkedIds":      rec.LinkedIDs,
-		"dupCandidates":  rec.DupCandidates,
-		"notDuplicateOf": rec.NotDuplicateOf,
-		"accessCount":    rec.AccessCount,
+		"dupCandidates":  dups,
+		"indexedSeq":     rec.IndexedSeq,
+		"indexedStream":  rec.IndexedStream,
 	}
+}
+
+// Upsert writes a record with its precomputed vector into the Memory class,
+// creating the object with EVERY field (the index-owned ones plus the fields other
+// writers own, which a new memory such as an import carries). For an existing
+// memory use UpdateIndexFields.
+func (ts *TenantStore) Upsert(ctx context.Context, rec memory.Record, vector []float32) error {
+	props := indexOwnedProps(rec)
+	props["linkedIds"] = rec.LinkedIDs
+	props["notDuplicateOf"] = rec.NotDuplicateOf
+	props["accessCount"] = rec.AccessCount
 	// A Weaviate `date` property rejects an empty string — it must be a valid
 	// RFC3339 date or absent. A never-reinforced memory has a zero lastAccessedAt,
 	// so omit the key entirely (the property stays null) rather than send "".
@@ -559,6 +589,35 @@ func (ts *TenantStore) Upsert(ctx context.Context, rec memory.Record, vector []f
 		props["lastAccessedAt"] = formatDate(rec.LastAccessedAt)
 	}
 	return ts.upsertObject(ctx, memory.ClassName, rec.ID, props, vector)
+}
+
+// UpdateIndexFields rewrites an EXISTING memory's index-owned fields and vector
+// via a Weaviate merge (PATCH) and nothing else. Index-owned: text, vector,
+// namespace, tags, source, createdAt, conversationId, model, dims, dupCandidates,
+// indexedSeq. Deliberately NOT written, because other writers own them and a
+// queued index message only carries a stale snapshot:
+//
+//	linkedIds                    link consumer (SetLinks)
+//	accessCount, lastAccessedAt  server Reinforce
+//	notDuplicateOf               server DismissDuplicate (SetNotDuplicateOf)
+//
+// Weaviate applies a merge per property under the object's lock, so disjoint-field
+// merges from different processes cannot clobber each other (pinned by the
+// integration test). Use Upsert to create a memory that does not exist yet.
+func (ts *TenantStore) UpdateIndexFields(ctx context.Context, rec memory.Record, vector []float32) error {
+	updater := ts.s.client.Data().Updater().
+		WithMerge().
+		WithClassName(memory.ClassName).
+		WithID(rec.ID).
+		WithVector(vector).
+		WithProperties(indexOwnedProps(rec))
+	if ts.t != "" {
+		updater = updater.WithTenant(ts.t)
+	}
+	if err := updater.Do(ctx); err != nil {
+		return fmt.Errorf("update index fields %s: %w", rec.ID, err)
+	}
+	return nil
 }
 
 // formatDate renders a time for a Weaviate date property, returning "" for the
@@ -584,6 +643,8 @@ func (ts *TenantStore) UpsertSummary(ctx context.Context, sum memory.Summary, ve
 		"updatedAt":      sum.UpdatedAt.UTC().Format(time.RFC3339),
 		"model":          sum.Model,
 		"dims":           sum.Dims,
+		"indexedSeq":     sum.IndexedSeq,
+		"indexedStream":  sum.IndexedStream,
 	}, vector)
 }
 
@@ -613,8 +674,32 @@ func (ts *TenantStore) Delete(ctx context.Context, id string) error {
 // Get fetches a single memory by ID over REST. found is false if it does not
 // exist. Used by Link/Unlink to read the current link set before updating it.
 func (ts *TenantStore) Get(ctx context.Context, id string) (memory.Record, bool, error) {
+	props, ok, err := ts.getProps(ctx, memory.ClassName, id)
+	if err != nil || !ok {
+		return memory.Record{}, false, err
+	}
+	return objectToRecord(id, props), true, nil
+}
+
+// GetSummarySeq returns the indexedSeq and indexedStream of a conversation's
+// stored summary. A missing summary, or one that predates the properties, reads as
+// 0, 0 (nil error), which the stale guard treats as "nothing newer stored".
+func (ts *TenantStore) GetSummarySeq(ctx context.Context, conversationID string) (seq uint64, stream int64, err error) {
+	props, ok, err := ts.getProps(ctx, memory.SummaryClassName, memory.SummaryID(conversationID))
+	if err != nil || !ok {
+		return 0, 0, err
+	}
+	if p, isMap := props.(map[string]interface{}); isMap {
+		return restSeq(p, "indexedSeq"), restInt64(p, "indexedStream"), nil
+	}
+	return 0, 0, nil
+}
+
+// getProps fetches one object's raw REST properties from className, with the
+// strict tenant handling documented below.
+func (ts *TenantStore) getProps(ctx context.Context, className, id string) (models.PropertySchema, bool, error) {
 	checker := ts.s.client.Data().Checker().
-		WithClassName(memory.ClassName).WithID(id)
+		WithClassName(className).WithID(id)
 	if ts.t != "" {
 		checker = checker.WithTenant(ts.t)
 	}
@@ -625,41 +710,41 @@ func (ts *TenantStore) Get(ctx context.Context, id string) (memory.Record, bool,
 		// A bare 422 is ambiguous (absent tenant, inactive/offloaded tenant, bad
 		// input), so ask the schema API whether the tenant really is absent.
 		if isTenantNotFound(err) {
-			return memory.Record{}, false, nil
+			return nil, false, nil
 		}
 		if ts.t != "" && isStatus422(err) {
 			absent, cerr := tenantAbsent(ctx, func(ctx context.Context) (bool, error) {
 				return ts.s.client.Schema().TenantsExists().
-					WithClassName(memory.ClassName).WithTenant(ts.t).Do(ctx)
+					WithClassName(className).WithTenant(ts.t).Do(ctx)
 			})
 			if cerr == nil && absent {
-				return memory.Record{}, false, nil
+				return nil, false, nil
 			}
 			if cerr != nil {
 				err = errors.Join(err, fmt.Errorf("tenant existence check: %w", cerr))
 			}
 		}
-		return memory.Record{}, false, fmt.Errorf("check object: %w", err)
+		return nil, false, fmt.Errorf("check object: %w", err)
 	}
 	if !exists {
-		return memory.Record{}, false, nil
+		return nil, false, nil
 	}
 	getter := ts.s.client.Data().ObjectsGetter().
-		WithClassName(memory.ClassName).WithID(id)
+		WithClassName(className).WithID(id)
 	if ts.t != "" {
 		getter = getter.WithTenant(ts.t)
 	}
 	objs, err := getter.Do(ctx)
 	if err != nil {
 		if isTenantNotFound(err) {
-			return memory.Record{}, false, nil
+			return nil, false, nil
 		}
-		return memory.Record{}, false, fmt.Errorf("get object: %w", err)
+		return nil, false, fmt.Errorf("get object: %w", err)
 	}
 	if len(objs) == 0 {
-		return memory.Record{}, false, nil
+		return nil, false, nil
 	}
-	return objectToRecord(id, objs[0].Properties), true, nil
+	return objs[0].Properties, true, nil
 }
 
 // SetLinks replaces a memory's linkedIds via a Weaviate merge (PATCH), leaving
@@ -1396,6 +1481,8 @@ func objectToRecord(id string, raw models.PropertySchema) memory.Record {
 		DupCandidates:  restStrings(p, "dupCandidates"),
 		NotDuplicateOf: restStrings(p, "notDuplicateOf"),
 		AccessCount:    restInt(p, "accessCount"),
+		IndexedSeq:     restSeq(p, "indexedSeq"),
+		IndexedStream:  restInt64(p, "indexedStream"),
 	}
 	if ca := restString(p, "createdAt"); ca != "" {
 		rec.CreatedAt, _ = time.Parse(time.RFC3339, ca)
@@ -1412,6 +1499,23 @@ func objectToRecord(id string, raw models.PropertySchema) memory.Record {
 func restString(p map[string]interface{}, key string) string {
 	s, _ := p[key].(string)
 	return s
+}
+
+// restSeq decodes an int property as a uint64 sequence; absent or negative is 0.
+func restSeq(p map[string]interface{}, key string) uint64 {
+	if f, ok := p[key].(float64); ok && f > 0 {
+		return uint64(f)
+	}
+	return 0
+}
+
+// restInt64 decodes an int property as int64 (float64 on the REST path is exact
+// below 2^53, which covers unix-microsecond identities).
+func restInt64(p map[string]interface{}, key string) int64 {
+	if f, ok := p[key].(float64); ok {
+		return int64(f)
+	}
+	return 0
 }
 
 func restInt(p map[string]interface{}, key string) int {

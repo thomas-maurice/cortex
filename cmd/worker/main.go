@@ -24,6 +24,7 @@ import (
 
 	"github.com/thomas-maurice/cortex/internal/bus"
 	"github.com/thomas-maurice/cortex/internal/chunk"
+	"github.com/thomas-maurice/cortex/internal/dlock"
 	"github.com/thomas-maurice/cortex/internal/embed"
 	"github.com/thomas-maurice/cortex/internal/memory"
 	"github.com/thomas-maurice/cortex/internal/obs"
@@ -76,6 +77,21 @@ func envBool(key string, def bool) bool {
 	return b
 }
 
+// Per-memory-id locking. Workers scale horizontally; every read-modify-write on
+// one memory (index write, link edit) or one summary runs under a lock in the
+// lockBucket KV bucket. The 60s TTL only reclaims a crashed holder's lock
+// (no lease refresh); the indexedSeq guard is the backstop if a holder outlives it.
+const (
+	lockBucket = "cortex_locks"
+	lockTTL    = 60 * time.Second
+	// ackWait is set explicitly on both consumers; the pool sends InProgress every
+	// keepaliveInterval (5s) for a message's whole life, far inside it.
+	ackWait = 30 * time.Second
+	// fetchReadyGrace: /readyz fails once JetStream pulls have failed continuously
+	// for this long.
+	fetchReadyGrace = 30 * time.Second
+)
+
 func main() {
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
@@ -109,6 +125,9 @@ func main() {
 		// metricsAddr is the listen address of the ops HTTP server (/metrics,
 		// /healthz, /readyz). An explicitly empty METRICS_ADDR disables it.
 		metricsAddr = envOrEmpty("METRICS_ADDR", ":9090")
+		// concurrency bounds in-flight messages per consumer in THIS process. Scale
+		// further by adding worker replicas.
+		concurrency = envInt("WORKER_CONCURRENCY", 4)
 	)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -140,6 +159,13 @@ func main() {
 	}
 	checkSchema(ctx, log, st)
 
+	host, _ := os.Hostname() // ignored: owner is a debugging label only
+	locker, err := dlock.New(ctx, js, lockBucket, lockTTL, fmt.Sprintf("%s/%d", host, os.Getpid()))
+	if err != nil {
+		log.Error("ensure lock bucket", "err", err)
+		os.Exit(1)
+	}
+
 	embedder := embed.New(ollamaURL, ollamaModel)
 	reg := obs.NewRegistry()
 	m := newMetrics(reg)
@@ -156,59 +182,102 @@ func main() {
 		}
 	}
 
-	cons, err := js.CreateOrUpdateConsumer(ctx, memory.StreamName, jetstream.ConsumerConfig{
-		Durable:        memory.ConsumerName,
-		AckPolicy:      jetstream.AckExplicitPolicy,
-		FilterSubjects: []string{memory.SubjectIndex, memory.SubjectSummary},
-		MaxDeliver:     memory.MaxDeliver,
-	})
-	if err != nil {
-		log.Error("create consumer", "err", err)
-		os.Exit(1)
-	}
-
-	// Links ride their own durable consumer, decoupled from indexing: an edge
-	// whose endpoint is still being embedded retries on this consumer's budget
-	// without blocking or being blocked by the index stream.
-	linkCons, err := js.CreateOrUpdateConsumer(ctx, memory.StreamName, jetstream.ConsumerConfig{
-		Durable:        memory.LinkConsumerName,
-		AckPolicy:      jetstream.AckExplicitPolicy,
-		FilterSubjects: []string{memory.SubjectLink},
-		MaxDeliver:     memory.LinkMaxDeliver,
-	})
-	if err != nil {
-		log.Error("create link consumer", "err", err)
-		os.Exit(1)
-	}
-
 	log.Info("worker up", "nats", natsURL, "weaviate", weaviate, "model", ollamaModel,
 		"dedup_distance", dedupDistance, "chunking_enabled", chunkingEnabled,
 		"chunk_max_tokens", chunkMaxTokens, "chunk_overlap", chunkOverlap, "multi_tenant", multiTenant)
 
+	locker.Instrument(log, m.lockInfraError, m.observeLockWait)
+	deps := &workerDeps{
+		log: log, m: m, js: js, locker: locker, stream: newStreamIdent(js), embedder: embedder,
+		stores: func(userID string) tenantStore { return st.Tenant(userID) }, chunker: chunker,
+		dedupDistance: dedupDistance, concurrency: concurrency, ackWait: ackWait,
+	}
+	indexPool, linkPool, err := deps.startPools(ctx)
+	if err != nil {
+		log.Error("start consumers", "err", err)
+		os.Exit(1)
+	}
+	defer indexPool.wait()
+	defer linkPool.wait()
+
 	if metricsAddr != "" {
-		serveOps(ctx, log, metricsAddr, reg, obs.DependencyChecks(nc, st, embedder))
+		checks := obs.DependencyChecks(nc, st, embedder)
+		// A worker whose pulls have failed continuously is processing nothing.
+		for name, p := range map[string]*pool{"jetstream-index": indexPool, "jetstream-link": linkPool} {
+			checks = append(checks, obs.Check{Name: name, Fn: func(context.Context) error { return p.health.err(fetchReadyGrace) }})
+		}
+		serveOps(ctx, log, metricsAddr, reg, checks)
 	}
-
-	cc, err := cons.Consume(func(msg jetstream.Msg) {
-		handle(ctx, log, m, js, embedder, st, chunker, msg, dedupDistance)
-	})
-	if err != nil {
-		log.Error("consume", "err", err)
-		os.Exit(1)
-	}
-	defer cc.Stop()
-
-	lcc, err := linkCons.Consume(func(msg jetstream.Msg) {
-		handleLink(ctx, log, m, js, st, msg)
-	})
-	if err != nil {
-		log.Error("consume links", "err", err)
-		os.Exit(1)
-	}
-	defer lcc.Stop()
 
 	<-ctx.Done()
 	log.Info("shutting down")
+}
+
+// ensureConsumer creates (or updates) a durable pull consumer with the worker's
+// settings. The stream must exist.
+func ensureConsumer(ctx context.Context, js jetstream.JetStream, durable string, filters []string, maxDeliver int, ackWait time.Duration) (jetstream.Consumer, error) {
+	return js.CreateOrUpdateConsumer(ctx, memory.StreamName, jetstream.ConsumerConfig{
+		Durable:        durable,
+		AckPolicy:      jetstream.AckExplicitPolicy,
+		AckWait:        ackWait,
+		FilterSubjects: filters,
+		MaxDeliver:     maxDeliver,
+	})
+}
+
+// workerDeps is everything the consumer loops need; main and the multi-replica
+// tests both start pools through startPools, so the tests run the real wiring.
+type workerDeps struct {
+	log           *slog.Logger
+	m             *metrics
+	js            jetstream.JetStream
+	locker        *dlock.Locker
+	stream        *streamIdent
+	embedder      *embed.Client
+	stores        tenantStores
+	chunker       *chunk.Chunker
+	dedupDistance float32
+	concurrency   int
+	ackWait       time.Duration
+}
+
+// startPools creates the two durable consumers (the stream must already exist) and
+// starts `concurrency` loops on each, every loop pulling ONE message at a time (see
+// pool): bounded, and no replica can hoard a backlog. Correctness across goroutines
+// and replicas rests on the per-id locks and the indexedSeq guard. The pools
+// re-create a consumer (stream re-ensured first) only when that cannot replay history.
+func (d *workerDeps) startPools(ctx context.Context) (index, link *pool, err error) {
+	// Links ride their own durable consumer, decoupled from indexing: an edge whose
+	// endpoint is still being embedded retries on this consumer's budget without
+	// blocking or being blocked by the index stream.
+	indexFilters := []string{memory.SubjectIndex, memory.SubjectSummary}
+	linkFilters := []string{memory.SubjectLink}
+	recreate := func(durable string, filters []string, maxDeliver int) func(context.Context) (jetstream.Consumer, error) {
+		return func(ctx context.Context) (jetstream.Consumer, error) {
+			if err := bus.EnsureStream(ctx, d.js); err != nil {
+				return nil, err
+			}
+			return ensureConsumer(ctx, d.js, durable, filters, maxDeliver, d.ackWait)
+		}
+	}
+	idx, err := ensureConsumer(ctx, d.js, memory.ConsumerName, indexFilters, memory.MaxDeliver, d.ackWait)
+	if err != nil {
+		return nil, nil, fmt.Errorf("create consumer: %w", err)
+	}
+	lnk, err := ensureConsumer(ctx, d.js, memory.LinkConsumerName, linkFilters, memory.LinkMaxDeliver, d.ackWait)
+	if err != nil {
+		return nil, nil, fmt.Errorf("create link consumer: %w", err)
+	}
+	index, link = newPool(d.concurrency, d.log, d.m), newPool(d.concurrency, d.log, d.m)
+	index.run(ctx, newConsumerRef(d.js, idx, recreate(memory.ConsumerName, indexFilters, memory.MaxDeliver)),
+		func(wctx context.Context, msg jetstream.Msg) {
+			handle(wctx, d.log, d.m, d.js, d.locker, d.stream, d.embedder, d.stores, d.chunker, msg, d.dedupDistance)
+		})
+	link.run(ctx, newConsumerRef(d.js, lnk, recreate(memory.LinkConsumerName, linkFilters, memory.LinkMaxDeliver)),
+		func(wctx context.Context, msg jetstream.Msg) {
+			handleLink(wctx, d.log, d.m, d.js, d.locker, d.stores, msg)
+		})
+	return index, link, nil
 }
 
 // envOrEmpty is like env but distinguishes "unset" (use def) from "set to empty"
@@ -285,12 +354,12 @@ func ensureSchemaWithRetry(ctx context.Context, log *slog.Logger, st *store.Stor
 
 // handle dispatches by subject: fact-index events and conversation-summary
 // events share one durable consumer.
-func handle(ctx context.Context, log *slog.Logger, m *metrics, js jetstream.JetStream, embedder *embed.Client, st *store.Store, chunker *chunk.Chunker, msg jetstream.Msg, dedupDistance float32) {
+func handle(ctx context.Context, log *slog.Logger, m *metrics, js jetstream.JetStream, locker *dlock.Locker, stream *streamIdent, embedder *embed.Client, stores tenantStores, chunker *chunk.Chunker, msg jetstream.Msg, dedupDistance float32) {
 	if msg.Subject() == memory.SubjectSummary {
-		handleSummary(ctx, log, m, js, embedder, st, msg)
+		handleSummary(ctx, log, m, js, locker, stream, embedder, stores, msg)
 		return
 	}
-	handleIndex(ctx, log, m, js, embedder, st, chunker, msg, dedupDistance)
+	handleIndex(ctx, log, m, js, locker, stream, embedder, stores, chunker, msg, dedupDistance)
 }
 
 // deadLetterPublisher is the signature for publishing a dead-letter record.
@@ -335,7 +404,7 @@ func deadLetterMalformed(ctx context.Context, log *slog.Logger, m *metrics, kind
 // conversation, replaced in place). Summaries are reproducible — the agent
 // re-summarises periodically — so on permanent failure we log loudly and ack
 // rather than dead-letter.
-func handleSummary(ctx context.Context, log *slog.Logger, m *metrics, js jetstream.JetStream, embedder *embed.Client, st *store.Store, msg jetstream.Msg) {
+func handleSummary(ctx context.Context, log *slog.Logger, m *metrics, js jetstream.JetStream, locker *dlock.Locker, stream *streamIdent, embedder *embed.Client, stores tenantStores, msg jetstream.Msg) {
 	var sum memory.Summary
 	if err := json.Unmarshal(msg.Data(), &sum); err != nil {
 		pub := func(dl memory.DeadLetter) error { return bus.PublishDead(ctx, js, dl) }
@@ -345,9 +414,10 @@ func handleSummary(ctx context.Context, log *slog.Logger, m *metrics, js jetstre
 
 	// Tenant comes from the NATS payload UserID stamped by the server handler —
 	// NEVER from a request field. st.Tenant("") is a no-op when MT is off.
-	ts := st.Tenant(sum.UserID)
+	ts := stores(sum.UserID)
 
 	var procErr error
+	var applied bool
 	var embedDur, storeDur time.Duration
 	embedStart := time.Now()
 	vec, err := embedder.Embed(ctx, sum.Text)
@@ -361,12 +431,19 @@ func handleSummary(ctx context.Context, log *slog.Logger, m *metrics, js jetstre
 			sum.UpdatedAt = time.Now().UTC()
 		}
 		storeStart := time.Now()
-		if err := ts.UpsertSummary(ctx, sum, vec); err != nil {
+		applied, err = commitSummary(ctx, locker, ts, sum, vec, streamSeq(msg), stream)
+		noteHoldExpiry(ctx, log, m, kindSummary, sum.ConversationID, err)
+		if err != nil {
 			procErr = fmt.Errorf("upsert: %w", err)
 		}
 		storeDur = time.Since(storeStart)
 	}
 
+	if procErr == nil && !applied {
+		log.Info("stale summary skipped, a newer one is already stored", "conversation", sum.ConversationID)
+		ackAs(log, m, kindSummary, msg, outcomeStale)
+		return
+	}
 	if procErr == nil {
 		log.Info("summarized", "conversation", sum.ConversationID, "dims", len(vec),
 			"embed_ms", embedDur.Milliseconds(), "store_ms", storeDur.Milliseconds(),
@@ -376,6 +453,9 @@ func handleSummary(ctx context.Context, log *slog.Logger, m *metrics, js jetstre
 		return
 	}
 
+	if abortForShutdown(ctx, log, msg) {
+		return
+	}
 	deliveries := 0
 	if md, err := msg.Metadata(); err == nil {
 		deliveries = int(md.NumDelivered)
@@ -397,18 +477,180 @@ func handleSummary(ctx context.Context, log *slog.Logger, m *metrics, js jetstre
 
 // ack acknowledges msg as successfully processed and counts it.
 func ack(log *slog.Logger, m *metrics, kind string, msg jetstream.Msg) {
+	ackAs(log, m, kind, msg, outcomeAck)
+}
+
+// ackAs acknowledges msg and counts it under outcome: ack for done work, stale for
+// a message whose work is already superseded by a newer stored version.
+func ackAs(log *slog.Logger, m *metrics, kind string, msg jetstream.Msg, outcome string) {
 	if err := msg.Ack(); err != nil {
 		log.Warn("msg ack failed", "err", err)
 	}
-	m.count(kind, outcomeAck)
+	m.count(kind, outcome)
 }
 
-// linkMu serializes the read-modify-write the link consumer performs on each
-// endpoint's linkedIds. SetLinks replaces the whole list, so concurrent applies
-// touching the same endpoint would otherwise lose updates. This protects a single
-// worker process; running multiple worker replicas reintroduces the cross-process
-// race, which is non-fatal (it can leave a link asymmetric) but worth knowing.
-var linkMu sync.Mutex
+// streamSeq is the JetStream stream sequence of msg: a monotonic, cluster-wide
+// version for the publish order. 0 when unavailable (tests).
+func streamSeq(msg jetstream.Msg) uint64 {
+	if md, err := msg.Metadata(); err == nil {
+		return md.Sequence.Stream
+	}
+	return 0
+}
+
+// noteHoldExpiry logs and counts a critical section cut off by the lock hold
+// deadline (not by worker shutdown). The error text carries the phase that was
+// running (read stored / upsert / chunk index / set links ...); the message is
+// retried by the normal failure path.
+func noteHoldExpiry(ctx context.Context, log *slog.Logger, m *metrics, kind, id string, err error) {
+	if err == nil || ctx.Err() != nil || !errors.Is(err, context.DeadlineExceeded) {
+		return
+	}
+	log.Warn("critical section hit the lock hold deadline, will retry", "kind", kind, "id", id, "err", err)
+	m.holdTimeout()
+}
+
+// abortForShutdown NAKs msg and returns true when the worker is shutting down
+// (ctx cancelled). A handler that failed only because its context was cancelled
+// must not be settled as a processing failure (that would count toward dead-letter
+// for perfectly valid work); the message is simply handed back for redelivery.
+func abortForShutdown(ctx context.Context, log *slog.Logger, msg jetstream.Msg) bool {
+	if ctx.Err() == nil {
+		return false
+	}
+	log.Info("shutting down, returning message for redelivery")
+	if err := msg.Nak(); err != nil {
+		log.Warn("msg nak failed", "err", err)
+	}
+	return true
+}
+
+// streamIdent caches the identity of the MEMORY stream (its creation time, unix
+// microseconds). JetStream sequences restart at 1 when a stream is recreated, so
+// the stale-write guard only compares sequences recorded under the same identity.
+// Cached, refreshed after streamIdentMaxAge so a recreation is noticed; a failed
+// refresh keeps the last known value (0 = unknown, which disables the identity
+// check and falls back to comparing sequences).
+type streamIdent struct {
+	js  jetstream.JetStream
+	mu  sync.Mutex
+	val int64
+	at  time.Time
+}
+
+const streamIdentMaxAge = 30 * time.Second
+
+// streamIdentity is what the commit functions need from a streamIdent (an
+// interface so tests can pin identities).
+type streamIdentity interface {
+	get(ctx context.Context) int64
+	refresh(ctx context.Context)
+}
+
+// staleAfterRefresh evaluates the stale guard and, before declaring a message
+// stale, refreshes the cached stream identity and re-evaluates: a stream recreated
+// within the cache window would otherwise make every message look older than
+// stored for up to streamIdentMaxAge. Stale is rare, so the lookup is cheap.
+// It returns the verdict and the identity to stamp on a write.
+func staleAfterRefresh(ctx context.Context, sid streamIdentity, storedSeq uint64, storedStream int64, seq uint64) (isStale bool, stream int64) {
+	stream = sid.get(ctx)
+	if !superseded(storedSeq, storedStream, seq, stream) {
+		return false, stream
+	}
+	sid.refresh(ctx)
+	stream = sid.get(ctx)
+	return superseded(storedSeq, storedStream, seq, stream), stream
+}
+
+func newStreamIdent(js jetstream.JetStream) *streamIdent { return &streamIdent{js: js} }
+
+func (s *streamIdent) get(ctx context.Context) int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.val == 0 || time.Since(s.at) > streamIdentMaxAge {
+		s.refreshLocked(ctx)
+	}
+	return s.val
+}
+
+func (s *streamIdent) refresh(ctx context.Context) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.refreshLocked(ctx)
+}
+
+func (s *streamIdent) refreshLocked(ctx context.Context) {
+	s.at = time.Now()
+	if info, err := streamInfo(ctx, s.js); err == nil {
+		s.val = info.Created.UnixMicro()
+	}
+}
+
+// streamInfo returns the MEMORY stream's current info (js.Stream fetches it, so
+// CachedInfo is fresh).
+func streamInfo(ctx context.Context, js jetstream.JetStream) (*jetstream.StreamInfo, error) {
+	st, err := js.Stream(ctx, memory.StreamName)
+	if err != nil {
+		return nil, err
+	}
+	return st.CachedInfo(), nil
+}
+
+// superseded reports whether a stored (seq, stream) is newer than the message's.
+// Sequences are only comparable within one stream: if both identities are known
+// and differ, the stream was recreated since the stored write, so the message is
+// fresh. If either is unknown (legacy object, lookup failure) sequences are
+// compared as-is.
+func superseded(storedSeq uint64, storedStream int64, seq uint64, stream int64) bool {
+	if storedStream != 0 && stream != 0 && storedStream != stream {
+		return false
+	}
+	return storedSeq > seq
+}
+
+// tenantStore is everything the handlers use from a tenant-scoped store.
+// *store.TenantStore implements it; tests substitute a fake, so the concurrency
+// behaviour is testable without Weaviate.
+type tenantStore interface {
+	Get(ctx context.Context, id string) (memory.Record, bool, error)
+	SetLinks(ctx context.Context, id string, links []string) error
+	Upsert(ctx context.Context, rec memory.Record, vector []float32) error
+	UpdateIndexFields(ctx context.Context, rec memory.Record, vector []float32) error
+	ReplaceChunks(ctx context.Context, rec memory.Record, chunks []store.ChunkVec) error
+	Delete(ctx context.Context, id string) error
+	GetSummarySeq(ctx context.Context, conversationID string) (seq uint64, stream int64, err error)
+	UpsertSummary(ctx context.Context, sum memory.Summary, vector []float32) error
+	SearchMemoryVectors(ctx context.Context, vec []float32, opts store.SearchOpts) ([]memory.Hit, error)
+}
+
+// tenantStores resolves the tenant-scoped store for a payload's UserID.
+type tenantStores func(userID string) tenantStore
+
+// commitSummary upserts sum under the conversation's lock unless a summary from a
+// newer queue message is already stored (then applied=false). Summaries are one
+// object per conversation, so without this an older message finishing after a
+// newer one (two workers, or a redelivery) would regress the summary.
+func commitSummary(ctx context.Context, locker *dlock.Locker, ts tenantStore, sum memory.Summary, vec []float32, seq uint64, sid streamIdentity) (applied bool, err error) {
+	hctx, release, err := locker.AcquireAll(ctx, []string{dlock.Key("sum", sum.UserID, sum.ConversationID)}, locker.Wait())
+	if err != nil {
+		return false, fmt.Errorf("lock: %w", err)
+	}
+	defer release()
+
+	storedSeq, storedStream, err := ts.GetSummarySeq(hctx, sum.ConversationID)
+	if err != nil {
+		return false, err
+	}
+	isStale, stream := staleAfterRefresh(hctx, sid, storedSeq, storedStream, seq)
+	if isStale {
+		return false, nil
+	}
+	sum.IndexedSeq, sum.IndexedStream = seq, stream
+	if err := ts.UpsertSummary(hctx, sum, vec); err != nil {
+		return false, err
+	}
+	return true, nil
+}
 
 // handleLink applies one bidirectional edge mutation (memory.LinkMsg) to the
 // store. It is the durable, retrying replacement for the old inline link-on-index
@@ -420,34 +662,56 @@ var linkMu sync.Mutex
 // remove needs no waiting: a missing endpoint has no edge to clear, so it applies
 // to whichever endpoint exists and acks. The apply itself is idempotent
 // (set-union / set-difference), so redelivery and duplicate publishes are no-ops.
-func handleLink(ctx context.Context, log *slog.Logger, m *metrics, js jetstream.JetStream, st *store.Store, msg jetstream.Msg) {
+//
+// Each apply is a read-modify-write of both endpoints' linkedIds (SetLinks replaces
+// the whole list), so it runs under the distributed lock of BOTH ids, taken in
+// sorted order: safe across any number of workers and against the index path,
+// which takes the same per-id lock. linkedIds is owned by this consumer alone.
+func handleLink(ctx context.Context, log *slog.Logger, m *metrics, js jetstream.JetStream, locker *dlock.Locker, stores tenantStores, msg jetstream.Msg) {
 	var lm memory.LinkMsg
 	if err := json.Unmarshal(msg.Data(), &lm); err != nil {
 		pub := func(dl memory.DeadLetter) error { return bus.PublishDead(ctx, js, dl) }
 		deadLetterMalformed(ctx, log, m, kindLink, pub, msg, err)
 		return
 	}
-	if lm.A == "" || lm.B == "" || lm.A == lm.B {
+	// Memory ids are Weaviate object ids, i.e. UUIDs. A non-UUID endpoint can never
+	// exist (every store call would 422), so an ADD to one terminates now instead of
+	// burning the whole LinkMaxDeliver budget. A REMOVE keeps its old meaning: the
+	// missing endpoint has no edge to clear, and the edge is still removed from the
+	// valid side (a dangling link to a bad id can be cleaned up).
+	if lm.A == "" || lm.B == "" || lm.A == lm.B || (lm.Op != memory.LinkOpRemove && (!validID(lm.A) || !validID(lm.B))) {
 		log.Warn("invalid link msg, terminating", "op", lm.Op, "a", lm.A, "b", lm.B)
 		_ = msg.Term()
 		m.count(kindLink, outcomeTerm)
 		return
 	}
 
-	linkMu.Lock()
-	defer linkMu.Unlock()
-
-	// Tenant comes from the NATS payload's UserID, stamped by the RPC handler.
-	ts := st.Tenant(lm.UserID)
-
-	a, aOK, err := ts.Get(ctx, lm.A)
+	hctx, release, err := locker.AcquireAll(ctx, []string{dlock.Key("mem", lm.UserID, lm.A), dlock.Key("mem", lm.UserID, lm.B)}, locker.Wait())
 	if err != nil {
-		linkRetry(log, m, msg, lm, "endpoint lookup failed", err)
+		linkRetry(ctx, log, m, msg, lm, "lock failed", err)
 		return
 	}
-	b, bOK, err := ts.Get(ctx, lm.B)
+	defer release()
+
+	// Tenant comes from the NATS payload's UserID, stamped by the RPC handler.
+	ts := stores(lm.UserID)
+
+	// lookup treats a non-UUID endpoint (only reachable for removes) as absent
+	// without asking the store, which would reject it.
+	lookup := func(id string) (memory.Record, bool, error) {
+		if !validID(id) {
+			return memory.Record{}, false, nil
+		}
+		return ts.Get(hctx, id)
+	}
+	a, aOK, err := lookup(lm.A)
 	if err != nil {
-		linkRetry(log, m, msg, lm, "endpoint lookup failed", err)
+		linkRetry(ctx, log, m, msg, lm, "endpoint lookup failed", err)
+		return
+	}
+	b, bOK, err := lookup(lm.B)
+	if err != nil {
+		linkRetry(ctx, log, m, msg, lm, "endpoint lookup failed", err)
 		return
 	}
 
@@ -471,19 +735,25 @@ func handleLink(ctx context.Context, log *slog.Logger, m *metrics, js jetstream.
 
 	newA, newB := applyEdge(lm.Op, lm.A, a.LinkedIDs, lm.B, b.LinkedIDs)
 	if aOK {
-		if err := ts.SetLinks(ctx, lm.A, newA); err != nil {
-			linkRetry(log, m, msg, lm, "set links failed", err)
+		if err := ts.SetLinks(hctx, lm.A, newA); err != nil {
+			linkRetry(ctx, log, m, msg, lm, "set links failed", err)
 			return
 		}
 	}
 	if bOK {
-		if err := ts.SetLinks(ctx, lm.B, newB); err != nil {
-			linkRetry(log, m, msg, lm, "set links failed", err)
+		if err := ts.SetLinks(hctx, lm.B, newB); err != nil {
+			linkRetry(ctx, log, m, msg, lm, "set links failed", err)
 			return
 		}
 	}
 	log.Info("link applied", "op", lm.Op, "a", lm.A, "b", lm.B)
 	ack(log, m, kindLink, msg)
+}
+
+// validID reports whether id can be a memory (Weaviate object) id.
+func validID(id string) bool {
+	_, err := uuid.Parse(id)
+	return err == nil
 }
 
 // applyEdge returns the new link slices for endpoints a and b after applying op.
@@ -509,7 +779,11 @@ func linkRetryDelay(deliveries int) time.Duration {
 
 // linkRetry NAKs a transient link failure (store error) with backoff; on a fresh
 // message deliveries is 0, giving an immediate redelivery.
-func linkRetry(log *slog.Logger, m *metrics, msg jetstream.Msg, lm memory.LinkMsg, what string, err error) {
+func linkRetry(ctx context.Context, log *slog.Logger, m *metrics, msg jetstream.Msg, lm memory.LinkMsg, what string, err error) {
+	if abortForShutdown(ctx, log, msg) {
+		return
+	}
+	noteHoldExpiry(ctx, log, m, kindLink, lm.A+"<->"+lm.B, err)
 	deliveries := numDelivered(msg)
 	log.Warn("link apply failed, will retry", "reason", what, "op", lm.Op, "a", lm.A, "b", lm.B, "deliveries", deliveries, "err", err)
 	_ = msg.NakWithDelay(linkRetryDelay(deliveries))
@@ -567,7 +841,7 @@ func planSupersedes(recID string, supersedes []string) []string {
 // source is logged and skipped, so a redelivery that re-runs this (sources
 // already deleted) is harmless. ts is scoped to the record's tenant so the
 // deletes only affect the correct tenant's data in multi-tenant mode.
-func applySupersedes(ctx context.Context, log *slog.Logger, ts *store.TenantStore, rec memory.Record) {
+func applySupersedes(ctx context.Context, log *slog.Logger, ts tenantStore, rec memory.Record) {
 	for _, id := range planSupersedes(rec.ID, rec.Supersedes) {
 		if err := ts.Delete(ctx, id); err != nil {
 			log.Warn("supersede delete failed, skipping", "id", rec.ID, "superseded", id, "err", err)
@@ -588,7 +862,7 @@ const candidateLimit = 5
 // a search failure is logged and treated as "no candidates", never fatal, since
 // the record must still be indexed regardless. ts is scoped to the record's tenant
 // so cross-tenant matches are impossible in multi-tenant mode.
-func findCandidates(ctx context.Context, log *slog.Logger, ts *store.TenantStore, rec memory.Record, vec []float32, dedupDistance float32) []string {
+func findCandidates(ctx context.Context, log *slog.Logger, ts tenantStore, rec memory.Record, vec []float32, dedupDistance float32) []string {
 	if dedupDistance <= 0 {
 		return nil
 	}
@@ -623,39 +897,105 @@ func findCandidates(ctx context.Context, log *slog.Logger, ts *store.TenantStore
 	return out
 }
 
-// indexChunks splits rec.Text into overlapping, token-bounded chunks, embeds each
-// one, and (idempotently) replaces the memory's chunk set in the store. The chunk
-// vectors are the PRIMARY search target — a fact buried in a long memory is found
-// by matching its focused chunk, not the whole document's averaged vector. Returns
-// the number of chunks written. Any embed/store error is returned so the caller
-// retries (chunk ids are deterministic, so the retry overwrites cleanly). A nil
-// chunker means chunking is disabled — a no-op, so the worker only writes the
-// whole-memory vector. ts is scoped to the record's tenant.
-func indexChunks(ctx context.Context, embedder *embed.Client, ts *store.TenantStore, chunker *chunk.Chunker, rec memory.Record) (int, error) {
+// embedChunks splits rec.Text into overlapping, token-bounded chunks and embeds
+// them (outside the id lock: embedding is the slow part). The chunk vectors are
+// the PRIMARY search target: a fact buried in a long memory is found by matching
+// its focused chunk, not the whole document's averaged vector. A nil chunker means
+// chunking is disabled and no chunks are produced.
+func embedChunks(ctx context.Context, embedder *embed.Client, chunker *chunk.Chunker, rec memory.Record) ([]store.ChunkVec, error) {
 	if chunker == nil {
-		// Chunking disabled: purge any chunks this memory had from when it WAS
-		// enabled, so re-importing a memory while disabled doesn't leave orphans.
-		// ReplaceChunks with no chunks deletes all of the memory's chunks.
-		return 0, ts.ReplaceChunks(ctx, rec, nil)
+		return nil, nil
 	}
 	chunks := chunker.Split(rec.Text)
 	// One batched call (split internally at the client's cap) instead of a serial
 	// round-trip per chunk; vectors come back index-aligned with chunks.
 	vecs, err := embedder.EmbedBatch(ctx, chunks)
 	if err != nil {
-		return 0, fmt.Errorf("embed chunks: %w", err)
+		return nil, fmt.Errorf("embed chunks: %w", err)
 	}
 	cvs := make([]store.ChunkVec, 0, len(chunks))
 	for i, ct := range chunks {
 		cvs = append(cvs, store.ChunkVec{Index: i, Text: ct, Vector: vecs[i]})
 	}
-	if err := ts.ReplaceChunks(ctx, rec, cvs); err != nil {
-		return 0, err
-	}
-	return len(cvs), nil
+	return cvs, nil
 }
 
-func handleIndex(ctx context.Context, log *slog.Logger, m *metrics, js jetstream.JetStream, embedder *embed.Client, st *store.Store, chunker *chunk.Chunker, msg jetstream.Msg, dedupDistance float32) {
+// commitIndex is the locked store phase of indexing one memory. Under the id's
+// distributed lock it reads the stored state and
+//   - skips everything if a newer queue message already landed (applied=false);
+//   - CREATES a memory that does not exist yet with the full record, links
+//     included (import, restore, migrate-mt and reindex-after-rebuild carry the
+//     only copy of the links);
+//   - UPDATES an existing memory by writing only the fields the index path owns
+//     (see store.UpdateIndexFields). linkedIds, accessCount/lastAccessedAt and
+//     notDuplicateOf belong to other writers and are never touched, so a queued
+//     edit carrying a stale snapshot of them cannot erase a link or a
+//     reinforcement made since it was published.
+//
+// With no chunker, ReplaceChunks(nil) purges chunks left from when chunking was
+// enabled.
+func commitIndex(ctx context.Context, log *slog.Logger, locker *dlock.Locker, ts tenantStore, rec memory.Record, vec []float32, cvs []store.ChunkVec, seq uint64, sid streamIdentity) (applied bool, err error) {
+	// hctx is bounded inside the first lease; see Locker.AcquireAll.
+	hctx, release, err := locker.AcquireAll(ctx, []string{dlock.Key("mem", rec.UserID, rec.ID)}, locker.Wait())
+	if err != nil {
+		return false, fmt.Errorf("lock: %w", err)
+	}
+	defer release()
+
+	stored, exists, err := ts.Get(hctx, rec.ID)
+	if err != nil {
+		return false, fmt.Errorf("read stored: %w", err)
+	}
+	// Strictly greater: a redelivery of this very message (same seq) re-applies,
+	// which is idempotent and lets a half-finished supersedes complete.
+	// A missing memory reads as seq 0 / identity 0, which is never superseded.
+	isStale, stream := staleAfterRefresh(hctx, sid, stored.IndexedSeq, stored.IndexedStream, seq)
+	if isStale {
+		return false, nil
+	}
+	rec.IndexedSeq, rec.IndexedStream = seq, stream
+	if exists {
+		// Dedup candidates were computed before the lock from the message's
+		// snapshot of notDuplicateOf; honour dismissals made since.
+		rec.DupCandidates = withoutIDs(rec.DupCandidates, stored.NotDuplicateOf)
+		err = ts.UpdateIndexFields(hctx, rec, vec)
+	} else {
+		err = ts.Upsert(hctx, rec, vec)
+	}
+	if err != nil {
+		// The full-memory vector is still stored (dedup + find-similar use it),
+		// but it is no longer the primary search target.
+		return false, fmt.Errorf("upsert: %w", err)
+	}
+	// Chunks are what Search matches against, so a chunk failure must retry:
+	// the memory would otherwise exist but be unfindable. Idempotent on retry.
+	if err := ts.ReplaceChunks(hctx, rec, cvs); err != nil {
+		return false, fmt.Errorf("chunk index: %w", err)
+	}
+	// Requested links are not applied here: they travel on SubjectLink and are
+	// applied by the link consumer, which waits for both endpoints to exist.
+	// Supersedes still runs inline: now that the merged memory AND its chunks are
+	// durable, delete the sources it replaces. Ordering matters: post-upsert means
+	// a crash here can't lose content.
+	applySupersedes(hctx, log, ts, rec)
+	return true, nil
+}
+
+// withoutIDs returns xs minus any element of drop.
+func withoutIDs(xs, drop []string) []string {
+	if len(drop) == 0 {
+		return xs
+	}
+	var out []string
+	for _, x := range xs {
+		if !slices.Contains(drop, x) {
+			out = append(out, x)
+		}
+	}
+	return out
+}
+
+func handleIndex(ctx context.Context, log *slog.Logger, m *metrics, js jetstream.JetStream, locker *dlock.Locker, stream *streamIdent, embedder *embed.Client, stores tenantStores, chunker *chunk.Chunker, msg jetstream.Msg, dedupDistance float32) {
 	defer m.observeIndex(time.Now())
 	var rec memory.Record
 	if err := json.Unmarshal(msg.Data(), &rec); err != nil {
@@ -670,14 +1010,14 @@ func handleIndex(ctx context.Context, log *slog.Logger, m *metrics, js jetstream
 	// Tenant comes from the NATS payload's UserID, stamped by the RPC handler
 	// from the authenticated identity — NEVER from any request field.
 	// st.Tenant("") is a no-op when multi-tenancy is off.
-	ts := st.Tenant(rec.UserID)
+	ts := stores(rec.UserID)
 
 	var procErr error
+	var applied bool
 	var embedDur, storeDur time.Duration
 	var nChunks int
 	embedStart := time.Now()
 	vec, err := embedder.Embed(ctx, rec.Text)
-	embedDur = time.Since(embedStart)
 	if err != nil {
 		procErr = fmt.Errorf("embed: %w", err)
 	} else {
@@ -690,27 +1030,23 @@ func handleIndex(ctx context.Context, log *slog.Logger, m *metrics, js jetstream
 		// near neighbours in the same namespace and flag them as candidates.
 		// Recomputed on every (re)index, so it always reflects current contents.
 		rec.DupCandidates = findCandidates(ctx, log, ts, rec, vec, dedupDistance)
-		storeStart := time.Now()
-		if err := ts.Upsert(ctx, rec, vec); err != nil {
-			// The full-memory vector is still stored (dedup + find-similar use it),
-			// but it is no longer the primary search target.
-			procErr = fmt.Errorf("upsert: %w", err)
-		} else if n, err := indexChunks(ctx, embedder, ts, chunker, rec); err != nil {
-			// Chunks are what Search matches against, so a chunk failure must retry —
-			// the memory would otherwise exist but be unfindable. Idempotent on retry.
-			procErr = fmt.Errorf("chunk index: %w", err)
-		} else {
-			nChunks = n
-			// Requested links are no longer applied here: they travel on
-			// SubjectLink and are applied by the link consumer, which waits for both
-			// endpoints to exist. Supersedes still runs inline — now that the merged
-			// memory AND its chunks are durable, delete the sources it replaces.
-			// Ordering matters: post-upsert means a crash here can't lose content.
-			applySupersedes(ctx, log, ts, rec)
+		var cvs []store.ChunkVec
+		cvs, procErr = embedChunks(ctx, embedder, chunker, rec)
+		if procErr == nil {
+			embedDur = time.Since(embedStart)
+			storeStart := time.Now()
+			applied, procErr = commitIndex(ctx, log, locker, ts, rec, vec, cvs, streamSeq(msg), stream)
+			noteHoldExpiry(ctx, log, m, kindIndex, rec.ID, procErr)
+			nChunks = len(cvs)
+			storeDur = time.Since(storeStart)
 		}
-		storeDur = time.Since(storeStart)
 	}
 
+	if procErr == nil && !applied {
+		log.Info("stale index message skipped, a newer version is already stored", "id", rec.ID, "seq", streamSeq(msg))
+		ackAs(log, m, kindIndex, msg, outcomeStale)
+		return
+	}
 	if procErr == nil {
 		// queue_latency_ms is the end-to-end wait from publish (rec.CreatedAt) to
 		// indexed — it includes JetStream queue time and any Ollama cold-load, so
@@ -723,6 +1059,9 @@ func handleIndex(ctx context.Context, log *slog.Logger, m *metrics, js jetstream
 		return
 	}
 
+	if abortForShutdown(ctx, log, msg) {
+		return
+	}
 	pub := func(dl memory.DeadLetter) error { return bus.PublishDead(ctx, js, dl) }
 	settleIndexFailure(log, m, pub, msg, rec, procErr)
 }

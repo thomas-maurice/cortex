@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nats-io/nats.go/jetstream"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
@@ -15,17 +14,6 @@ import (
 
 	"github.com/thomas-maurice/cortex/internal/memory"
 )
-
-// deliveredMsg is a stubMsg that reports a delivery count, so the retry-vs-dead
-// decision (which hinges on NumDelivered vs MaxDeliver) can be exercised.
-type deliveredMsg struct {
-	stubMsg
-	n uint64
-}
-
-func (d *deliveredMsg) Metadata() (*jetstream.MsgMetadata, error) {
-	return &jetstream.MsgMetadata{NumDelivered: d.n}, nil
-}
 
 func outcome(m *metrics, kind, out string) float64 {
 	return testutil.ToFloat64(m.messages.WithLabelValues(kind, out))
@@ -42,7 +30,7 @@ func TestWorkerOutcomeCounters(t *testing.T) {
 
 	t.Run("ack on success", func(t *testing.T) {
 		m := newMetrics(prometheus.NewRegistry())
-		ack(log, m, kindIndex, &stubMsg{})
+		ack(log, m, kindIndex, &fakeMsg{})
 		assert.Equal(t, 1.0, outcome(m, kindIndex, outcomeAck))
 		assert.Equal(t, 0.0, outcome(m, kindIndex, outcomeRetry))
 		assert.Equal(t, 0.0, outcome(m, kindIndex, outcomeDead))
@@ -50,9 +38,9 @@ func TestWorkerOutcomeCounters(t *testing.T) {
 
 	t.Run("retry while under the delivery budget", func(t *testing.T) {
 		m := newMetrics(prometheus.NewRegistry())
-		msg := &deliveredMsg{n: memory.MaxDeliver - 1}
+		msg := &fakeMsg{delivered: memory.MaxDeliver - 1}
 		settleIndexFailure(log, m, okPub, msg, memory.Record{ID: "x"}, procErr)
-		assert.True(t, msg.nakked)
+		assert.NotZero(t, msg.nakked.Load())
 		assert.Equal(t, 1.0, outcome(m, kindIndex, outcomeRetry))
 		assert.Equal(t, 0.0, outcome(m, kindIndex, outcomeDead))
 		assert.Equal(t, 0.0, outcome(m, kindIndex, outcomeAck), "a failed attempt must never count as ack")
@@ -60,7 +48,7 @@ func TestWorkerOutcomeCounters(t *testing.T) {
 
 	t.Run("dead once the budget is spent", func(t *testing.T) {
 		m := newMetrics(prometheus.NewRegistry())
-		msg := &deliveredMsg{n: memory.MaxDeliver}
+		msg := &fakeMsg{delivered: memory.MaxDeliver}
 		settleIndexFailure(log, m, okPub, msg, memory.Record{ID: "x"}, procErr)
 		assert.Equal(t, 1.0, outcome(m, kindIndex, outcomeDead))
 		assert.Equal(t, 0.0, outcome(m, kindIndex, outcomeRetry))
@@ -68,30 +56,30 @@ func TestWorkerOutcomeCounters(t *testing.T) {
 
 	t.Run("failed dead-letter publish counts as retry, not dead", func(t *testing.T) {
 		m := newMetrics(prometheus.NewRegistry())
-		msg := &deliveredMsg{n: memory.MaxDeliver}
+		msg := &fakeMsg{delivered: memory.MaxDeliver}
 		settleIndexFailure(log, m, failPub, msg, memory.Record{ID: "x"}, procErr)
-		assert.True(t, msg.nakked)
+		assert.NotZero(t, msg.nakked.Load())
 		assert.Equal(t, 1.0, outcome(m, kindIndex, outcomeRetry))
 		assert.Equal(t, 0.0, outcome(m, kindIndex, outcomeDead), "nothing was dead-lettered, so dead must not move")
 	})
 
 	t.Run("malformed payload counts as dead under its own kind", func(t *testing.T) {
 		m := newMetrics(prometheus.NewRegistry())
-		deadLetterMalformed(context.Background(), log, m, kindLink, okPub, &stubMsg{data: []byte("{")}, procErr)
+		deadLetterMalformed(context.Background(), log, m, kindLink, okPub, &fakeMsg{data: []byte("{")}, procErr)
 		assert.Equal(t, 1.0, outcome(m, kindLink, outcomeDead))
 		assert.Equal(t, 0.0, outcome(m, kindIndex, outcomeDead))
 	})
 
 	t.Run("invalid link is term", func(t *testing.T) {
 		m := newMetrics(prometheus.NewRegistry())
-		msg := &stubMsg{data: []byte(`{"op":"add","a":"same","b":"same"}`)}
-		handleLink(context.Background(), log, m, nil, nil, msg)
-		require.True(t, msg.termed)
+		msg := &fakeMsg{data: []byte(`{"op":"add","a":"same","b":"same"}`)}
+		handleLink(context.Background(), log, m, nil, nil, nil, msg)
+		require.NotZero(t, msg.termed.Load())
 		assert.Equal(t, 1.0, outcome(m, kindLink, outcomeTerm))
 	})
 
 	t.Run("nil metrics is a safe no-op", func(t *testing.T) {
-		assert.NotPanics(t, func() { ack(log, nil, kindIndex, &stubMsg{}) })
+		assert.NotPanics(t, func() { ack(log, nil, kindIndex, &fakeMsg{}) })
 	})
 }
 

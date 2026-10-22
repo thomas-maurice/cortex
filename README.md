@@ -749,9 +749,53 @@ The runtime image is distroless (no wget/curl), so the compose healthcheck runs 
 | `cortex_rpc_duration_seconds{procedure}` | server | histogram |
 | `cortex_index_queue_pending` | server | JetStream index consumer backlog, read at scrape time |
 | `cortex_dead_letters` | server | dead-lettered messages held in the stream |
-| `cortex_worker_messages_total{subject_kind,outcome}` | worker | kind `index\|summary\|link`; outcome `ack\|retry\|dead\|term` |
+| `cortex_worker_messages_total{subject_kind,outcome}` | worker | kind `index\|summary\|link`; outcome `ack\|retry\|dead\|term\|stale` (`stale` = acked and skipped because a newer version of that memory was already stored) |
 | `cortex_embed_duration_seconds` / `cortex_embed_errors_total` | worker | Ollama embed latency (retries included) / failures |
 | `cortex_index_duration_seconds` | worker | full index-message handling |
+| `cortex_lock_infra_errors_total` / `cortex_lock_wait_seconds` | worker | lock-bucket (NATS KV) errors other than contention (each is repaired and retried) / time to acquire one per-id lock |
+| `cortex_worker_fetch_errors_total` | worker | failed JetStream pulls. Worker `/readyz` fails once pulls have failed continuously for 30s. A wiped stream is re-ensured (with its consumers) automatically; a consumer deleted while the stream still holds messages is NOT recreated (see "Scaling the worker") |
+| `cortex_worker_hold_timeouts_total` | worker | critical sections cut off by the lock hold deadline (the message is retried) |
+
+## Scaling the worker
+
+Workers scale horizontally: run as many replicas as the embedding backend can feed.
+
+```bash
+docker compose up -d --scale worker=3     # or `deploy: {replicas: 3}` in the compose file
+```
+
+`METRICS_ADDR` is per container, so replicas do not clash (the port is not
+published). `WORKER_CONCURRENCY` (default `4`) bounds in-flight messages per
+consumer within one process. Correctness does not depend on a single worker: each
+memory's read-modify-write runs under a per-id lock in a NATS KV bucket
+(`cortex_locks`, 60s TTL), index messages carry their stream sequence so an
+older edit can never overwrite a newer one (even across a recreated stream), and the index path only writes the
+fields it owns (never links, reinforcement counters or not-duplicate decisions).
+Details and the field-ownership table: [docs/DESIGN.md](docs/DESIGN.md#horizontal-scaling-worker-replicas).
+
+Deleted consumer: the `MEMORY` stream keeps every message ever published, so a
+recreated durable consumer with the default delivery policy would replay the whole
+history (re-embedding every memory, re-running every link). If the `indexer` or
+`linker` consumer is deleted while the stream still holds messages, the worker does
+NOT recreate it: it logs an error, counts `cortex_worker_fetch_errors_total` and goes
+unready on `/readyz`. Recreate it deliberately with the worker's settings (explicit
+ack, AckWait 30s, `MaxDeliver` 10 for `indexer` / 50 for `linker`, filter subjects
+`memory.index`+`memory.summary` / `memory.link`) and an explicit start, either
+new-only or from the first unprocessed stream sequence; then the worker resumes
+(a wiped stream, with nothing to replay, is recovered automatically).
+
+Upgrade notes: a `cortex_locks` bucket created by a pre-release build with memory
+storage must be deleted once (`nats kv del cortex_locks`), because JetStream cannot
+change a bucket's storage type and the worker would fail to start. Objects written
+before `indexedStream` existed carry no stream identity; if the `MEMORY` stream is
+recreated before they are next edited, a message with a low sequence can be skipped
+as stale for such an object (the guard then compares sequences as before); editing
+the memory (or re-importing it) once the stream has caught up past the stored
+sequence, or deleting it first, stamps the identity and clears it.
+
+Caveat: multiple **server** replicas can lose reinforcement increments
+(`accessCount`, a ranking signal only) because the server read-modify-writes it
+without a lock.
 
 ## Embedding model
 

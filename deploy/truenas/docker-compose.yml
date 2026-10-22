@@ -55,12 +55,15 @@ services:
       - /mnt/tank/apps/cortex/ollama:/models
     restart: always
 
-  # Indexing worker: NATS -> Ollama embed -> Weaviate. The only writer.
+  # Indexing worker: NATS -> Ollama embed -> Weaviate. The only writer process type;
+  # safe to scale out (per-id locks in NATS KV), e.g. deploy.replicas: 3.
   worker:
     container_name: cortex-worker
     image: ghcr.io/thomas-maurice/cortex:latest # pin a version tag (e.g. :0.1.0) for prod
     user: '568:568'
     entrypoint: ['/usr/local/bin/cortex-worker']
+    # Shutdown needs the 10s in-flight grace + NAK + lock releases before SIGKILL.
+    stop_grace_period: 30s
     environment:
       NATS_URL: nats://nats:4222
       OLLAMA_URL: http://ollama:11434

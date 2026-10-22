@@ -18,6 +18,7 @@ const (
 	outcomeRetry = "retry" // NAK'd for redelivery
 	outcomeDead  = "dead"  // dead-lettered
 	outcomeTerm  = "term"  // permanently dropped without a dead-letter
+	outcomeStale = "stale" // acked and skipped: a newer version was already stored
 )
 
 // metrics is the worker's Prometheus instrumentation. Every method is safe on a
@@ -27,6 +28,11 @@ type metrics struct {
 	embedDur  prometheus.Histogram
 	embedErrs prometheus.Counter
 	indexDur  prometheus.Histogram
+
+	lockInfraErrs prometheus.Counter
+	lockWait      prometheus.Histogram
+	fetchErrs     prometheus.Counter
+	holdTimeouts  prometheus.Counter
 }
 
 func newMetrics(reg prometheus.Registerer) *metrics {
@@ -34,7 +40,7 @@ func newMetrics(reg prometheus.Registerer) *metrics {
 	return &metrics{
 		messages: f.NewCounterVec(prometheus.CounterOpts{
 			Name: "cortex_worker_messages_total",
-			Help: "Queue messages settled by the worker, by kind (index|summary|link) and outcome (ack|retry|dead|term).",
+			Help: "Queue messages settled by the worker, by kind (index|summary|link) and outcome (ack|retry|dead|term|stale).",
 		}, []string{"subject_kind", "outcome"}),
 		embedDur: f.NewHistogram(prometheus.HistogramOpts{
 			Name:    "cortex_embed_duration_seconds",
@@ -50,6 +56,47 @@ func newMetrics(reg prometheus.Registerer) *metrics {
 			Help:    "End-to-end handleIndex latency in seconds (embed + upsert + chunks).",
 			Buckets: prometheus.DefBuckets,
 		}),
+		lockInfraErrs: f.NewCounter(prometheus.CounterOpts{
+			Name: "cortex_lock_infra_errors_total",
+			Help: "Lock-bucket (NATS KV) errors other than contention, e.g. the bucket vanished; each is repaired and retried.",
+		}),
+		lockWait: f.NewHistogram(prometheus.HistogramOpts{
+			Name:    "cortex_lock_wait_seconds",
+			Help:    "Time spent acquiring one per-id lock (contention + infra retries).",
+			Buckets: []float64{0.01, 0.05, 0.1, 0.5, 1, 5, 15, 30, 60, 90},
+		}),
+		fetchErrs: f.NewCounter(prometheus.CounterOpts{
+			Name: "cortex_worker_fetch_errors_total",
+			Help: "Failed JetStream pulls (consumer/stream gone, NATS unreachable). Missing consumers are re-created.",
+		}),
+		holdTimeouts: f.NewCounter(prometheus.CounterOpts{
+			Name: "cortex_worker_hold_timeouts_total",
+			Help: "Critical sections cut off by the lock hold deadline (3/4 of the lock TTL); the message is retried.",
+		}),
+	}
+}
+
+func (m *metrics) lockInfraError() {
+	if m != nil {
+		m.lockInfraErrs.Inc()
+	}
+}
+
+func (m *metrics) observeLockWait(d time.Duration) {
+	if m != nil {
+		m.lockWait.Observe(d.Seconds())
+	}
+}
+
+func (m *metrics) fetchError() {
+	if m != nil {
+		m.fetchErrs.Inc()
+	}
+}
+
+func (m *metrics) holdTimeout() {
+	if m != nil {
+		m.holdTimeouts.Inc()
 	}
 }
 

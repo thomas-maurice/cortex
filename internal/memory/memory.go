@@ -177,6 +177,16 @@ type Record struct {
 	// is measured from here (falling back to CreatedAt when never accessed).
 	// Stored as a Weaviate property, carried on the index payload like AccessCount.
 	LastAccessedAt time.Time `json:"lastAccessedAt"`
+
+	// IndexedSeq is the JetStream stream sequence of the index message that last
+	// wrote this object (the worker's stale-write guard). It is set by the worker
+	// from message metadata under the id lock and persisted as a Weaviate
+	// property; whatever a producer puts here on the payload is ignored.
+	IndexedSeq uint64 `json:"indexedSeq,omitempty"`
+	// IndexedStream identifies the stream IndexedSeq belongs to (stream creation
+	// time, unix microseconds; 0 = unknown/legacy). Sequences from a recreated
+	// stream restart at 1, so the guard only compares seqs within one stream.
+	IndexedStream int64 `json:"indexedStream,omitempty"`
 }
 
 // Hit is a search result: a record plus its vector distance to the query.
@@ -205,6 +215,10 @@ type Summary struct {
 	Dims           int       `json:"dims,omitempty"`
 	// UserID is the tenant this summary belongs to (NATS payload only; not a Weaviate property).
 	UserID string `json:"userId,omitempty"`
+	// IndexedSeq: stream sequence of the message that last wrote this summary
+	// (stale-write guard, see Record.IndexedSeq). Ignored on the payload.
+	IndexedSeq    uint64 `json:"indexedSeq,omitempty"`
+	IndexedStream int64  `json:"indexedStream,omitempty"`
 }
 
 // SummaryHit is a summary plus its vector distance to the query.

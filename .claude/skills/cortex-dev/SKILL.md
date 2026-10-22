@@ -42,7 +42,7 @@ avoid colliding with other local services:
 | weaviate | 8081 (REST), 50051 (gRPC) | The live store — **has real data**. |
 | nats | 4223 (client), 8223 (mon) | JetStream; the index queue. |
 | ollama | 11434 | Embeddings via batched `/api/embed` (Ollama >= 0.3.4; `embed.Client.EmbedBatch`, 32/request). Model `qwen3-embedding:0.6b` (1024-dim). |
-| worker | — | NATS → Ollama → Weaviate. The only writer. Ops HTTP on `:9090` inside the container (`METRICS_ADDR`; not published). |
+| worker | — | NATS → Ollama → Weaviate. The only writer process type, safe as N replicas (`docker compose up -d --scale worker=N`, see §4). Ops HTTP on `:9090` inside the container (`METRICS_ADDR`; not published). |
 
 Common commands (run from the repo root):
 
@@ -109,7 +109,9 @@ UI only: `cd ui && npm run build` (prod build) or `npm run dev` (hot reload on
 ## 3. Tests
 
 ```bash
-go test ./...      # unit tests; fast, no external services
+go test ./...      # unit tests; no external services (worker/dlock tests start an
+                   # embedded NATS+JetStream via internal/natstest; ~30s with -race)
+go test -race ./cmd/worker ./internal/dlock   # run these with -race when touching locking
 golangci-lint run  # CI runs this (v2 config in .golangci.yml, errcheck included);
                    # go vet alone is NOT enough — run it before declaring Go work done
 ```
@@ -139,7 +141,7 @@ should encode *why* the behaviour matters, not just what it does (Rule 9).
   owner of NATS + Weaviate + Ollama. The MCP server (`cmd/mcp`) and CLI
   (`cmd/cli`) hold no backend connections — they are Connect RPC clients.
 - **Writes are async & durable.** `Save`/`UpdateMemory`/`import` publish onto a
-  NATS JetStream queue; the **worker** (`cmd/worker`, the only writer) embeds the
+  NATS JetStream queue; the **worker** (`cmd/worker`, the only writer; N replicas OK) embeds the
   text via Ollama and upserts into Weaviate. Failures retry, then dead-letter.
 - **Only `text` is embedded.** Every other field (namespace, tags, source,
   conversationId, links…) is filterable metadata, never part of the vector. This
@@ -166,6 +168,23 @@ should encode *why* the behaviour matters, not just what it does (Rule 9).
   is only for `text` changes.
 - **Weaviate access is gRPC, not GraphQL** (`client.Experimental().Search()`).
   Do not reintroduce `client.GraphQL().Get()`.
+- **The worker is replica-safe (do not reintroduce single-worker assumptions).**
+  Per-memory-id distributed lock in the NATS KV bucket `cortex_locks`
+  (`internal/dlock`; 60s TTL, file storage, create-to-acquire, delete-at-our-revision
+  to release; bucket re-ensured on infra errors; link applies lock BOTH ids in sorted
+  order; the hold deadline is anchored at the FIRST lease). Index messages carry their
+  JetStream stream sequence + stream identity → persisted as `indexedSeq` /
+  `indexedStream` (Memory + ConversationSummary); under the lock a lower seq (same
+  stream) is acked as outcome `stale`. Lock contention waits in-handler (never NAK,
+  which would burn `MaxDeliver`). The worker pulls with `Fetch(1)` loops
+  (`cmd/worker/pool.go`, `WORKER_CONCURRENCY` per consumer; never a streaming Consume,
+  which hoards) and `InProgress`-keepalives each message for its whole life. **Field ownership:**
+  index CREATES a missing memory in full (import/restore links kept) but only
+  MERGES its own fields (`TenantStore.UpdateIndexFields`) into an existing one; it
+  must never write `linkedIds` (link consumer), `accessCount`/`lastAccessedAt`
+  (Reinforce) or `notDuplicateOf` (DismissDuplicate). Any new server-side merge
+  field must be added to the ownership table in docs/DESIGN.md. Tests: embedded
+  NATS via `internal/natstest`; `cmd/worker` has a multi-replica convergence sim.
 - **Idempotent ids.** Object id = a UUID; the worker upserts by id, so
   redelivery/retry/reindex overwrites rather than duplicates.
 - Two Weaviate classes: `Memory` and `ConversationSummary` (one per
