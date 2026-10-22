@@ -14,6 +14,9 @@ const (
 	ClassName        = "Memory"
 	ChunkClassName   = "MemoryChunk"
 	SummaryClassName = "ConversationSummary"
+	// TrashClassName holds soft-deleted memories (see store/trash.go). Same tenancy
+	// as Memory, no vector.
+	TrashClassName = "Trash"
 	// UserClassName / ApiKeyClassName are the multi-tenancy identity registry —
 	// global (NON-multi-tenant) collections that hold the user accounts and API
 	// keys. They exist only when CORTEX_MULTI_TENANT is on, and are read/written by
@@ -235,4 +238,19 @@ type DeadLetter struct {
 	Error      string    `json:"error"`
 	Deliveries int       `json:"deliveries"`
 	FailedAt   time.Time `json:"failedAt"`
+}
+
+// Trash reasons recorded on a TrashEntry (the supersedes reason is suffixed with
+// the superseding memory's id).
+const (
+	TrashReasonDelete          = "delete"
+	TrashReasonSupersedes      = "supersedes:"
+	TrashReasonNamespaceDelete = "namespace-delete"
+)
+
+// TrashEntry is a soft-deleted Record plus when and why it was deleted.
+type TrashEntry struct {
+	Record
+	DeletedAt time.Time `json:"deletedAt"`
+	Reason    string    `json:"reason"`
 }

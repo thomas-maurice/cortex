@@ -168,7 +168,7 @@ The MCP client also stamps each save with the Claude Code session ID (read from
 
 Verify it's connected with `/mcp` inside Claude — you should see `cortex` with
 its tools: `cortex_memory_save`, `cortex_memory_search`, `cortex_memory_get`, `cortex_memory_delete`,
-`cortex_memory_link`, `cortex_memory_unlink`, `cortex_consolidate`,
+`cortex_trash_restore`, `cortex_memory_link`, `cortex_memory_unlink`, `cortex_consolidate`,
 `cortex_review_candidates`, `cortex_dismiss_duplicate`, `cortex_session_summarize`,
 and `cortex_recall_session`.
 
@@ -191,7 +191,12 @@ port as the Connect API; open the server's address in a browser. Views:
 - **Namespaces** — admin view of every namespace with its memory and summary
   counts and last activity. **Rename** a namespace (a metadata-only move — nothing
   is re-embedded; both memories and summaries move) or **delete** an entire
-  namespace (typed confirmation, removes its memories and summaries).
+  namespace (typed confirmation; its memories go to the trash, its summaries are
+  permanently removed).
+- **Trash** — every deleted memory (explicit delete, `supersedes`, namespace delete)
+  lands here first. List with deletion time and reason, **restore** (re-queued for
+  indexing under the same id), **purge** one or all (confirm dialogs). Entries
+  expire after `TRASH_RETENTION`.
 - **Preferences** — standing, cross-project preferences: the memories in the
   `global` namespace tagged `preference`. Add / edit / delete them here without
   touching namespace or tags (both are managed for you). These are what the
@@ -463,7 +468,8 @@ The MCP server exposes these tools to Claude:
 | `cortex_memory_save` | Queue a memory for indexing. Args: `text`, `namespace?`, `tags?`, `linkTo?` (ids to bidirectionally link this memory to — queued and applied once both ends are indexed, so targets need not exist yet), `supersedes?` (ids this memory replaces — the worker deletes them once this one is indexed). Returns its `id`. |
 | `cortex_memory_search` | **Hybrid** search (BM25 keyword + vector, blended by `SEARCH_ALPHA`, default 0.5) so exact tokens/codenames resolve, not just semantic matches. Args: `query`, `namespace?` (`*` = all namespaces), `limit?`, `tags?` (must have all), `excludeTags?`, `maxDistance?` (relevance cutoff). Each hit includes its `id`, any `linkedIds`, and any `dupCandidates` (flagged likely-duplicates — the output hints when consolidation would help). When **living memory** is enabled (`RERANK_WEIGHT`>0, off by default), search also re-orders results by recency-decayed usage and reinforces its top hit(s) — frequently-recalled memories float up over time. See [`docs/DESIGN.md`](docs/DESIGN.md#living-memory--decay--reinforcement-opt-in). |
 | `cortex_memory_get` | Fetch ONE memory by `id`, full text (follow `linkedIds` from search hits, or ids from `cortex_consolidate` / `cortex_review_candidates`). Same shape as a search hit; counts as delivered for session dedup so later searches stub it; does not reinforce. |
-| `cortex_memory_delete` | Delete a memory by `id` (get the `id` from a `cortex_memory_search` result first). |
+| `cortex_memory_delete` | Delete a memory by `id` (get the `id` from a `cortex_memory_search` result first). The memory goes to the **trash** (restorable for `TRASH_RETENTION`, default 7 days), not into the void. |
+| `cortex_trash_restore` | Undo a delete: restore a trashed memory by `id` (re-queued for indexing under the same id; fails if the id is not in the trash or a live memory has it). |
 | `cortex_memory_link` | Explicitly link two related memories (bidirectional) so they connect in the graph. Args: `id`, `targetId` — from a prior search/recall, or an id just returned by `cortex_memory_save`. The edge is queued on the `memory.link` subject and applied once both endpoints are indexed (it waits for them), so out-of-order/just-saved ids link correctly. Claude is told to do this proactively when two memories are meaningfully related. |
 | `cortex_memory_unlink` | Remove the link between two memories (queued, applied asynchronously). Args: `id`, `targetId`. |
 | `cortex_consolidate` | Gather the cluster of memories about a `topic` (vector matches + their linked/duplicate neighbours, capped at `limit?`) for Claude to merge into fewer, richer memories. Read-only: returns the cluster and a `manifest` of ids; Claude commits the merge by saving compiled memories with `supersedes` set from the manifest. Args: `topic`, `namespace?`, `limit?`, `maxDistance?`, `tags?` (all), `anyTags?` (at least one), `excludeTags?`. **Omitting the tag args means no tag filter** (the whole topic cluster, every tag — not "only untagged"). |
@@ -645,7 +651,8 @@ authenticate with `--token` / `CORTEX_AUTH_TOKEN`.
 | `cortex get <id> [--json]` | Show one memory by id (incl. linked ids); `--json` uses the `export` record shape. |
 | `cortex search "<q>" [-d 0.6] [-t tag] [-x tag]` | Semantic search with a relevance cutoff and tag filters. |
 | `cortex consolidate "<topic>" [-n '*'] [-l N] [-t tag] [-x tag]` | Print the cluster of memories about a topic + their manifest (read-only gather; the LLM does the merge). No tag flag = no tag filter (whole cluster). |
-| `cortex delete <id>` | Delete a memory by ID. |
+| `cortex delete <id>` | Delete a memory by ID (moved to the trash). |
+| `cortex trash ls [-n ns]` / `trash restore <id>...` / `trash purge <id>... \| --all [-n ns] [--yes]` | Soft-delete trash: list trashed memories, restore them (re-queued for indexing, same id; rejected if a live memory has that id) or purge them permanently. |
 | `cortex export -o backup.json` | Dump all memories (text + metadata, no vectors) to JSON. |
 | `cortex import backup.json` | Restore a dump into the target via its NATS ingest queue (worker re-embeds). Preserves ids/links; point `--server` at the target. See [scripts/prod-to-dev.sh](scripts/prod-to-dev.sh). |
 | `cortex reindex --yes` | Re-embed every memory through the worker (see below). |
@@ -740,6 +747,28 @@ cortex --server http://localhost:8088 migrate-mt --yes
   half-migrated store safely (re-import is upsert-by-id).
 - All migrated data lands in the bootstrap admin's tenant. Redistributing data
   across multiple users is out of scope; this is a single-tenant-to-MT bootstrap.
+
+## Trash (soft delete) and retention
+
+Deletes are not immediate: `Delete` (CLI/MCP/UI), the `supersedes` deletes a
+consolidation performs, and `DeleteNamespace` first copy each memory into a `Trash`
+Weaviate class (same tenant, no vector; multi-tenant exactly like `Memory`) and only
+then remove it. If the trash write fails, nothing is deleted. `cortex trash restore`
+(or the UI / `cortex_trash_restore`) re-queues the record through the normal index
+path (the worker re-embeds and re-chunks) under the SAME id; links are re-applied via
+the link queue only to endpoints that still exist, and a restore never overwrites a
+live memory with the same id. Trash entries are purged after `TRASH_RETENTION` (server
+env; a Go duration such as `720h`, default `168h`, `0` keeps them forever; days like `30d` are NOT valid and an unparsable value stops the server at startup, since it controls permanent deletion) by an hourly sweep across all
+tenants (logged with the purged count), or explicitly with `cortex trash purge`.
+
+Caveats: conversation summaries deleted by a namespace delete are NOT trashed; the
+trash is **not part of backups** (full/self backups cover live memories + summaries
+only); deleting a user (`DeleteUser`) deliberately wipes that user's trash along with
+their memories. A reindex rebuild leaves the trash untouched, and `migrate-mt` carries
+it over into the calling admin's tenant (entries keep their deletion time). Before the
+classes are dropped the trash is also written to `<backup-name>.trash.json` next to the
+migration backup; if re-writing it fails the error names that file, and `cortex import
+<file>` re-creates its entries as live memories (extra fields are ignored).
 
 ## Request size limit
 
@@ -964,7 +993,7 @@ internal/
   embed/           Ollama embeddings client
   store/           Weaviate: schema, upsert, chunk-based gRPC search, links, delete
   rpc/             Connect service impl, auth (token+JWT), login, JWT, client helper
-ui/                embedded Vue 3 SPA (Memories, Graph, Explore, Sessions, Namespaces, Preferences, Backup, Indexing, Status)
+ui/                embedded Vue 3 SPA (Memories, Graph, Explore, Sessions, Namespaces, Trash, Preferences, Backup, Indexing, Status)
 testdata/          fake seed memories for a dev stack (cortex import format)
 docker-compose.yml   nats + weaviate + ollama + worker + server
 deploy/truenas/      TrueNAS Scale compose (non-root, host bind mounts, Traefik h2c)

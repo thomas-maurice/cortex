@@ -42,9 +42,9 @@ func TestChunkSearchGroupingAndCascade(t *testing.T) {
 	ctx := context.Background()
 	st, err := New(rest, grpc)
 	require.NoError(t, err)
-	_ = st.DeleteClass(ctx)
+	_ = st.DeleteAllClasses(ctx)
 	require.NoError(t, st.EnsureSchema(ctx))
-	t.Cleanup(func() { _ = st.DeleteClass(ctx) })
+	t.Cleanup(func() { _ = st.DeleteAllClasses(ctx) })
 
 	// MT off (empty tenant) — identical to pre-P3 single-user behaviour.
 	ts := st.Tenant("")
@@ -132,9 +132,9 @@ func TestSearchFallbackForUnchunkedMemories(t *testing.T) {
 	ctx := context.Background()
 	st, err := New(rest, grpc)
 	require.NoError(t, err)
-	_ = st.DeleteClass(ctx)
+	_ = st.DeleteAllClasses(ctx)
 	require.NoError(t, st.EnsureSchema(ctx))
-	t.Cleanup(func() { _ = st.DeleteClass(ctx) })
+	t.Cleanup(func() { _ = st.DeleteAllClasses(ctx) })
 
 	ts := st.Tenant("")
 
@@ -180,9 +180,9 @@ func TestReimportReplacesChunks(t *testing.T) {
 	ctx := context.Background()
 	st, err := New(rest, grpc)
 	require.NoError(t, err)
-	_ = st.DeleteClass(ctx)
+	_ = st.DeleteAllClasses(ctx)
 	require.NoError(t, st.EnsureSchema(ctx))
-	t.Cleanup(func() { _ = st.DeleteClass(ctx) })
+	t.Cleanup(func() { _ = st.DeleteAllClasses(ctx) })
 
 	ts := st.Tenant("")
 

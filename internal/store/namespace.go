@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/weaviate/weaviate-go-client/v5/weaviate/filters"
@@ -143,16 +144,85 @@ func (ts *TenantStore) idsInNamespace(ctx context.Context, className, namespace 
 	return ids, nil
 }
 
-// DeleteNamespace permanently deletes every memory AND conversation summary in a
-// namespace via Weaviate batch delete (by namespace filter). Returns the number
-// of memories and summaries deleted.
+// namespaceDeleteWorkers bounds the concurrent per-memory trash+delete round trips
+// of a namespace delete.
+const namespaceDeleteWorkers = 8
+
+// trashAndDelete moves each record to Trash and then removes it (with its chunks),
+// namespaceDeleteWorkers at a time. On the first error no further records are
+// started and that error is returned together with the number of records that
+// were fully trashed AND deleted. Records whose trash write failed are never
+// deleted; records already trashed stay restorable.
+func (ts *TenantStore) trashAndDelete(ctx context.Context, recs []memory.Record, reason string) (int, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var (
+		wg       sync.WaitGroup
+		mu       sync.Mutex
+		done     int
+		firstErr error
+	)
+	now := time.Now()
+	sem := make(chan struct{}, namespaceDeleteWorkers)
+	for _, rec := range recs {
+		sem <- struct{}{}
+		if ctx.Err() != nil { // a worker failed (or the caller cancelled): start nothing more
+			<-sem
+			break
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+			err := ts.putTrash(ctx, rec, reason, now)
+			if err != nil {
+				err = fmt.Errorf("move %s to trash: %w", rec.ID, err)
+			} else {
+				err = ts.hardDelete(ctx, rec.ID)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				if firstErr == nil {
+					firstErr = err
+					cancel()
+				}
+				return
+			}
+			done++
+		}()
+	}
+	wg.Wait()
+	if firstErr == nil && ctx.Err() != nil {
+		firstErr = ctx.Err()
+	}
+	return done, firstErr
+}
+
+// DeleteNamespace deletes every memory AND conversation summary in a namespace.
+// Memories are soft-deleted: each is copied to Trash (reason "namespace-delete")
+// and then removed with its chunks, one by one, so a trash write failure stops
+// the wipe with nothing lost beyond the already-trashed (recoverable) records.
+// Conversation summaries are NOT trashed — they are permanently deleted via batch
+// delete. Returns the number of memories and summaries deleted.
 func (ts *TenantStore) DeleteNamespace(ctx context.Context, namespace string) (int, int, error) {
-	mem, err := ts.deleteInClass(ctx, memory.ClassName, namespace)
+	var recs []memory.Record
+	var mem int
+	err := ts.s.scanAll(ctx, memory.ClassName, ts.t, memoryProps, func(r graphql.SearchResult) {
+		if propString(r.Properties, "namespace") == namespace {
+			recs = append(recs, resultToRecord(r))
+		}
+	})
+	if err != nil && !isTenantNotFound(err) {
+		return 0, 0, fmt.Errorf("scan memories in namespace %q: %w", namespace, err)
+	}
+	mem, err = ts.trashAndDelete(ctx, recs, memory.TrashReasonNamespaceDelete)
 	if err != nil {
 		return mem, 0, err
 	}
-	// The namespace's chunks carry the same namespace; delete them too so no
-	// orphaned chunks survive a namespace wipe. Not reported in the user count.
+	// Sweep the namespace's chunks so no orphaned chunk survives (a memory indexed
+	// mid-wipe survives intact rather than being deleted untrashed). Not reported
+	// in the user count.
 	if _, err := ts.deleteInClass(ctx, memory.ChunkClassName, namespace); err != nil {
 		return mem, 0, err
 	}

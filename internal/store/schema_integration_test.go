@@ -26,9 +26,9 @@ func TestVerifySchema(t *testing.T) {
 	ctx := context.Background()
 	st, err := New(rest, grpc)
 	require.NoError(t, err)
-	_ = st.DeleteClass(ctx)
+	_ = st.DeleteAllClasses(ctx)
 	require.NoError(t, st.EnsureSchema(ctx))
-	t.Cleanup(func() { _ = st.DeleteClass(ctx) })
+	t.Cleanup(func() { _ = st.DeleteAllClasses(ctx) })
 
 	t.Run("a freshly ensured schema is healthy", func(t *testing.T) {
 		problems, err := st.VerifySchema(ctx)

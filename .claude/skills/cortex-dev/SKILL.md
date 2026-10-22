@@ -172,7 +172,7 @@ should encode *why* the behaviour matters, not just what it does (Rule 9).
   cascade to chunks. See docs/CHUNKING.md.
 - **Weaviate runs with `AUTOSCHEMA_ENABLED=false`** (compose, TrueNAS compose, CI,
   `scripts/wv-test.sh`). Schema lives only in code: a new property written by ANY path
-  must be declared in `memoryProperties`/`chunkProperties`/`summaryProperties`/
+  must be declared in `memoryProperties`/`chunkProperties`/`summaryProperties`/`trashProperties`/
   `userProperties`/`apiKeyProperties` (ensureProps adds it to existing classes), else
   the write fails. Why: a worker write during a reindex/migrate-mt class drop would
   otherwise auto-create a wrong-shaped class. See `autoschema_integration_test.go`.
@@ -206,10 +206,22 @@ should encode *why* the behaviour matters, not just what it does (Rule 9).
   NATS via `internal/natstest`; `cmd/worker` has a multi-replica convergence sim.
 - **Idempotent ids.** Object id = a UUID; the worker upserts by id, so
   redelivery/retry/reindex overwrites rather than duplicates.
-- Two Weaviate classes: `Memory` and `ConversationSummary` (one per
-  conversation, upserted). A namespace conceptually spans **both** — anything that
+- Weaviate classes: `Memory`, `MemoryChunk`, `Trash` and `ConversationSummary` (one
+  summary per conversation, upserted). A namespace conceptually spans **both** — anything that
   renames/deletes a namespace must touch both classes or it orphans summaries.
 
+- **Deletes are soft (Trash class).** `TenantStore.Delete`/`DeleteWithReason` (explicit
+  delete, worker `supersedes` → reason `supersedes:<id>`, `DeleteNamespace` per memory →
+  `namespace-delete`) copy the record into the `Trash` class (same tenant/id, no vector,
+  `internal/store/trash.go`) BEFORE deleting; trash write failure = nothing deleted.
+  `Memory` has no deleted flag. Restore = `bus.PublishIndex` (+ `PublishLink` for live
+  endpoints) then drop the entry; never overwrites a live id. Retention: `TRASH_RETENTION`
+  (default 168h, 0 = forever) + hourly sweep in cmd/server (`Service.SweepTrash` →
+  `Store.PurgeExpiredTrash`, all tenants). Trash is NOT in backups. `DeleteClass` leaves
+  Trash alone (reindex rebuild keeps it); `DeleteAllClasses` also drops it (migrate-mt,
+  which snapshots + converts the trash into the admin tenant; tests use it for a clean
+  slate). `TRASH_RETENTION` is parsed strictly (bad value = server exits). DropTenant wipes
+  the user's trash deliberately. Summaries are not trashed.
 - **Observability** lives in `internal/obs` (shared registry, `/healthz` `/readyz` `/metrics`
   handlers, `obs.Serve` for the dedicated metrics listeners, dependency probes reusing `Store.Ready` / `Embedder.Reachable`). Server RPC metrics are
   a Connect interceptor + a scrape-time queue collector in `internal/rpc/metrics.go`; worker metrics
@@ -289,7 +301,8 @@ and scripting without going through Claude. Global flags: `--server`
 | `list [-n '*'] [-l N] [-t tag] [-T anyTag] [-x excludeTag]` | List newest-first with tag/namespace filters. |
 | `get <id> [--json]` | Show one memory by id (full text + linked ids) via the `GetMemory` RPC (tenant-scoped; NotFound for unknown/other-tenant ids; no reinforcement). Same RPC backs the `cortex_memory_get` MCP tool, which also marks the id delivered in recallstate. |
 | `search "<q>" [-n '*'] [-l N] [-d 0.6] [--autocut N] [-t/-T/-x tag] [--reinforce]` | Hybrid (BM25+vector) semantic search. `-d` = distance cutoff. CLI does NOT reinforce by default. |
-| `delete <id>` | Delete one memory by id. |
+| `delete <id>` | Delete one memory by id (soft: moved to the `Trash` class, see §4). |
+| `trash ls [-n ns]` / `trash restore <id>...` / `trash purge <id>... \| --all [-n ns] [--yes]` | Soft-delete trash (`ListTrash`/`RestoreFromTrash`/`PurgeTrash` RPCs; `cmd/cli/trash.go`). |
 | `export [-n '*'] [-o file]` | Dump memories (text+metadata, no vectors) to JSON (stdout by default). |
 | `import <file> [--batch N]` | Restore a dump via the NATS ingest queue (worker re-embeds). Preserves ids/links. **This is how you load seed data** — point `--server` at the target. |
 | `reindex [-n '*'] [--yes]` | Server snapshots then republishes all memories for re-embed. `--yes` allows a destructive class rebuild on an embedding-dimension change. |

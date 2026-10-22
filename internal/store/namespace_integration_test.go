@@ -39,9 +39,9 @@ func TestNamespaceOperations(t *testing.T) {
 	require.NoError(t, err)
 
 	// Fresh classes so prior runs don't interfere.
-	_ = st.DeleteClass(ctx)
+	_ = st.DeleteAllClasses(ctx)
 	require.NoError(t, st.EnsureSchema(ctx))
-	t.Cleanup(func() { _ = st.DeleteClass(ctx) })
+	t.Cleanup(func() { _ = st.DeleteAllClasses(ctx) })
 
 	// MT off (empty tenant) — identical to pre-P3 single-user behaviour.
 	ts := st.Tenant("")

@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -41,6 +42,31 @@ var version = "dev"
 // (short, not immediate, so startup settles first). A not-overdue schedule waits
 // the remaining interval instead.
 const backupStartupDelay = time.Minute
+
+// defaultTrashRetention is used when TRASH_RETENTION is unset.
+const defaultTrashRetention = 168 * time.Hour
+
+// parseTrashRetention parses TRASH_RETENTION: empty = default (168h), otherwise a
+// Go duration such as "720h" ("0" = keep forever). It is strict, unlike envDuration,
+// because the setting controls PERMANENT deletion: a typo like "30d" must stop the
+// server, not silently become the default.
+func parseTrashRetention(raw string) (time.Duration, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return defaultTrashRetention, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("invalid TRASH_RETENTION %q: want a Go duration like 720h (days are not supported; use hours), or 0 to keep forever: %w", raw, err)
+	}
+	if d < 0 {
+		return 0, fmt.Errorf("invalid TRASH_RETENTION %q: must not be negative", raw)
+	}
+	return d, nil
+}
+
+// trashSweepInterval is how often expired trash entries are purged.
+const trashSweepInterval = time.Hour
 
 // initialBackupDelay computes how long to wait before the FIRST periodic backup
 // after startup, given when the last on-disk backup ran (last/hasLast from
@@ -226,10 +252,18 @@ func main() {
 		// goroutine; backupKeep == 0 disables pruning after each backup.
 		backupInterval = envDuration("BACKUP_INTERVAL", 0)
 		backupKeep     = envInt("BACKUP_KEEP", 7)
+		// trashRetention: how long deleted memories stay restorable; 0 = forever.
+		trashRetentionRaw = os.Getenv("TRASH_RETENTION")
 		// metricsAddr is the dedicated listener for /metrics (+ /healthz, /readyz).
 		// Empty disables metrics entirely.
 		metricsAddr = metricsAddrFromEnv()
 	)
+
+	trashRetention, err := parseTrashRetention(trashRetentionRaw)
+	if err != nil {
+		log.Error("bad configuration", "err", err)
+		os.Exit(1)
+	}
 
 	// Login brute-force / DoS protection for /auth/login. Defaults are conservative
 	// for an internet-exposed self-host; each knob is overridable. TrustProxy must
@@ -316,7 +350,30 @@ func main() {
 		MultiTenant:        multiTenant,
 		BackupKeep:         backupKeep,
 		S3:                 s3ConfigFromEnv(),
+		TrashRetention:     trashRetention,
 	}, log)
+
+	// Hourly trash retention sweep (disabled when TRASH_RETENTION=0).
+	if trashRetention > 0 {
+		log.Info("trash retention sweep scheduled", "retention", trashRetention, "every", trashSweepInterval)
+		go func() {
+			ticker := time.NewTicker(trashSweepInterval)
+			defer ticker.Stop()
+			for {
+				n, err := svc.SweepTrash(ctx)
+				if err != nil {
+					log.Error("trash sweep failed", "purged", n, "err", err)
+				} else {
+					log.Info("trash sweep", "purged", n)
+				}
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+				}
+			}
+		}()
+	}
 
 	// Periodic full-server backup goroutine. Disabled when BACKUP_INTERVAL is
 	// empty or "0". Stops cleanly on server shutdown via the signal context.

@@ -50,9 +50,9 @@ func TestGetMemoryIntegration(t *testing.T) {
 	st, err := store.New(rest, grpc)
 	require.NoError(t, err)
 	st.SetMultiTenant(true)
-	_ = st.DeleteClass(ctx)
+	_ = st.DeleteAllClasses(ctx)
 	require.NoError(t, st.EnsureSchema(ctx))
-	t.Cleanup(func() { _ = st.DeleteClass(ctx) })
+	t.Cleanup(func() { _ = st.DeleteAllClasses(ctx) })
 
 	svc := &Service{cfg: Config{MultiTenant: true}, store: st}
 	alice := identity.Into(ctx, identity.Identity{UserID: "user-alice", Username: "alice", Role: identity.RoleUser})

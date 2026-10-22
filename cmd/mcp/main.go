@@ -320,9 +320,19 @@ func main() {
 	}, withTimeout(callTimeout, d.get))
 
 	mcp.AddTool(server, &mcp.Tool{
-		Name:        "cortex_memory_delete",
-		Description: "Delete a memory by its ID (as returned by cortex_memory_search).",
+		Name: "cortex_memory_delete",
+		Description: "Delete a memory by its ID (as returned by cortex_memory_search). The memory is moved to the " +
+			"trash, not destroyed: it stays restorable with cortex_trash_restore for the server's retention " +
+			"period (7 days by default), then is purged for good.",
 	}, withTimeout(callTimeout, d.del))
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name: "cortex_trash_restore",
+		Description: "Undo a delete: restore a trashed memory by its ID (the ID you passed to cortex_memory_delete, or " +
+			"one of the `supersedes` sources of a consolidation). It is re-queued for indexing under the same ID, " +
+			"asynchronously, like a save. Fails if the ID is not in the trash (never deleted, already purged after " +
+			"the retention period, or restored) or if a live memory with that ID exists.",
+	}, withTimeout(callTimeout, d.trashRestore))
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "cortex_memory_edit",
@@ -681,6 +691,28 @@ func (d *deps) del(ctx context.Context, _ *mcp.CallToolRequest, in DeleteIn) (*m
 		return nil, DeleteOut{}, err
 	}
 	return text2result("deleted " + id), DeleteOut{Status: resp.Msg.GetStatus()}, nil
+}
+
+// ---- trash_restore ----
+
+type TrashRestoreIn struct {
+	ID string `json:"id" jsonschema:"the ID of the deleted memory to restore from the trash"`
+}
+
+type TrashRestoreOut struct {
+	ID     string `json:"id"`
+	Status string `json:"status" jsonschema:"queued once accepted for async re-indexing"`
+}
+
+func (d *deps) trashRestore(ctx context.Context, _ *mcp.CallToolRequest, in TrashRestoreIn) (*mcp.CallToolResult, TrashRestoreOut, error) {
+	id := strings.TrimSpace(in.ID)
+	if id == "" {
+		return nil, TrashRestoreOut{}, fmt.Errorf("id must not be empty")
+	}
+	if _, err := d.client.RestoreFromTrash(ctx, connect.NewRequest(&cortexv1.RestoreFromTrashRequest{Ids: []string{id}})); err != nil {
+		return nil, TrashRestoreOut{}, err
+	}
+	return text2result("restored " + id + " (queued for indexing)"), TrashRestoreOut{ID: id, Status: "queued"}, nil
 }
 
 // ---- memory_edit ----
