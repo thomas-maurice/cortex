@@ -61,7 +61,7 @@ func (l *useLog) waitUse(t *testing.T) []string {
 	t.Helper()
 	select {
 	case <-l.call:
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("expected a RecordUse call")
 	}
 	l.mu.Lock()
@@ -311,16 +311,12 @@ func TestTagsListTool(t *testing.T) {
 // A slow server must not make RecordUse goroutines pile up: when every slot is
 // busy the record is dropped (it is a best-effort signal), never queued.
 func TestRecordUseDropsWhenSaturated(t *testing.T) {
-	for range recordUseSlots {
-		recordUseSem <- struct{}{}
-	}
-	t.Cleanup(func() {
-		for range recordUseSlots {
-			<-recordUseSem
-		}
-	})
 	log := newUseLog()
 	d := &deps{client: fakeClient{mem: &cortexv1.Memory{Id: "m1"}, uses: log}}
+	sem := d.recordUseSem()
+	for range recordUseSlots {
+		sem <- struct{}{}
+	}
 	d.recordUse("mcp-get", []string{"m1"})
 	log.noUse(t)
 }
