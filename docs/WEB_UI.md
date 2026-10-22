@@ -135,10 +135,11 @@ indexed and carries their links over to the merged memory; the pair is hidden lo
 
 ### Memories: stale review and bulk trash (`ui/src/views/MemoriesView.vue`)
 
-The **Stale** select (Off / Never recalled / Not recalled in 30, 90, 180 days) switches
-the view to the server-side stale scan (`List` with `stale`, 50 per page with
+The **Stale** select (Off / Never used / Not used in 30, 90, 180 days) switches
+the view to the server-side stale scan (`List` with `stale`, by actual use (`useCount` /
+`lastUsedAt`), 50 per page with
 Previous/Next; semantic search is disabled in this mode; memories younger than 30 days
-are never listed). Cards show recall count and last-recalled (or "never recalled").
+are never listed). Cards show use count and last-used (or "never used"). A "usage tracked since" line (with a limited-results warning when tracking is younger than the window) and an "Include preference memories" checkbox appear above the list. Bulk delete sends reason `stale-review`.
 Every card has a checkbox, plus "Select all on page"; **Move N to trash** asks for
 confirmation, calls `DeleteMany`, and the toast offers **Undo** (`RestoreFromTrash` with
 the same ids). Selection clears on any reload/page change.

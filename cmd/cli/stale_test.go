@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
@@ -90,4 +91,20 @@ func TestRunDeleteManyReportsPartialFailure(t *testing.T) {
 	assert.Error(t, runDelete(context.Background(), f, &buf, []string{" ", ""}))
 	f.err = errors.New("boom")
 	assert.Error(t, runDelete(context.Background(), f, &buf, []string{"a", "b"}))
+}
+
+// Usage is only tracked since the server's epoch: a window longer than that must
+// be flagged, or "nothing stale" would be mistaken for "everything is used".
+func TestTrackingNotice(t *testing.T) {
+	now := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	young := trackingNotice(now.Add(-10*24*time.Hour), true, 90, now)
+	assert.Contains(t, young, "usage tracked since 2026-05-2")
+	assert.Contains(t, young, "limited")
+	old := trackingNotice(now.Add(-200*24*time.Hour), true, 90, now)
+	assert.Contains(t, old, "usage tracked since")
+	assert.NotContains(t, old, "limited")
+	assert.Contains(t, trackingNotice(time.Time{}, false, 30, now), "unknown")
+
+	assert.EqualValues(t, 90, staleWindowDays(&cortexv1.ListRequest{Stale: cortexv1.StaleMode_STALE_MODE_NOT_RECALLED_SINCE, StaleDays: 90}))
+	assert.EqualValues(t, 30, staleWindowDays(&cortexv1.ListRequest{Stale: cortexv1.StaleMode_STALE_MODE_NEVER_RECALLED}))
 }

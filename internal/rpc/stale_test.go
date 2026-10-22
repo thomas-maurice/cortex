@@ -5,8 +5,9 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"os"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -60,16 +61,17 @@ func TestStaleAndDeleteManyIntegration(t *testing.T) {
 	require.NoError(t, st.EnsureSchema(ctx))
 	t.Cleanup(func() { _ = st.DeleteAllClasses(ctx) })
 
-	svc := &Service{cfg: Config{MultiTenant: true, TrashRetention: time.Hour}, store: st, log: slog.Default()}
+	trackingSince := time.Now().UTC().Add(-200 * 24 * time.Hour).Truncate(time.Second)
+	svc := &Service{cfg: Config{MultiTenant: true, TrashRetention: time.Hour, UsageTrackingSince: trackingSince}, store: st, log: slog.Default()}
 	alice := identity.Into(ctx, identity.Identity{UserID: "user-alice", Username: "alice", Role: identity.RoleUser})
 	bob := identity.Into(ctx, identity.Identity{UserID: "user-bob", Username: "bob", Role: identity.RoleUser})
 	ta, tb := st.Tenant("user-alice"), st.Tenant("user-bob")
 	vec := []float32{1, 0, 0, 0}
 	now := time.Now().UTC()
 	put := func(ts *store.TenantStore, age time.Duration, count int, last time.Duration) string {
-		r := memory.Record{ID: uuid.NewString(), Text: "x", Namespace: "ns", CreatedAt: now.Add(-age), AccessCount: count}
+		r := memory.Record{ID: uuid.NewString(), Text: "x", Namespace: "ns", CreatedAt: now.Add(-age), UseCount: count}
 		if last > 0 {
-			r.LastAccessedAt = now.Add(-last)
+			r.LastUsedAt = now.Add(-last)
 		}
 		require.NoError(t, ts.Upsert(ctx, r, vec))
 		return r.ID
@@ -80,6 +82,8 @@ func TestStaleAndDeleteManyIntegration(t *testing.T) {
 	longAgo := put(ta, 200*d, 3, 120*d)
 	recent := put(ta, 200*d, 3, 2*d)
 	bobsOld := put(tb, 300*d, 0, 0)
+	pref := memory.Record{ID: uuid.NewString(), Text: "standing instruction", Namespace: "ns", Tags: []string{"preference"}, CreatedAt: now.Add(-300 * d)}
+	require.NoError(t, ta.Upsert(ctx, pref, vec))
 
 	list := func(c context.Context, req *cortexv1.ListRequest) *cortexv1.ListResponse {
 		req.Namespace = "*"
@@ -114,10 +118,58 @@ func TestStaleAndDeleteManyIntegration(t *testing.T) {
 		assert.Equal(t, []string{bobsOld}, idsOf(list(bob, &cortexv1.ListRequest{Stale: cortexv1.StaleMode_STALE_MODE_NEVER_RECALLED})), "tenant isolation")
 	})
 
+	t.Run("preference tag is excluded by default, opt-in includes it", func(t *testing.T) {
+		r := list(alice, &cortexv1.ListRequest{Stale: cortexv1.StaleMode_STALE_MODE_NEVER_RECALLED})
+		assert.NotContains(t, idsOf(r), pref.ID, "preferences are loaded every session, never 'stale' by default")
+		r = list(alice, &cortexv1.ListRequest{Stale: cortexv1.StaleMode_STALE_MODE_NEVER_RECALLED, IncludePreferences: true})
+		assert.Contains(t, idsOf(r), pref.ID)
+		assert.True(t, trackingSince.Equal(r.TrackingSince.AsTime()), "response reports when tracking started")
+	})
+
+	t.Run("RecordUse", func(t *testing.T) {
+		use := func(c context.Context, ids ...string) int32 {
+			r, err := svc.RecordUse(c, connect.NewRequest(&cortexv1.RecordUseRequest{Ids: ids, Source: "test"}))
+			require.NoError(t, err)
+			return r.Msg.Recorded
+		}
+		before, _, err := ta.Get(ctx, recent)
+		require.NoError(t, err)
+		// Unknown id and another tenant's id are skipped, not errors and not leaks.
+		assert.EqualValues(t, 1, use(alice, recent, uuid.NewString(), bobsOld, " "+recent+" "))
+		after, _, err := ta.Get(ctx, recent)
+		require.NoError(t, err)
+		assert.Equal(t, before.UseCount+1, after.UseCount, "duplicate ids in one call count once")
+		assert.True(t, after.LastUsedAt.After(before.LastUsedAt))
+		bobRec, _, err := tb.Get(ctx, bobsOld)
+		require.NoError(t, err)
+		assert.Zero(t, bobRec.UseCount, "alice must not be able to touch bob's usage")
+
+		// Concurrent deliveries of one memory must not lose increments (per-id lock).
+		var wg sync.WaitGroup
+		for range 12 {
+			wg.Add(1)
+			go func() { defer wg.Done(); use(alice, recent) }()
+		}
+		wg.Wait()
+		final, _, err := ta.Get(ctx, recent)
+		require.NoError(t, err)
+		assert.Equal(t, after.UseCount+12, final.UseCount)
+
+		// Use takes a never-used memory out of the stale list.
+		assert.Contains(t, idsOf(list(alice, &cortexv1.ListRequest{Stale: cortexv1.StaleMode_STALE_MODE_NEVER_RECALLED})), never)
+		use(alice, never)
+		assert.NotContains(t, idsOf(list(alice, &cortexv1.ListRequest{Stale: cortexv1.StaleMode_STALE_MODE_NEVER_RECALLED})), never)
+		r := list(alice, &cortexv1.ListRequest{Stale: cortexv1.StaleMode_STALE_MODE_NOT_RECALLED_SINCE, StaleDays: 90})
+		assert.NotContains(t, idsOf(r), never, "just used")
+
+		_, err = svc.RecordUse(alice, connect.NewRequest(&cortexv1.RecordUseRequest{}))
+		assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	})
+
 	t.Run("DeleteMany", func(t *testing.T) {
 		missing := uuid.NewString()
 		resp, err := svc.DeleteMany(alice, connect.NewRequest(&cortexv1.DeleteManyRequest{
-			Ids: []string{never, " " + tooNew + " ", missing, bobsOld, never},
+			Ids: []string{never, " " + tooNew + " ", missing, bobsOld, never}, Reason: "stale-review",
 		}))
 		require.NoError(t, err)
 		res := map[string]*cortexv1.DeleteManyResult{}
@@ -139,6 +191,9 @@ func TestStaleAndDeleteManyIntegration(t *testing.T) {
 			_, inTrash, err := ta.GetTrash(ctx, id)
 			require.NoError(t, err)
 			assert.True(t, inTrash, "deleted via the normal path => restorable")
+			e, _, err := ta.GetTrash(ctx, id)
+			require.NoError(t, err)
+			assert.Equal(t, "stale-review", e.Reason)
 		}
 		_, live, err := tb.Get(ctx, bobsOld)
 		require.NoError(t, err)
@@ -169,4 +224,23 @@ func TestDeleteManyDoesNotLeakBackendErrors(t *testing.T) {
 	assert.False(t, resp.Msg.Results[0].Deleted)
 	assert.Equal(t, "failed", resp.Msg.Results[0].Error)
 	assert.NotContains(t, resp.Msg.Results[0].Error, "secret-backend")
+}
+
+func TestStaleExcludeTags(t *testing.T) {
+	assert.Equal(t, []string{"x", "preference"}, staleExcludeTags(&cortexv1.ListRequest{ExcludeTags: []string{"x"}}))
+	assert.Empty(t, staleExcludeTags(&cortexv1.ListRequest{IncludePreferences: true}))
+	assert.Empty(t, staleExcludeTags(&cortexv1.ListRequest{Tags: []string{"preference"}}), "explicitly filtering for preference must not be cancelled out")
+	req := &cortexv1.ListRequest{ExcludeTags: []string{"x"}}
+	_ = staleExcludeTags(req)
+	assert.Equal(t, []string{"x"}, req.ExcludeTags, "caller's slice must not be mutated")
+}
+
+func TestDeleteManyRejectsBadReason(t *testing.T) {
+	svc := &Service{cfg: Config{MultiTenant: false}, store: &store.Store{}}
+	_, err := svc.DeleteMany(context.Background(), connect.NewRequest(&cortexv1.DeleteManyRequest{
+		Ids: []string{uuid.NewString()}, Reason: strings.Repeat("x", 65)}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	_, err = svc.RecordUse(context.Background(), connect.NewRequest(&cortexv1.RecordUseRequest{Ids: make([]string, maxRecordUseIDs+1)}))
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 }

@@ -55,6 +55,8 @@ const (
 	// MemoryServiceDeleteManyProcedure is the fully-qualified name of the MemoryService's DeleteMany
 	// RPC.
 	MemoryServiceDeleteManyProcedure = "/cortex.v1.MemoryService/DeleteMany"
+	// MemoryServiceRecordUseProcedure is the fully-qualified name of the MemoryService's RecordUse RPC.
+	MemoryServiceRecordUseProcedure = "/cortex.v1.MemoryService/RecordUse"
 	// MemoryServiceStatusProcedure is the fully-qualified name of the MemoryService's Status RPC.
 	MemoryServiceStatusProcedure = "/cortex.v1.MemoryService/Status"
 	// MemoryServiceGetVersionProcedure is the fully-qualified name of the MemoryService's GetVersion
@@ -213,6 +215,10 @@ type MemoryServiceClient interface {
 	// DeleteMany moves up to 500 memories to the trash in one call, reporting
 	// success/failure per id. One in-flight call per tenant.
 	DeleteMany(context.Context, *connect.Request[v1.DeleteManyRequest]) (*connect.Response[v1.DeleteManyResponse], error)
+	// RecordUse bumps use_count / last_used_at of memories that were delivered with
+	// full text into an agent's context. It feeds stale review and is independent
+	// of search reinforcement. Unknown ids are skipped.
+	RecordUse(context.Context, *connect.Request[v1.RecordUseRequest]) (*connect.Response[v1.RecordUseResponse], error)
 	// Status is a fast health/connectivity probe of the backing services.
 	Status(context.Context, *connect.Request[v1.StatusRequest]) (*connect.Response[v1.StatusResponse], error)
 	// GetVersion reports the server's build version. Intentionally
@@ -450,6 +456,12 @@ func NewMemoryServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			httpClient,
 			baseURL+MemoryServiceDeleteManyProcedure,
 			connect.WithSchema(memoryServiceMethods.ByName("DeleteMany")),
+			connect.WithClientOptions(opts...),
+		),
+		recordUse: connect.NewClient[v1.RecordUseRequest, v1.RecordUseResponse](
+			httpClient,
+			baseURL+MemoryServiceRecordUseProcedure,
+			connect.WithSchema(memoryServiceMethods.ByName("RecordUse")),
 			connect.WithClientOptions(opts...),
 		),
 		status: connect.NewClient[v1.StatusRequest, v1.StatusResponse](
@@ -742,6 +754,7 @@ type memoryServiceClient struct {
 	getMemory               *connect.Client[v1.GetMemoryRequest, v1.GetMemoryResponse]
 	delete                  *connect.Client[v1.DeleteRequest, v1.DeleteResponse]
 	deleteMany              *connect.Client[v1.DeleteManyRequest, v1.DeleteManyResponse]
+	recordUse               *connect.Client[v1.RecordUseRequest, v1.RecordUseResponse]
 	status                  *connect.Client[v1.StatusRequest, v1.StatusResponse]
 	getVersion              *connect.Client[v1.GetVersionRequest, v1.GetVersionResponse]
 	doctor                  *connect.Client[v1.DoctorRequest, v1.DoctorResponse]
@@ -833,6 +846,11 @@ func (c *memoryServiceClient) Delete(ctx context.Context, req *connect.Request[v
 // DeleteMany calls cortex.v1.MemoryService.DeleteMany.
 func (c *memoryServiceClient) DeleteMany(ctx context.Context, req *connect.Request[v1.DeleteManyRequest]) (*connect.Response[v1.DeleteManyResponse], error) {
 	return c.deleteMany.CallUnary(ctx, req)
+}
+
+// RecordUse calls cortex.v1.MemoryService.RecordUse.
+func (c *memoryServiceClient) RecordUse(ctx context.Context, req *connect.Request[v1.RecordUseRequest]) (*connect.Response[v1.RecordUseResponse], error) {
+	return c.recordUse.CallUnary(ctx, req)
 }
 
 // Status calls cortex.v1.MemoryService.Status.
@@ -1098,6 +1116,10 @@ type MemoryServiceHandler interface {
 	// DeleteMany moves up to 500 memories to the trash in one call, reporting
 	// success/failure per id. One in-flight call per tenant.
 	DeleteMany(context.Context, *connect.Request[v1.DeleteManyRequest]) (*connect.Response[v1.DeleteManyResponse], error)
+	// RecordUse bumps use_count / last_used_at of memories that were delivered with
+	// full text into an agent's context. It feeds stale review and is independent
+	// of search reinforcement. Unknown ids are skipped.
+	RecordUse(context.Context, *connect.Request[v1.RecordUseRequest]) (*connect.Response[v1.RecordUseResponse], error)
 	// Status is a fast health/connectivity probe of the backing services.
 	Status(context.Context, *connect.Request[v1.StatusRequest]) (*connect.Response[v1.StatusResponse], error)
 	// GetVersion reports the server's build version. Intentionally
@@ -1331,6 +1353,12 @@ func NewMemoryServiceHandler(svc MemoryServiceHandler, opts ...connect.HandlerOp
 		MemoryServiceDeleteManyProcedure,
 		svc.DeleteMany,
 		connect.WithSchema(memoryServiceMethods.ByName("DeleteMany")),
+		connect.WithHandlerOptions(opts...),
+	)
+	memoryServiceRecordUseHandler := connect.NewUnaryHandler(
+		MemoryServiceRecordUseProcedure,
+		svc.RecordUse,
+		connect.WithSchema(memoryServiceMethods.ByName("RecordUse")),
 		connect.WithHandlerOptions(opts...),
 	)
 	memoryServiceStatusHandler := connect.NewUnaryHandler(
@@ -1629,6 +1657,8 @@ func NewMemoryServiceHandler(svc MemoryServiceHandler, opts ...connect.HandlerOp
 			memoryServiceDeleteHandler.ServeHTTP(w, r)
 		case MemoryServiceDeleteManyProcedure:
 			memoryServiceDeleteManyHandler.ServeHTTP(w, r)
+		case MemoryServiceRecordUseProcedure:
+			memoryServiceRecordUseHandler.ServeHTTP(w, r)
 		case MemoryServiceStatusProcedure:
 			memoryServiceStatusHandler.ServeHTTP(w, r)
 		case MemoryServiceGetVersionProcedure:
@@ -1764,6 +1794,10 @@ func (UnimplementedMemoryServiceHandler) Delete(context.Context, *connect.Reques
 
 func (UnimplementedMemoryServiceHandler) DeleteMany(context.Context, *connect.Request[v1.DeleteManyRequest]) (*connect.Response[v1.DeleteManyResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cortex.v1.MemoryService.DeleteMany is not implemented"))
+}
+
+func (UnimplementedMemoryServiceHandler) RecordUse(context.Context, *connect.Request[v1.RecordUseRequest]) (*connect.Response[v1.RecordUseResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cortex.v1.MemoryService.RecordUse is not implemented"))
 }
 
 func (UnimplementedMemoryServiceHandler) Status(context.Context, *connect.Request[v1.StatusRequest]) (*connect.Response[v1.StatusResponse], error) {

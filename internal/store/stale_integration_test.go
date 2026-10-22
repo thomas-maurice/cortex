@@ -29,9 +29,9 @@ func TestListStaleClassification(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 
 	mk := func(ns string, created time.Duration, count int, last time.Duration) memory.Record {
-		r := memory.Record{ID: uuid.NewString(), Text: "x", Namespace: ns, CreatedAt: now.Add(-created), AccessCount: count}
+		r := memory.Record{ID: uuid.NewString(), Text: "x", Namespace: ns, CreatedAt: now.Add(-created), UseCount: count}
 		if last > 0 {
-			r.LastAccessedAt = now.Add(-last)
+			r.LastUsedAt = now.Add(-last)
 		}
 		require.NoError(t, ts.Upsert(ctx, r, trashVec))
 		return r
@@ -106,6 +106,16 @@ func TestListStaleClassification(t *testing.T) {
 		assert.Equal(t, midNever.ID, got[4])
 	})
 
+	t.Run("tracking epoch limits never-used results", func(t *testing.T) {
+		recent := now.Add(-3 * day) // tracking began 3 days ago
+		recs, total, err := ts.ListStale(ctx, StaleOpts{Namespace: "a", MinAge: 30 * day, TrackingSince: recent, Now: now})
+		require.NoError(t, err)
+		assert.Zero(t, total, "nothing can be judged unused after 3 days of tracking: %v", ids(recs))
+		recs, _, err = ts.ListStale(ctx, StaleOpts{Namespace: "a", MinAge: 30 * day, IdleFor: 90 * day, TrackingSince: recent, Now: now})
+		require.NoError(t, err)
+		assert.Equal(t, []string{longAgo.ID}, ids(recs), "only a memory with a real old lastUsedAt qualifies")
+	})
+
 	t.Run("tag filters", func(t *testing.T) {
 		tagged := memory.Record{ID: uuid.NewString(), Text: "x", Namespace: "a", Tags: []string{"keep"}, CreatedAt: now.Add(-300 * day)}
 		require.NoError(t, ts.Upsert(ctx, tagged, trashVec))
@@ -116,4 +126,31 @@ func TestListStaleClassification(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, []string{tagged.ID}, ids(recs))
 	})
+}
+
+// Expired memories belong to the expiry sweep (trash reason "expired"). Offering
+// them in stale review would let a bulk "stale-review" trash double-handle them,
+// so ListStale hides them unless the caller opts in (include_expired).
+func TestListStaleSkipsExpiredUnlessIncluded(t *testing.T) {
+	st, _ := trashStore(t)
+	ctx := context.Background()
+	ts := st.Tenant("tenant-stale-exp")
+	now := time.Now().UTC().Truncate(time.Second)
+	live := memory.Record{ID: uuid.NewString(), Text: "x", Namespace: "a", CreatedAt: now.Add(-100 * day)}
+	future := memory.Record{ID: uuid.NewString(), Text: "x", Namespace: "a", CreatedAt: now.Add(-100 * day), ValidUntil: now.Add(10 * day)}
+	expired := memory.Record{ID: uuid.NewString(), Text: "x", Namespace: "a", CreatedAt: now.Add(-100 * day), ValidUntil: now.Add(-day)}
+	for _, r := range []memory.Record{live, future, expired} {
+		require.NoError(t, ts.Upsert(ctx, r, trashVec))
+	}
+
+	recs, total, err := ts.ListStale(ctx, StaleOpts{Namespace: "a", MinAge: 30 * day, Now: now})
+	require.NoError(t, err)
+	assert.Equal(t, 2, total)
+	for _, r := range recs {
+		assert.NotEqual(t, expired.ID, r.ID, "expired memory must be left to the expiry sweep")
+	}
+
+	_, total, err = ts.ListStale(ctx, StaleOpts{Namespace: "a", MinAge: 30 * day, Now: now, IncludeExpired: true})
+	require.NoError(t, err)
+	assert.Equal(t, 3, total)
 }

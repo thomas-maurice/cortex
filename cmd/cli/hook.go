@@ -42,6 +42,27 @@ func parseHookEvent(r io.Reader) (hookEvent, error) {
 	return ev, nil
 }
 
+// hookUseTimeout caps the RecordUse call so a slow server cannot hold the hook
+// process open after its output was already delivered (it runs on every prompt
+// that injects, so it must stay far below human-noticeable latency).
+const hookUseTimeout = 300 * time.Millisecond
+
+// useRecorder is the slice of the memory client recordHookUse needs.
+type useRecorder interface {
+	RecordUse(context.Context, *connect.Request[cortexv1.RecordUseRequest]) (*connect.Response[cortexv1.RecordUseResponse], error)
+}
+
+// recordHookUse tells the server the injected memories were delivered into the
+// model's context (stale review's "use" signal). Fail-open: errors are ignored.
+func recordHookUse(ctx context.Context, c useRecorder, ids []string) {
+	if len(ids) == 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, hookUseTimeout)
+	defer cancel()
+	_, _ = c.RecordUse(ctx, connect.NewRequest(&cortexv1.RecordUseRequest{Ids: ids, Source: "hook"}))
+}
+
 func hookCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "hook",
@@ -94,10 +115,15 @@ func hookRecallCmd() *cobra.Command {
 			}
 			ctx, cancel := context.WithTimeout(cmd.Context(), timeout)
 			defer cancel()
-			s := &rpcSearcher{c: client(), namespace: namespace, reinforce: reinforce}
-			runRecall(ctx, cmd.OutOrStdout(), s, ev,
+			c := client()
+			s := &rpcSearcher{c: c, namespace: namespace, reinforce: reinforce}
+			freshIDs := runRecall(ctx, cmd.OutOrStdout(), s, ev,
 				recall.Params{Limit: limit, MaxDistance: maxDistance, MinChars: minChars, MaxQueryChunks: maxQueryChunks},
 				maxChars, stateDB)
+			// AFTER the block is out: count exactly the injected (fresh) memories as used.
+			// Own short deadline (the run's ctx may be nearly spent), silent on failure: it
+			// can never change the output or the exit status.
+			recordHookUse(cmd.Context(), c, freshIDs)
 			return nil
 		},
 	}
@@ -142,10 +168,11 @@ func (r *rpcSearcher) Search(ctx context.Context, query string, limit int, maxDi
 
 // runRecall is the hook proper: skip rules, query (shared with the server's
 // PreviewRecall via internal/recall), then per-session dedup and output. It is
-// fail-open: search errors are logged to stderr and never returned.
-func runRecall(ctx context.Context, out io.Writer, s recall.Searcher, ev hookEvent, p recall.Params, maxChars int, stateDB string) {
+// fail-open: search errors are logged to stderr and never returned. It returns the
+// ids actually injected (nil when nothing was printed) for the caller's RecordUse.
+func runRecall(ctx context.Context, out io.Writer, s recall.Searcher, ev hookEvent, p recall.Params, maxChars int, stateDB string) []string {
 	if !recall.ShouldRecall(ev.Prompt, p.MinChars) {
-		return
+		return nil
 	}
 	res := recall.Run(ctx, s, ev.Prompt, p)
 	for _, err := range res.Errs {
@@ -162,8 +189,9 @@ func runRecall(ctx context.Context, out io.Writer, s recall.Searcher, ev hookEve
 		}
 	}
 	if len(fresh) == 0 {
-		return
+		return nil
 	}
 	_, _ = fmt.Fprint(out, recall.FormatBlock(fresh, maxChars))
 	seen.Add(freshIDs...)
+	return freshIDs
 }

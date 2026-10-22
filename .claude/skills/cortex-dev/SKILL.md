@@ -232,6 +232,14 @@ should encode *why* the behaviour matters, not just what it does (Rule 9).
   expired > `EXPIRY_GRACE` (default 168h, strict parse, 0 = now) with reason `expired`; restore clears a
   lapsed expiry. CLI `save --expires`, `edit --expires/--no-expiry`, `list/search --include-expired`;
   MCP `expiresIn` / `includeExpired`. See docs/DESIGN.md "Memory expiry".
+- **Usage tracking (stale review).** `useCount`/`lastUsedAt` are server-owned Memory props
+  (also on Trash), bumped by `RecordUse` (≤100 ids, in-process per-id lock) when a memory is
+  delivered with full text: `cortex hook recall` (injected ids only, after output, fail-open,
+  300ms cap) and MCP search (non-stub)/get/recall_session/consolidate (fire-and-forget, bounded concurrency, dropped when saturated). Stale mode skips expired memories unless `include_expired` (the expiry sweep owns them).
+  UI/CLI searches never count. Independent of `RERANK_WEIGHT`. Epoch `usage_tracking_since` in
+  KV `cortex_meta` (create-once at server start). Index path never writes them on an existing
+  memory (DESIGN ownership table). New shared-message proto fields use numbers >= 30 to avoid
+  clashes between parallel branches.
 - **Observability** lives in `internal/obs` (shared registry, `/healthz` `/readyz` `/metrics`
   handlers, `obs.Serve` for the dedicated metrics listeners, dependency probes reusing `Store.Ready` / `Embedder.Reachable`). Server RPC metrics are
   a Connect interceptor + a scrape-time queue collector in `internal/rpc/metrics.go`; worker metrics
@@ -315,7 +323,7 @@ and scripting without going through Claude. Global flags: `--server`
 | `get <id> [--json]` | Show one memory by id (full text + linked ids) via the `GetMemory` RPC (tenant-scoped; NotFound for unknown/other-tenant ids; no reinforcement). Same RPC backs the `cortex_memory_get` MCP tool, which also marks the id delivered in recallstate. |
 | `search "<q>" [-n '*'] [-l N] [-d 0.6] [--autocut N] [-t/-T/-x tag] [--reinforce] [--include-expired]` | Hybrid (BM25+vector) semantic search. `-d` = distance cutoff. CLI does NOT reinforce by default. |
 | `delete <id>...` | Delete memories by id (soft: moved to the `Trash` class, see §4). >1 id = one `DeleteMany` RPC (max 500, per-tenant gate, per-id results, non-zero exit on any failure). |
-| `list --stale [--since 90d] [--min-age 30d]` | Stale review (`List` with `stale`/`stale_days`/`min_age_days`/`offset`, `total` in the response): never-recalled or not-recalled-since, oldest last-access first, min-age guard default 30d. Go-side scan (`TenantStore.ListStale`, `internal/store/stale.go`) — no IsNull filter (needs indexNullState). Same filter + bulk trash/Undo in the UI Memories view. |
+| `list --stale [--since 90d] [--min-age 30d]` | Stale review (`List` with `stale`/`stale_days`/`min_age_days`/`offset`/`include_preferences`, `total` + `tracking_since` in the response), based on ACTUAL USE (`useCount`/`lastUsedAt`, `RecordUse` RPC — NOT reinforcement `accessCount`): never-used or not-used-since, oldest last-use first, min-age guard default 30d from max(createdAt, trackingSince), `preference` tag hidden by default. Go-side scan (`TenantStore.ListStale`, `internal/store/stale.go`) — no IsNull filter (needs indexNullState). Same filter + bulk trash/Undo in the UI Memories view. |
 | `trash ls [-n ns]` / `trash restore <id>...` / `trash purge <id>... \| --all [-n ns] [--yes]` | Soft-delete trash (`ListTrash`/`RestoreFromTrash`/`PurgeTrash` RPCs; `cmd/cli/trash.go`). |
 | `export [-n '*'] [-o file]` | Dump memories (text+metadata, no vectors) to JSON (stdout by default). |
 | `import <file> [--batch N]` | Restore a dump via the NATS ingest queue (worker re-embeds). Preserves ids/links. **This is how you load seed data** — point `--server` at the target. |

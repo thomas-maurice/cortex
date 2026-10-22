@@ -55,10 +55,13 @@ func trashProperties() []*models.Property {
 		{Name: "createdAt", DataType: []string{"date"}},
 		{Name: "linkedIds", DataType: []string{"text[]"}},
 		{Name: "notDuplicateOf", DataType: []string{"text[]"}},
+		{Name: "useCount", DataType: []string{"int"}},
+		{Name: "lastUsedAt", DataType: []string{"date"}},
 		{Name: "deletedAt", DataType: []string{"date"}},
 		{Name: "reason", DataType: []string{"text"}},
 		// Every other Memory property that the worker does NOT recompute is kept so a
-		// restore does not reset history: accessCount/lastAccessedAt (recall usage),
+		// restore does not reset history: accessCount/lastAccessedAt (recall usage), useCount/lastUsedAt
+		// (above; actual use, drives stale review),
 		// model/dims (display). dupCandidates (recomputed at index), indexedSeq and
 		// indexedStream (re-stamped by the worker from the new queue message) are
 		// deliberately NOT kept.
@@ -72,7 +75,7 @@ func trashProperties() []*models.Property {
 	}
 }
 
-var trashScanProps = []string{"memoryId", "text", "namespace", "tags", "source", "conversationId", "createdAt", "linkedIds", "notDuplicateOf", "deletedAt", "reason", "accessCount", "lastAccessedAt", "model", "dims", "validUntil"}
+var trashScanProps = []string{"memoryId", "text", "namespace", "tags", "source", "conversationId", "createdAt", "linkedIds", "notDuplicateOf", "deletedAt", "reason", "useCount", "lastUsedAt", "accessCount", "lastAccessedAt", "model", "dims", "validUntil"}
 
 // ListAllTrash scans the Trash class without any tenant scope — the migrate-mt
 // snapshot, taken while the store is still non-MT (like ListAllRecords). Must not
@@ -129,6 +132,7 @@ func (ts *TenantStore) putTrash(ctx context.Context, rec memory.Record, reason s
 		"conversationId": rec.ConversationID,
 		"linkedIds":      nz(rec.LinkedIDs),
 		"notDuplicateOf": nz(rec.NotDuplicateOf),
+		"useCount":       rec.UseCount,
 		"deletedAt":      at.UTC().Format(time.RFC3339),
 		"reason":         reason,
 		"accessCount":    rec.AccessCount,
@@ -143,6 +147,9 @@ func (ts *TenantStore) putTrash(ctx context.Context, rec memory.Record, reason s
 	}
 	if !rec.ValidUntil.IsZero() {
 		props["validUntil"] = rec.ValidUntil.UTC().Format(time.RFC3339)
+	}
+	if !rec.LastUsedAt.IsZero() {
+		props["lastUsedAt"] = rec.LastUsedAt.UTC().Format(time.RFC3339)
 	}
 	return ts.upsertObject(ctx, memory.TrashClassName, rec.ID, props, nil)
 }

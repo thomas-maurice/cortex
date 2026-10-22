@@ -444,3 +444,35 @@ func TestTrashSchemaUpgradeAddsHistoryProps(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, 3, e.AccessCount)
 }
+
+// Usage history must survive a delete -> restore cycle (restore re-queues the
+// trashed record, whose use fields the index path then carries on re-create),
+// otherwise a restored memory would look "never used" and be re-flagged.
+func TestTrashKeepsUsageFields(t *testing.T) {
+	st, _ := trashStore(t)
+	ctx := context.Background()
+	ts := st.Tenant("tenant-use")
+	rec := mkRec("ns", "used fact")
+	rec.UseCount = 5
+	rec.LastUsedAt = time.Now().UTC().Add(-48 * time.Hour).Truncate(time.Second)
+	require.NoError(t, ts.Upsert(ctx, rec, trashVec))
+	require.NoError(t, ts.Delete(ctx, rec.ID))
+
+	e, ok, err := ts.GetTrash(ctx, rec.ID)
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Equal(t, 5, e.UseCount)
+	assert.True(t, rec.LastUsedAt.Equal(e.LastUsedAt))
+	listed, err := ts.ListTrash(ctx, "")
+	require.NoError(t, err)
+	require.Len(t, listed, 1)
+	assert.Equal(t, 5, listed[0].UseCount)
+	assert.True(t, rec.LastUsedAt.Equal(listed[0].LastUsedAt))
+
+	// Re-creating from the trashed record keeps the history.
+	require.NoError(t, ts.Upsert(ctx, e.Record, trashVec))
+	got, _, err := ts.Get(ctx, rec.ID)
+	require.NoError(t, err)
+	assert.Equal(t, 5, got.UseCount)
+	assert.True(t, rec.LastUsedAt.Equal(got.LastUsedAt))
+}

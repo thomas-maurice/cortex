@@ -27,6 +27,10 @@ func protoToRecord(m *cortexv1.Memory) memory.Record {
 	if ts := m.GetValidUntil(); ts != nil {
 		validUntil = ts.AsTime()
 	}
+	var lastUsed time.Time
+	if ts := m.GetLastUsedAt(); ts != nil {
+		lastUsed = ts.AsTime()
+	}
 	return memory.Record{
 		ValidUntil:     validUntil,
 		ID:             m.GetId(),
@@ -44,6 +48,8 @@ func protoToRecord(m *cortexv1.Memory) memory.Record {
 		// history survives a move; the worker re-stamps Model/Dims but leaves these.
 		AccessCount:    int(m.GetAccessCount()),
 		LastAccessedAt: lastAccessed,
+		UseCount:       int(m.GetUseCount()),
+		LastUsedAt:     lastUsed,
 	}
 }
 
@@ -65,6 +71,8 @@ func recordToProto(r memory.Record) *cortexv1.Memory {
 		AccessCount:    int32(r.AccessCount),
 		LastAccessedAt: lastAccessedProto(r.LastAccessedAt),
 		ValidUntil:     validUntilProto(r.ValidUntil),
+		UseCount:       int32(r.UseCount),
+		LastUsedAt:     lastAccessedProto(r.LastUsedAt),
 	}
 }
 

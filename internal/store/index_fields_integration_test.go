@@ -54,7 +54,7 @@ func TestUpdateIndexFieldsMerge(t *testing.T) {
 	created := time.Now().UTC().Truncate(time.Second)
 	require.NoError(t, ts.Upsert(ctx, memory.Record{
 		ID: id, Text: "before", Namespace: "ns", Tags: []string{"a"}, Source: "s", CreatedAt: created,
-		Model: "m", Dims: 4, LinkedIDs: []string{"l1", "l2"}, AccessCount: 4, LastAccessedAt: created,
+		Model: "m", Dims: 4, LinkedIDs: []string{"l1", "l2"}, AccessCount: 4, LastAccessedAt: created, UseCount: 7, LastUsedAt: created,
 		NotDuplicateOf: []string{"nd1"}, IndexedSeq: 1,
 	}, []float32{1, 0, 0, 0}))
 
@@ -62,7 +62,7 @@ func TestUpdateIndexFieldsMerge(t *testing.T) {
 		ID: id, Text: "after", Namespace: "ns2", Tags: []string{"b"}, Source: "s", CreatedAt: created,
 		Model: "m2", Dims: 4, DupCandidates: []string{"d1"}, IndexedSeq: 42, IndexedStream: 1760000000999999,
 		// A stale snapshot on the payload: must be ignored.
-		LinkedIDs: []string{"STALE"}, AccessCount: 0, NotDuplicateOf: []string{"STALE"},
+		LinkedIDs: []string{"STALE"}, AccessCount: 0, UseCount: 0, NotDuplicateOf: []string{"STALE"},
 	}, []float32{0, 1, 0, 0}))
 
 	got, ok, err := ts.Get(ctx, id)
@@ -78,6 +78,8 @@ func TestUpdateIndexFieldsMerge(t *testing.T) {
 	assert.Equal(t, []string{"l1", "l2"}, got.LinkedIDs, "links belong to the link consumer")
 	assert.Equal(t, 4, got.AccessCount, "reinforcement belongs to the server")
 	assert.True(t, got.LastAccessedAt.Equal(created))
+	assert.Equal(t, 7, got.UseCount, "usage tracking belongs to the server (RecordUse)")
+	assert.True(t, got.LastUsedAt.Equal(created))
 	assert.Equal(t, []string{"nd1"}, got.NotDuplicateOf)
 
 	hits, err := ts.SearchMemoryVectors(ctx, []float32{0, 1, 0, 0}, SearchOpts{Limit: 3})

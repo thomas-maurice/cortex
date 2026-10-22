@@ -96,6 +96,12 @@ func (f *fullClient) Consolidate(context.Context, *connect.Request[cortexv1.Cons
 	return connect.NewResponse(&cortexv1.ConsolidateResponse{Cluster: f.cons}), nil
 }
 
+// RecordUse is fire-and-forget from get/consolidate; accept it (a nil embedded
+// client would panic in the background goroutine).
+func (f *fullClient) RecordUse(context.Context, *connect.Request[cortexv1.RecordUseRequest]) (*connect.Response[cortexv1.RecordUseResponse], error) {
+	return connect.NewResponse(&cortexv1.RecordUseResponse{}), nil
+}
+
 func resultText(t *testing.T, r *mcp.CallToolResult) string {
 	t.Helper()
 	require.NotNil(t, r)
@@ -157,4 +163,8 @@ func TestEditPlumbsExpiry(t *testing.T) {
 
 	_, _, err = d.edit(context.Background(), nil, EditIn{ID: "m1"})
 	assert.Error(t, err, "no text and no expiry change is still an error")
+}
+
+func (r *recClient) RecordUse(context.Context, *connect.Request[cortexv1.RecordUseRequest]) (*connect.Response[cortexv1.RecordUseResponse], error) {
+	return connect.NewResponse(&cortexv1.RecordUseResponse{}), nil
 }

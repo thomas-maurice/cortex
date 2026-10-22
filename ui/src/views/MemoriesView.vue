@@ -34,10 +34,10 @@
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="off">Off (newest first)</SelectItem>
-            <SelectItem value="never">Never recalled</SelectItem>
-            <SelectItem value="30">Not recalled in 30 days</SelectItem>
-            <SelectItem value="90">Not recalled in 90 days</SelectItem>
-            <SelectItem value="180">Not recalled in 180 days</SelectItem>
+            <SelectItem value="never">Never used</SelectItem>
+            <SelectItem value="30">Not used in 30 days</SelectItem>
+            <SelectItem value="90">Not used in 90 days</SelectItem>
+            <SelectItem value="180">Not used in 180 days</SelectItem>
           </SelectContent>
         </Select>
       </div>
@@ -66,10 +66,23 @@
       </Badge>
     </div>
 
-    <p v-if="staleActive" class="text-xs text-muted-foreground">
-      Stale review: oldest last recall first. Memories created in the last {{ STALE_MIN_AGE_DAYS }} days are never listed.
-      {{ total }} match<span v-if="total !== 1">es</span>.
-    </p>
+    <div v-if="staleActive" class="space-y-1 text-xs text-muted-foreground">
+      <p>
+        Stale review (by actual use: injected by the recall hook or delivered in full by the agent; browsing here does not count), oldest last use first.
+        Memories younger than {{ STALE_MIN_AGE_DAYS }} days are never listed.
+        {{ total }} match<span v-if="total !== 1">es</span>.
+      </p>
+      <p v-if="trackingSince">
+        Usage tracked since {{ formatDate(trackingSince) }}.
+        <span v-if="trackingLimited" class="font-medium text-amber-600 dark:text-amber-400">
+          That is less than the {{ staleWindowDays }}-day window, so results are limited: memories cannot be judged unused before tracking began.
+        </span>
+      </p>
+      <label class="inline-flex cursor-pointer items-center gap-2">
+        <input v-model="includePrefs" type="checkbox" class="size-4" :disabled="loading" />
+        Include memories tagged "preference" (hidden by default)
+      </label>
+    </div>
 
     <div v-if="memories.length" class="flex flex-wrap items-center gap-3 text-sm">
       <label class="inline-flex cursor-pointer items-center gap-2">
@@ -150,17 +163,20 @@
           <span v-if="m.createdAt">{{ formatDate(m.createdAt) }}</span>
           <ExpiryBadge :valid-until="m.validUntil" />
           <span v-if="m._distance !== undefined">dist: {{ m._distance.toFixed(3) }}</span>
-          <Badge v-if="staleActive && !m.accessCount" variant="outline" title="never surfaced as a top search hit">
-            <Flame class="size-3" />0 recalls
+          <Badge v-if="staleActive" variant="outline" title="times this memory was delivered into an agent's context">
+            <Flame class="size-3" />{{ m.useCount }} use{{ m.useCount === 1 ? '' : 's' }}
           </Badge>
-          <span v-if="staleActive && !m.lastAccessedAt" class="inline-flex items-center gap-1 text-amber-600 dark:text-amber-400">
-            <History class="size-3" />never recalled
+          <span v-if="staleActive && !m.lastUsedAt" class="inline-flex items-center gap-1 text-amber-600 dark:text-amber-400">
+            <History class="size-3" />never used
           </span>
-          <Badge v-if="m.accessCount" variant="secondary" class="text-amber-600 dark:text-amber-400" title="times the agent recalled this memory (living memory)">
+          <span v-if="staleActive && m.lastUsedAt" class="inline-flex items-center gap-1" title="when this memory was last delivered into an agent's context">
+            <History class="size-3" />last used {{ formatDate(m.lastUsedAt) }}
+          </span>
+          <Badge v-if="!staleActive && m.accessCount" variant="secondary" class="text-amber-600 dark:text-amber-400" title="times the agent recalled this memory (living memory)">
             <Flame class="size-3" />{{ m.accessCount }}
           </Badge>
-          <span v-if="m.lastAccessedAt" class="inline-flex items-center gap-1" title="when this memory was last recalled">
-            <History class="size-3" />{{ staleActive ? 'last recalled ' : '' }}{{ formatDate(m.lastAccessedAt) }}
+          <span v-if="!staleActive && m.lastAccessedAt" class="inline-flex items-center gap-1" title="when this memory was last recalled">
+            <History class="size-3" />{{ formatDate(m.lastAccessedAt) }}
           </span>
         </div>
       </CardContent>
@@ -233,8 +249,17 @@ const STALE_MIN_AGE_DAYS = 30 // sent explicitly so the UI text can't drift from
 // server-side scan (List RPC), ignores the semantic query, and is paginated.
 const stale = ref('off')
 const staleActive = computed(() => stale.value !== 'off')
+const includePrefs = ref(false)
+const trackingSince = ref(null)
 const offset = ref(0)
 const total = ref(0)
+
+// The span being judged: the idle threshold, or the min-age guard for "never used".
+const staleWindowDays = computed(() => (stale.value === 'never' ? STALE_MIN_AGE_DAYS : Number(stale.value)))
+const trackingLimited = computed(() => {
+  if (!trackingSince.value) return false
+  return Date.now() - timestampDate(trackingSince.value).getTime() < staleWindowDays.value * 86400000
+})
 
 const selected = ref(new Set())
 const bulkBusy = ref(false)
@@ -335,7 +360,7 @@ async function load(retry = false) {
     if (staleActive.value) {
       // The server filters tags exactly in stale mode: no client-side post-filter (it would break totals/pages).
       filteredNote.value = ''
-      const req = { namespace: namespace.value, limit: PAGE_SIZE, offset: offset.value, tags: activeTags.value, minAgeDays: STALE_MIN_AGE_DAYS, includeExpired: includeExpired.value }
+      const req = { namespace: namespace.value, limit: PAGE_SIZE, offset: offset.value, tags: activeTags.value, minAgeDays: STALE_MIN_AGE_DAYS, includePreferences: includePrefs.value, includeExpired: includeExpired.value }
       if (stale.value === 'never') {
         req.stale = StaleMode.NEVER_RECALLED
       } else {
@@ -345,6 +370,7 @@ async function load(retry = false) {
       const res = await memoryClient.list(req)
       memories.value = res.memories
       total.value = res.total
+      trackingSince.value = res.trackingSince ?? null
       // The last page can vanish after deletes: step back instead of showing nothing.
       if (res.memories.length === 0 && offset.value > 0 && res.total > 0) {
         offset.value = Math.max(0, Math.floor((res.total - 1) / PAGE_SIZE) * PAGE_SIZE)
@@ -430,7 +456,7 @@ async function bulkTrash() {
   if (!(await confirmDialog(`Move ${ids.length} memor${ids.length === 1 ? 'y' : 'ies'} to the trash? They can be restored from the trash (or with Undo).`, { actionLabel: 'Move to trash' }))) return
   bulkBusy.value = true
   try {
-    const res = await memoryClient.deleteMany({ ids })
+    const res = await memoryClient.deleteMany({ ids, reason: staleActive.value ? 'stale-review' : '' })
     const done = res.results.filter((r) => r.deleted).map((r) => r.id)
     const failed = res.results.filter((r) => !r.deleted)
     if (failed.length) toast.error(`${failed.length} could not be deleted: ${failed[0].error}`)
@@ -461,6 +487,7 @@ async function undoTrash(ids) {
 watch(inspectorChanged, () => load())
 watch(stale, reload)
 watch(includeExpired, reload)
+watch(includePrefs, reload)
 
 onMounted(reload)
 </script>

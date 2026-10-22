@@ -675,6 +675,7 @@ func (d *deps) search(ctx context.Context, _ *mcp.CallToolRequest, in SearchIn) 
 	if hookState != nil {
 		hookState.Add(delivered...)
 	}
+	d.recordUse("mcp-search", delivered) // full-text deliveries only; stubs are not a new use
 	return text2result(strings.TrimSpace(b.String())), out, nil
 }
 
@@ -687,6 +688,41 @@ func (h SearchHit) withExpiry(vu *timestamppb.Timestamp) SearchHit {
 	h.ValidUntil = vu.AsTime().UTC().Format(time.RFC3339)
 	h.Expired = !vu.AsTime().After(time.Now())
 	return h
+}
+
+// recordUseBatch is the server's per-call RecordUse cap.
+const recordUseBatch = 100
+
+// recordUseSlots bounds concurrent background RecordUse goroutines.
+const recordUseSlots = 4
+
+var recordUseSem = make(chan struct{}, recordUseSlots)
+
+// recordUse tells the server these memories were delivered with FULL text into
+// the model's context (stale review's "use" signal). Fire-and-forget on its own
+// short deadline: best-effort, never delays or fails the tool call.
+func (d *deps) recordUse(source string, ids []string) {
+	if len(ids) == 0 {
+		return
+	}
+	// Bounded: when a slow server has recordUseSlots calls in flight, drop this
+	// record (best-effort signal) rather than pile up goroutines.
+	select {
+	case recordUseSem <- struct{}{}:
+	default:
+		return
+	}
+	ids = append([]string(nil), ids...)
+	client := d.client // read now: the goroutine must not touch d
+	go func() {
+		defer func() { <-recordUseSem }()
+		for start := 0; start < len(ids); start += recordUseBatch {
+			end := min(start+recordUseBatch, len(ids))
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			_, _ = client.RecordUse(ctx, connect.NewRequest(&cortexv1.RecordUseRequest{Ids: ids[start:end], Source: source}))
+			cancel()
+		}
+	}()
 }
 
 // stubTextChars is how much of an already-delivered memory's text a stub keeps —
@@ -738,6 +774,7 @@ func (d *deps) get(ctx context.Context, _ *mcp.CallToolRequest, in GetIn) (*mcp.
 			st.Add(m.GetId())
 		}
 	}
+	d.recordUse("mcp-get", []string{m.GetId()})
 	text := fmt.Sprintf("id=%s [%s] %s%s", m.GetId(), m.GetNamespace(), expiryPrefix(hit), m.GetText())
 	if links := m.GetLinkedIds(); len(links) > 0 {
 		text += "\n   linked: " + strings.Join(links, ", ")
@@ -1063,11 +1100,14 @@ func (d *deps) recall(ctx context.Context, _ *mcp.CallToolRequest, in RecallIn) 
 	if len(facts) > 0 {
 		b.WriteString("\nFacts from that session:\n")
 	}
+	factIDs := make([]string, 0, len(facts))
 	for i, f := range facts {
+		factIDs = append(factIDs, f.GetId())
 		fh := memToHit(f)
 		out.Facts = append(out.Facts, fh)
 		fmt.Fprintf(&b, "%d. [%s] %s%s\n", i+1, f.GetNamespace(), expiryPrefix(fh), f.GetText())
 	}
+	d.recordUse("mcp-recall-session", factIDs)
 	return text2result(strings.TrimSpace(b.String())), out, nil
 }
 
@@ -1228,7 +1268,9 @@ func (d *deps) consolidate(ctx context.Context, _ *mcp.CallToolRequest, in Conso
 	fmt.Fprintf(&b, "Cluster of %d memor%s about %q. Merge into the FEWEST faithful memories (keep every distinct fact, drop redundancy), "+
 		"then cortex_memory_save each new memory with supersedes set to the ids it absorbs (only ids from the manifest below).\n",
 		len(cluster), plural(len(cluster), "y", "ies"), topic)
+	clusterIDs := make([]string, 0, len(cluster))
 	for i, m := range cluster {
+		clusterIDs = append(clusterIDs, m.GetId())
 		h := memToHit(m)
 		out.Cluster = append(out.Cluster, h)
 		fmt.Fprintf(&b, "\n%d. id=%s [%s] %s%s\n", i+1, m.GetId(), m.GetNamespace(), expiryPrefix(h), m.GetText())
@@ -1239,6 +1281,7 @@ func (d *deps) consolidate(ctx context.Context, _ *mcp.CallToolRequest, in Conso
 	} else if hasExpiry(cluster) {
 		b.WriteString("\nSome sources are time-bound and some are permanent: decide whether the merged memory should carry an expiresIn (only set it if the merged text is entirely time-bound).\n")
 	}
+	d.recordUse("mcp-consolidate", clusterIDs)
 	fmt.Fprintf(&b, "\nmanifest (supersede-able ids): %s\n", strings.Join(out.Manifest, " "))
 	return text2result(strings.TrimSpace(b.String())), out, nil
 }

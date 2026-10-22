@@ -63,11 +63,15 @@ const reinforceTimeout = 10 * time.Second
 
 // Config holds the server-side defaults applied to inbound requests.
 type Config struct {
-	DefaultNamespace string  // namespace stamped when a request omits one
-	Source           string  // source stamped when a request omits one
-	Version          string  // reported by Status
-	BackupDir        string  // where Reindex writes its safety snapshot
-	SearchAlpha      float32 // hybrid blend for text searches: 1=pure vector, 0=pure keyword; <=0 = Weaviate default
+	// UsageTrackingSince is when usage tracking (RecordUse) started on this
+	// deployment (bus.EnsureUsageTrackingSince). Stale review reports it so clients
+	// can tell how far back "unused" can be judged. Zero = unknown.
+	UsageTrackingSince time.Time
+	DefaultNamespace   string  // namespace stamped when a request omits one
+	Source             string  // source stamped when a request omits one
+	Version            string  // reported by Status
+	BackupDir          string  // where Reindex writes its safety snapshot
+	SearchAlpha        float32 // hybrid blend for text searches: 1=pure vector, 0=pure keyword; <=0 = Weaviate default
 	// RerankWeight enables "living memory": when >0, Search re-orders relevance
 	// survivors by a blend of relevance and recency-decayed usage (weight is the
 	// usage share), and each search reinforces its top hits. 0 disables the whole
@@ -153,6 +157,9 @@ type Service struct {
 	// tenant — each scans or buffers a whole namespace or trash (DeleteNamespace and
 	// the bulk PurgeTrash/RestoreFromTrash forms; read-only ListTrash is not gated).
 	scanGate tenantGate
+	// useLocks serialise RecordUse's read-modify-write per memory (striped by
+	// tenant+id) so concurrent deliveries in ONE server process cannot lose a count.
+	useLocks [useLockStripes]sync.Mutex
 	// afterGate, when non-nil, runs right after a gate is acquired; a non-nil
 	// return aborts the call. Test seam only (lets a test hold a call in flight).
 	afterGate func() error
