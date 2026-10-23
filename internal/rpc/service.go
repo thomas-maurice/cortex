@@ -157,6 +157,10 @@ type Service struct {
 	// tenant — each scans or buffers a whole namespace or trash (DeleteNamespace and
 	// the bulk PurgeTrash/RestoreFromTrash forms; read-only ListTrash is not gated).
 	scanGate tenantGate
+	// maintenance reports whether a schema migration has paused writers (nil = never).
+	maintenance func(context.Context) bool
+	// migrations reports schema-migration state for ListMigrations (SetMigrations).
+	migrations MigrationReporter
 	// afterGate, when non-nil, runs right after a gate is acquired; a non-nil
 	// return aborts the call. Test seam only (lets a test hold a call in flight).
 	afterGate func() error
@@ -474,7 +478,7 @@ func (s *Service) Search(ctx context.Context, req *connect.Request[cortexv1.Sear
 	// the caller wanting to count (the UI and the CLI-by-default set NoReinforce
 	// so human browsing does not inflate the usage signal; the MCP agent leaves
 	// it false so genuine recalls count).
-	if s.cfg.RerankWeight > 0 && !req.Msg.GetNoReinforce() {
+	if s.cfg.RerankWeight > 0 && !req.Msg.GetNoReinforce() && !s.inMaintenance(ctx) {
 		s.reinforce(ts, hits)
 	}
 
@@ -517,6 +521,9 @@ func (s *Service) reinforce(ts *store.TenantStore, hits []memory.Hit) {
 		s.reinforceMu.Lock()
 		defer s.reinforceMu.Unlock()
 		for _, id := range ids {
+			if s.inMaintenance(ctx) {
+				return // a schema migration is copying data: this best-effort write would be lost
+			}
 			rec, ok, err := ts.Get(ctx, id)
 			if err != nil {
 				s.log.Warn("reinforce: get failed, skipping", "id", id, "err", err)

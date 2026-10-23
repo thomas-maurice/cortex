@@ -163,10 +163,9 @@ memories. Both are metadata-only (memories *and* their search chunks are patched
 nothing is re-embedded). The reserved `preference` tag (it drives the
 standing-preferences hook) is refused by the server unless `confirm_preference`
 is set; the UI asks for explicit confirmation first. Clicking a tag opens
-Memories with that tag pre-selected (`?tag=` / `?namespace=` query params); because
-the server filter is fuzzy, that view re-filters to exact tags, doubling the query
-limit (up to 10 rounds / 10000 rows) until a page fills, and notes when fuzzy
-matches were hidden. Rename/delete use the namespace the counts were loaded with
+Memories with that tag pre-selected (`?tag=` / `?namespace=` query params); the
+server's tag filter is exact and case-sensitive (field tokenization), so the page is
+shown as returned. Rename/delete use the namespace the counts were loaded with
 (Refresh to change it), never the live input box. Editing a memory in the inspector
 or Preferences view only sends tags when the tag field was actually changed, so a
 stale loaded list cannot undo a rename.

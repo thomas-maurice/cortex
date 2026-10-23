@@ -25,6 +25,18 @@ type pool struct {
 	log  *slog.Logger
 	m    *metrics // nil-safe
 
+	// hold, when non-nil, is polled before every fetch; while it reports true the
+	// loop pulls nothing (schema-migration maintenance mode: the stream buffers).
+	hold     func(context.Context) bool
+	lastHold atomic.Int64 // unix nanos of the last "paused" Info
+	// busy counts loops between the hold check and the end of processing; held is
+	// whether the last hold check said "paused". Reported to the migrator via the
+	// heartbeat (migrate.Heartbeat).
+	// holdGen, when set, reports the maintenance generation the last hold check saw.
+	holdGen func() int64
+	busy    atomic.Int32
+	held    atomic.Int64 // generation parked for; 0 = not parked
+
 	// health tracks continuous fetch failure behind the worker's /readyz.
 	health   *fetchHealth
 	lastWarn atomic.Int64 // unix nanos of the last fetch-error Warn
@@ -169,6 +181,7 @@ var (
 	fetchWait         = 2 * time.Second
 	errBackoff        = time.Second
 	fetchWarnEvery    = 30 * time.Second
+	holdPoll          = 500 * time.Millisecond // re-check interval while paused for maintenance
 	// maxProcessing bounds ONE message's total processing time (WORKER_MAX_PROCESSING,
 	// 0 = unbounded). The keepalive would otherwise hold a wedged message (e.g. a lock
 	// set that can never be acquired) forever, starving a worker slot and never letting
@@ -189,26 +202,51 @@ func (p *pool) run(ctx context.Context, ref *consumerRef, fn func(ctx context.Co
 		go func() {
 			defer p.wg.Done()
 			for ctx.Err() == nil {
-				cons := ref.get()
-				batch, err := cons.Fetch(1, jetstream.FetchMaxWait(fetchWait))
-				if err == nil {
-					for msg := range batch.Messages() {
-						process(ctx, msg, fn)
-					}
-					err = batch.Error()
-				}
-				if err != nil && ctx.Err() == nil {
-					p.fetchFailed(err)
-					if consumerGone(err) {
-						p.handleGone(ctx, ref, cons)
-					}
-					_ = sleepCtx(ctx, errBackoff)
-					continue
-				}
-				p.health.ok()
+				p.iterate(ctx, ref, fn)
 			}
 		}()
 	}
+}
+
+// iterate is one pass of a consumer loop. busy covers everything from the hold
+// check to the end of processing (including the blocking Fetch, since a message may
+// arrive in it), so "held && busy==0" means no loop of this pool can write any more
+// until maintenance ends: the migrator's drain handshake relies on exactly that.
+func (p *pool) iterate(ctx context.Context, ref *consumerRef, fn func(ctx context.Context, msg jetstream.Msg)) {
+	p.busy.Add(1)
+	defer p.busy.Add(-1)
+	if p.hold != nil && p.hold(ctx) {
+		g := int64(1)
+		if p.holdGen != nil {
+			g = p.holdGen()
+		}
+		p.held.Store(g)
+		if throttled(&p.lastHold, fetchWarnEvery) {
+			p.log.Info("maintenance mode: not fetching until the schema migration finishes")
+		}
+		p.busy.Add(-1) // parked, not working
+		_ = sleepCtx(ctx, holdPoll)
+		p.busy.Add(1)
+		return
+	}
+	p.held.Store(0)
+	cons := ref.get()
+	batch, err := cons.Fetch(1, jetstream.FetchMaxWait(fetchWait))
+	if err == nil {
+		for msg := range batch.Messages() {
+			process(ctx, msg, fn)
+		}
+		err = batch.Error()
+	}
+	if err != nil && ctx.Err() == nil {
+		p.fetchFailed(err)
+		if consumerGone(err) {
+			p.handleGone(ctx, ref, cons)
+		}
+		_ = sleepCtx(ctx, errBackoff)
+		return
+	}
+	p.health.ok()
 }
 
 // sleepCtx sleeps d, returning ctx.Err() if ctx ends first.

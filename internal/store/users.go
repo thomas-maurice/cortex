@@ -430,7 +430,13 @@ func (s *Store) TouchApiKeyLastUsed(ctx context.Context, id string, at time.Time
 // ignored so the delete is idempotent. Only meaningful when multi-tenancy is on;
 // callers must check s.multiTenant before calling (the RPC layer does this).
 func (s *Store) DropTenant(ctx context.Context, userID string) error {
-	for _, class := range []string{memory.ClassName, memory.ChunkClassName, memory.SummaryClassName, memory.TrashClassName} {
+	for _, logical := range MemoryClasses() {
+		// Tenant WRITES need the physical class (through an alias Weaviate answers
+		// "class not found", which the tolerance below would swallow silently).
+		class, err := s.PhysicalClass(ctx, logical)
+		if err != nil {
+			return err
+		}
 		if err := s.client.Schema().TenantsDeleter().
 			WithClassName(class).WithTenants(userID).Do(ctx); err != nil {
 			// 404 / tenant-not-found means the user never had any data — no-op.

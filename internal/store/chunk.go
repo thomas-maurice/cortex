@@ -52,7 +52,7 @@ func chunkProperties() []*models.Property {
 		// punctuation, which would match the wrong objects. See memoryProperties.
 		{Name: "memoryId", DataType: []string{"text"}, Tokenization: "field"},
 		{Name: "namespace", DataType: []string{"text"}, Tokenization: "field"},
-		{Name: "tags", DataType: []string{"text[]"}},
+		{Name: "tags", DataType: []string{"text[]"}, Tokenization: "field"},
 		{Name: "chunkIndex", DataType: []string{"int"}},
 		{Name: "createdAt", DataType: []string{"date"}},
 		{Name: "model", DataType: []string{"text"}},

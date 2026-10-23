@@ -619,12 +619,10 @@ in the worker; rename/delete match `from`/`tag` exactly, only `to` is trimmed.
 Chunks are patched BEFORE the memory: the memory's tags are what a retry uses to
 find work, so a failed chunk merge leaves the memory un-renamed and a re-run
 repairs both (the ops are idempotent); a failed call reports how many memories
-were already changed. Note the server-side tag filter is FUZZY: `tags` is a
-word-tokenized `text[]`, so `ContainsAll`/`ContainsAny` also match case/token
-variants (`K8s` vs `k8s`). The Tags view and tag rename/delete compare exactly (in
-Go), and the Memories view re-filters results to exact tags. Making the server
-filter exact needs `tokenization: field` on `tags`, i.e. a class rebuild (planned
-follow-up).
+were already changed. The server-side tag filter is EXACT and case-sensitive:
+`tags` is a field-tokenized `text[]` (schema migration #1, see "Schema migrations";
+before it, the filter was fuzzy and `K8s` matched `k8s`). The Tags view and tag
+rename/delete compare exactly (in Go) and the Memories view trusts the server filter.
 
 Known limits: `namespace` is also merged by namespace rename (an edit queued
 before a rename can restore the old name); and with several SERVER replicas,
@@ -670,6 +668,125 @@ paged (no row cap), these guards bound what one tenant can do to the shared serv
 The gates live in process memory: with several server replicas the limits apply
 **per replica**, not cluster-wide. Cross-tenant fairness (quotas, rate limits) is
 deferred.
+
+## Schema migrations
+
+Weaviate forbids many schema changes in place (a property's tokenization is
+immutable), and `EnsureSchema` can only ADD properties. Cortex therefore has a
+migration framework, `internal/migrate`, whose basic move is: build the next
+physical version of a class, copy the data WITH its vectors (nothing is
+re-embedded), repoint an alias, drop the old class.
+
+**The alias model.** Each logical class (`Memory`, `MemoryChunk`,
+`ConversationSummary`, `Trash`) is an alias of a versioned physical class
+`<Name>_v<N>`. A fresh install creates `<Name>_v1` + alias `<Name>` from day one;
+an install that predates aliases keeps its plain classes until migration #1
+converts them. All DATA operations (search, create/get/PATCH/PUT/delete, batch,
+filters, cursor scans, tenant-scoped everything) work unchanged through the alias
+name, in both single-tenant and multi-tenant mode.
+
+**Rules for code (physical vs alias).** The failures are silent or confusing:
+- Data path: use the logical name (`memory.ClassName` etc.).
+- Schema/tenant WRITES (`PropertyCreator`, `ClassCreator`, `TenantsCreator/
+  Updater/Deleter`, `ClassDeleter`) need the PHYSICAL name: through an alias they
+  fail with "class not found" (swallowed by tolerant callers!) and `ClassDeleter`
+  on an alias silently deletes NOTHING. Resolve with `Store.PhysicalClass`, or use
+  the helpers (`ensureClass`, `dropLogical`, `DropTenant`).
+- Schema READS work through the alias but report the PHYSICAL name in `.Class`
+  (also in results' `Collection`): never compare a returned class name to a constant.
+- An alias and a class cannot share a name; deleting the physical class an alias
+  points at leaves the alias dangling.
+- `Store.ClassDefinition(name)` is the single authoritative current definition; a
+  migration derives the next version from it.
+
+**State and running.** Applied state lives in the NATS KV bucket `cortex_meta`
+(`schema_version`, one `migration.NNNN` record per applied migration with name,
+time and duration). The SERVER runs pending migrations at boot, before serving
+(`migrate.Runner.Run`): it takes a lease lock (`migrate_lock`, owner + expiry,
+refreshed while held, taken over after expiry), runs `EnsureSchema` under it (so a
+booting replica can never observe another's half-done cutover), then applies each
+migration newer than `schema_version` in order, recording each. Other replicas
+wait (logged, bounded by 30 min) and then find nothing to do. A failed migration
+aborts boot (exit 1) and nothing is recorded; the next start resumes. The WORKER
+never migrates and no longer calls `EnsureSchema`: it waits until `schema_version
+>= migrate.Latest()` before consuming. `cortex migrate status` (admin RPC
+`ListMigrations`) reports history, pending, lock holder and maintenance state.
+
+**Maintenance mode and the drain handshake.** While a class is copied,
+`Env.SwapToVersion` sets the KV flag `maintenance` ({owner, reason, expires};
+renewed every TTL/3 by the migrator, so a crashed migrator's flag lapses after 2 min,
+and a new lock holder clears a predecessor's at once). It is cleared when the swap
+completes and in a `defer` on any failure. Effects: the worker stops fetching (NATS
+buffers); the server's Weaviate-writing RPCs answer `Unavailable("maintenance, retry
+shortly")` (list in `internal/rpc/migrations.go`; `TestEveryRPCIsClassifiedForMaintenance`
+fails when a new RPC is not classified); queue-only RPCs (Save, Link, ...) and all
+reads keep working; search stops reinforcing; the hourly sweeps are cancelled between
+requests (`Maintenance.CancelOnActive`) and skipped.
+
+A message already in flight when the flag goes up could still write into the old class
+after it was copied, so `Enter` does not sleep: every worker publishes a heartbeat
+`worker.<id>` in `cortex_meta` ({held, inflight, updatedAt}; `migrate.Heartbeat`,
+refreshed every 3s and immediately on change; `held` = all consumer loops parked,
+`inflight` = loops between the hold check and the end of processing, including the
+blocking fetch). `Enter` waits until every LIVE worker reports `held && inflight==0`.
+A heartbeat older than 15s is a dead worker and counts as idle. If that does not
+happen within `Env.DrainTimeout` (default 2 min) the migration ABORTS (flag cleared,
+`schema_version` unchanged, server exits 1, the next start retries): it never copies
+on a timeout. Not covered: server-side writes in flight at that instant (at most one
+request of a cancelled sweep) and search-triggered reinforcement already running.
+
+Handshake details: the flag carries a *generation* (one per Enable..Disable cycle) and
+a heartbeat counts as idle only if it is parked for the CURRENT generation
+(`heldGen`), so a stale heartbeat from the previous class's cycle (m001 swaps three
+classes back to back) cannot satisfy the next drain. A worker publishes its first
+heartbeat synchronously before its consumers start, and keeps publishing the real
+`inflight` through shutdown, removing the key only after both pools have drained.
+After the flag is set the migrator also waits ~2s (`Maintenance.Settle`: cache +
+sweep poll + margin) so server-side writers see it; residual limit: one request that
+is already inside a handler for longer than that.
+
+**Supported upgrade order (rolling upgrades).** Workers and server replicas built
+before this mechanism ignore the flag and publish no heartbeat, so they cannot be
+detected. Stop or upgrade EVERY worker and server replica before the new server boots
+and runs a migration. Mixed old/new fleets during a migration can lose writes.
+
+Downtime is the drain, then the copy (~8k objects/s), then a ~20ms cutover; an install
+that is already current never enters maintenance.
+
+**Inactive tenants.** A tenant that is not ACTIVE (INACTIVE/OFFLOADED) cannot be read,
+so the copy refuses and the migration fails loudly naming the tenant. Activate it
+(Weaviate tenants API, `activityStatus: ACTIVE`), restart the server, deactivate again
+afterwards if wanted. A tenant created while the copy runs aborts the swap before the
+cutover (the old class keeps serving; restart retries).
+
+**Helpers** (`Env`, implemented in `internal/store`): `PhysicalClass`,
+`CopyClassWithVectors(from, to, transform)` (per tenant; cursor + batch; every
+property type decoded explicitly, an unsupported type refuses rather than drops;
+ids/vectors preserved; verified by comparing id sets per tenant; idempotent by id),
+`SwapToVersion(alias, newSchema)` (create `_vN+1` -> maintenance on + drain -> copy ->
+verify -> cutover -> maintenance off -> drop the old class by physical name). First
+time (plain class) the cutover is delete-class + create-alias (~20ms with neither:
+writers are stopped); later it is one atomic `AliasUpdater` call. It is resumable
+at every step: an up-to-date class (alias-backed, or a plain class that already has the wanted schema, which is left plain) is only cleaned up, a half-copied target is
+rebuilt from scratch (never reused: objects deleted from the source meanwhile would linger and fail verification), and a crash between the class delete and the alias create is completed by
+pointing the alias at the highest `_vN`.
+
+**Adding a migration.** Append a `Migration{ID: next, Name, Description, Up}` to
+`registry` in `internal/migrate/migrate.go` (`TestRegistryIsOrdered` enforces strictly
+increasing IDs; never renumber a released one). `Up` must be idempotent: nothing is
+recorded until it returns nil, so after a crash it runs again from the start. Prefer
+`env.SwapToVersion(name, store.ClassDefinition(name)-with-your-change)`, which makes
+"already done" detection automatic. Update the stock definition in `internal/store`
+too, so fresh installs are born current (then your migration is a no-op for them).
+Test it in `internal/migrate` against a real Weaviate: build the legacy shape, run
+the `Runner`, assert behaviour before/after, vectors unchanged, and that a second
+`Up` is a no-op (see `tags_integration_test.go`).
+
+**Migration #1 `tags-field-tokenization`** rebuilds `Memory`, `MemoryChunk` and
+`Trash` with `tags` field-tokenized. Before: `ContainsAny ["foo"]` matched `Foo`
+and `foo-bar`; after: only `foo`. A class whose tenancy disagrees with
+`CORTEX_MULTI_TENANT` is skipped with a warning (not fatal: `cortex migrate-mt`
+recreates it with the current definition and must be reachable).
 
 ## Failure behavior
 

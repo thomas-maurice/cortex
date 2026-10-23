@@ -41,7 +41,9 @@ func TestGetTenantStates(t *testing.T) {
 		const tn = "cold-tenant"
 		id := uuid.NewString()
 		require.NoError(t, st.Tenant(tn).Upsert(ctx, memory.Record{ID: id, Text: "x", Namespace: "n"}, []float32{1, 0, 0, 0}))
-		require.NoError(t, st.client.Schema().TenantsUpdater().WithClassName(memory.ClassName).
+		phys, err := st.PhysicalClass(ctx, memory.ClassName) // tenant writes need the physical class
+		require.NoError(t, err)
+		require.NoError(t, st.client.Schema().TenantsUpdater().WithClassName(phys).
 			WithTenants(models.Tenant{Name: tn, ActivityStatus: "COLD"}).Do(ctx))
 		_, ok, err := st.Tenant(tn).Get(ctx, id)
 		t.Logf("COLD tenant Get: ok=%v err=%v", ok, err)

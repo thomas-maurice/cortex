@@ -180,7 +180,26 @@ should encode *why* the behaviour matters, not just what it does (Rule 9).
   `conversationId`, `source` are field-tokenized — Weaviate's default *word*
   tokenization makes `Equal` fuzzy (`"demo"` matches `"demo-2"`; UUIDs match on
   hyphen fragments). Changing tokenization needs a class REBUILD (ensureProps only
-  adds missing props), so a prod schema change to these requires a reindex/rebuild.
+  adds missing props): write a **schema migration** (next bullet). `tags` is
+  field-tokenized too (migration #1), so the server tag filter is exact.
+- **Schema migrations + alias-backed classes (`internal/migrate`, docs/DESIGN.md
+  "Schema migrations").** Each logical class is an ALIAS of `<Name>_v<N>`. Data ops
+  use the logical name; schema/tenant WRITES need the PHYSICAL name
+  (`Store.PhysicalClass`) — through an alias `ClassDeleter` silently does nothing and
+  `PropertyCreator`/`Tenants*` say "class not found". Never compare a returned class
+  name to a constant (results report the physical name). **To add a migration:**
+  append `Migration{ID: next, Name, Description, Up}` to `registry`
+  (`migrate/migrate.go`), make `Up` idempotent (usually
+  `env.SwapToVersion(name, store.ClassDefinition(name) + your change)`), update the
+  stock definition in `internal/store` so fresh installs are born current, and
+  test in `internal/migrate` against real Weaviate (legacy shape -> `Runner.Run` ->
+  assert before/after, vectors unchanged, second `Up` a no-op; model on
+  `tags_integration_test.go`). Applied state is in NATS KV `cortex_meta`; the server
+  migrates at boot under a lease, the worker only waits (`WaitUntilCurrent`) and
+  pauses fetching in maintenance mode; new Weaviate-writing RPCs must be added to
+  `maintenanceBlocked` in `internal/rpc/migrations.go` (a test enforces
+  classification). Integration: `scripts/wv-test.sh run -p 1 ./internal/store
+  ./internal/rpc ./internal/migrate` (+ `CORTEX_TEST_MULTI_TENANT=1`).
 - **Metadata-only edits skip the worker.** Changing a field that isn't embedded
   (links, namespace rename, reinforcement, dedup decisions) is a direct Weaviate
   **merge/PATCH** from the server — no re-embed, no NATS round-trip. Re-embedding
@@ -328,6 +347,7 @@ and scripting without going through Claude. Global flags: `--server`
 | `export [-n '*'] [-o file]` | Dump memories (text+metadata, no vectors) to JSON (stdout by default). |
 | `import <file> [--batch N]` | Restore a dump via the NATS ingest queue (worker re-embeds). Preserves ids/links. **This is how you load seed data** — point `--server` at the target. |
 | `reindex [-n '*'] [--yes]` | Server snapshots then republishes all memories for re-embed. `--yes` allows a destructive class rebuild on an embedding-dimension change. |
+| `migrate status` | Admin: schema-migration history / pending / lock holder / maintenance flag (`ListMigrations` RPC; `cmd/cli/migrate.go`). Migrations run automatically at server start. |
 | `migrate-mt [--yes]` | One-shot migration: snapshot + drop non-MT classes + recreate as MT + re-import to the calling admin's tenant. Admin-only; requires `CORTEX_MULTI_TENANT=true`. |
 | `backup` / `backup list\|download\|delete <name>` | Admin-only FULL server backup: all tenants' memories + summaries + user/API-key registry (hashes) → timestamped `cortex-full-backup-*.json` in BackupDir, plus S3 upload when offsite is enabled. S3 is configured SOLELY via server env (`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` + `CORTEX_S3_*`), held in memory — never stored in Weaviate or exposed over RPC (no S3-config RPCs; `s3ConfigFromEnv` in cmd/server → `rpc.Config.S3`; minio-go, any S3-compatible endpoint incl. SeaweedFS). Periodic: `BACKUP_INTERVAL` + `BACKUP_KEEP` env on the server. Pruning only ever touches `cortex-full-backup-*` files, never reindex snapshots (`cortex-backup-*`). |
 | `backup self [-o file]` | ANY user: download a backup of their own tenant (memories + summaries) locally. |

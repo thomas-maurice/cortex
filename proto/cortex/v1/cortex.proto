@@ -146,6 +146,12 @@ service MemoryService {
   // after a partial failure — re-import is upsert-by-id.
   rpc MigrateMT(MigrateMTRequest) returns (MigrateMTResponse) {}
 
+  // ListMigrations reports the Weaviate schema-migration history: every migration
+  // this server build knows, whether it has been applied to the store, and whether
+  // a migration run / maintenance mode is in progress. Admin only. Migrations run
+  // automatically at server start; this is the read-only view (`cortex migrate status`).
+  rpc ListMigrations(ListMigrationsRequest) returns (ListMigrationsResponse) {}
+
   // ---- Self-service backup (any authenticated user) ----
   // BackupSelf returns a backup of the CALLER's OWN data — their tenant's
   // memories and conversation summaries — as a downloadable file. Not
@@ -972,6 +978,30 @@ message MigrateMTResponse {
   string message = 7;
   // trash_migrated is the number of trash entries carried over into the tenant.
   int32 trash_migrated = 8;
+}
+
+message ListMigrationsRequest {}
+
+message SchemaMigration {
+  int32 id = 1;
+  string name = 2;
+  string description = 3;
+  bool applied = 4;
+  google.protobuf.Timestamp applied_at = 5; // unset when not applied
+  int64 duration_ms = 6;                    // how long it took; 0 when not applied
+}
+
+message ListMigrationsResponse {
+  // schema_version is the highest migration applied to the store (0 = none);
+  // latest is the highest this server build knows. Behind => pending.
+  int32 schema_version = 1;
+  int32 latest = 2;
+  repeated SchemaMigration migrations = 3;
+  // maintenance is true while writers are paused for a data copy; reason says why.
+  bool maintenance = 4;
+  string maintenance_reason = 5;
+  // lock_holder names the replica currently running migrations ("" = none).
+  string lock_holder = 6;
 }
 
 message ConsolidateResponse {
