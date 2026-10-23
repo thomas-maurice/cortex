@@ -6,6 +6,7 @@ require (
 	connectrpc.com/connect v1.21.0
 	connectrpc.com/grpcreflect v1.3.1
 	github.com/alexedwards/argon2id v1.0.0
+	github.com/go-openapi/strfmt v0.25.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
 	github.com/minio/minio-go/v7 v7.3.0
@@ -43,7 +44,6 @@ require (
 	github.com/go-openapi/loads v0.23.2 // indirect
 	github.com/go-openapi/runtime v0.29.2 // indirect
 	github.com/go-openapi/spec v0.22.3 // indirect
-	github.com/go-openapi/strfmt v0.25.0 // indirect
 	github.com/go-openapi/swag v0.23.0 // indirect
 	github.com/go-openapi/swag/conv v0.25.4 // indirect
 	github.com/go-openapi/swag/fileutils v0.25.1 // indirect

@@ -152,6 +152,14 @@ service MemoryService {
   // automatically at server start; this is the read-only view (`cortex migrate status`).
   rpc ListMigrations(ListMigrationsRequest) returns (ListMigrationsResponse) {}
 
+  // GetStorageInfo is the read-only System -> Storage view: per logical class its
+  // alias target and version, exact object counts (GraphQL Aggregate
+  // meta count), vector settings, stored dimensions and indexing state,
+  // plus leftover physical classes. Admin (or non-MT) callers get everything; a
+  // non-admin in MT mode gets the same shape scoped server-side to their own tenant
+  // (scoped=true). Never scans objects.
+  rpc GetStorageInfo(GetStorageInfoRequest) returns (GetStorageInfoResponse) {}
+
   // ---- Self-service backup (any authenticated user) ----
   // BackupSelf returns a backup of the CALLER's OWN data — their tenant's
   // memories and conversation summaries — as a downloadable file. Not
@@ -1002,6 +1010,57 @@ message ListMigrationsResponse {
   string maintenance_reason = 5;
   // lock_holder names the replica currently running migrations ("" = none).
   string lock_holder = 6;
+}
+
+message GetStorageInfoRequest {}
+
+message GetStorageInfoResponse {
+  repeated StorageClass classes = 1;  // logical classes Cortex knows, fixed order
+  repeated string orphan_classes = 2; // physical classes no alias targets (admin only)
+  repeated WeaviateNode nodes = 3;    // admin only
+  int32 schema_version = 4;           // applied migration version (0 = none / unknown)
+  bool maintenance = 5;
+  string embed_model = 6;
+  int32 embed_dims = 7;               // 0 if the probe failed
+  bool scoped = 8;                    // true: the caller sees only their own tenant
+}
+
+message StorageClass {
+  string logical = 1;             // "Memory"
+  string physical = 2;            // "Memory_v2"; == logical for a pre-alias plain class
+  int32 version = 3;              // 0 for plain
+  bool aliased = 4;
+  int64 object_count = 5;         // exact (Aggregate meta count); -1 = unavailable
+  bool multi_tenant = 6;
+  int32 tenant_count = 7;
+  string vector_index_type = 8;   // "hnsw" / "flat" / "dynamic"
+  string distance = 9;            // "cosine", ...
+  string vectorizer = 10;
+  int32 stored_dims = 11;         // 0 = unknown / empty / no vectors
+  int32 property_count = 12;
+  int64 replication_factor = 13;
+  string indexing_status = 14;    // worst across shards: INDEXING > READONLY > READY
+  int64 vector_queue_length = 15; // sum over shards
+  repeated StorageTenant tenants = 16;
+}
+
+message StorageTenant {
+  string tenant = 1;
+  string username = 2;     // "" if unknown (deleted user, orphan tenant)
+  string activity = 3;     // HOT / COLD / ...
+  int64 object_count = 4;  // exact (Aggregate meta count); -1 = unavailable
+  string indexing_status = 5;
+  int64 vector_queue_length = 6;
+}
+
+message WeaviateNode {
+  string name = 1;
+  string version = 2;
+  string git_hash = 3;
+  string status = 4;
+  string operational_mode = 5;
+  int64 shard_count = 6;
+  reserved 7;
 }
 
 message ConsolidateResponse {

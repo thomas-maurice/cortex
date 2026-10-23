@@ -74,6 +74,7 @@
               <DropdownMenuItem v-if="!auth.multiTenant || auth.isAdmin" as-child>
                 <router-link :to="{ name: 'queue' }">Indexing</router-link>
               </DropdownMenuItem>
+              <DropdownMenuItem as-child><router-link :to="{ name: 'storage' }">Storage</router-link></DropdownMenuItem>
               <DropdownMenuItem v-if="auth.multiTenant" as-child>
                 <router-link :to="{ name: 'apikeys' }">API Keys</router-link>
               </DropdownMenuItem>
@@ -186,7 +187,7 @@ const coreNav = [
 // Route names grouped under each nav dropdown, so the toggle shows an active
 // state when one of its children is the current route.
 const organizeRoutes = ['sessions', 'namespaces', 'tags', 'duplicates', 'trash', 'preferences', 'backup']
-const systemRoutes = ['status', 'queue', 'apikeys', 'users']
+const systemRoutes = ['status', 'queue', 'storage', 'apikeys', 'users']
 
 // Flat list for the mobile sheet, honoring the same role/MT gates as the
 // desktop dropdowns.
@@ -203,6 +204,7 @@ const mobileItems = computed(() => {
     { name: 'status', label: 'Status' },
   ]
   if (!auth.multiTenant || auth.isAdmin) items.push({ name: 'queue', label: 'Indexing' })
+  items.push({ name: 'storage', label: 'Storage' })
   if (auth.multiTenant) items.push({ name: 'apikeys', label: 'API Keys' })
   if (auth.multiTenant && auth.isAdmin) items.push({ name: 'users', label: 'Users' })
   items.push({ name: 'documentation', label: 'Docs' })

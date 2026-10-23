@@ -157,3 +157,33 @@ func resolveNamespace(reqNS, defaultNS string) string {
 		return reqNS
 	}
 }
+
+// storageToProto maps the store's storage picture to the wire shape. Usernames are
+// resolved by the caller (the store knows tenant ids only) via usernames.
+func storageToProto(info *store.StorageInfo, usernames map[string]string) *cortexv1.GetStorageInfoResponse {
+	out := &cortexv1.GetStorageInfoResponse{OrphanClasses: info.Orphans}
+	for _, c := range info.Classes {
+		sc := &cortexv1.StorageClass{
+			Logical: c.Logical, Physical: c.Physical, Version: int32(c.Version), Aliased: c.Aliased,
+			ObjectCount: c.ObjectCount, MultiTenant: c.MultiTenant, TenantCount: int32(c.TenantCount),
+			VectorIndexType: c.VectorIndexType, Distance: c.Distance, Vectorizer: c.Vectorizer,
+			StoredDims: int32(c.StoredDims), PropertyCount: int32(c.PropertyCount),
+			ReplicationFactor: c.ReplicationFactor, IndexingStatus: c.IndexingStatus,
+			VectorQueueLength: c.VectorQueueLength,
+		}
+		for _, t := range c.Tenants {
+			sc.Tenants = append(sc.Tenants, &cortexv1.StorageTenant{
+				Tenant: t.Tenant, Username: usernames[t.Tenant], Activity: t.Activity,
+				ObjectCount: t.ObjectCount, IndexingStatus: t.IndexingStatus, VectorQueueLength: t.QueueLength,
+			})
+		}
+		out.Classes = append(out.Classes, sc)
+	}
+	for _, n := range info.Nodes {
+		out.Nodes = append(out.Nodes, &cortexv1.WeaviateNode{
+			Name: n.Name, Version: n.Version, GitHash: n.GitHash, Status: n.Status,
+			OperationalMode: n.OperationalMode, ShardCount: n.ShardCount,
+		})
+	}
+	return out
+}
