@@ -24,8 +24,17 @@
       <Button size="sm" :disabled="loading || !query.trim()" @click="run">
         <Search class="size-4" />Explore
       </Button>
+      <Button size="sm" :variant="connectMode ? 'default' : 'outline'" :disabled="!resultCount" @click="toggleConnect">
+        <component :is="connectMode ? Unlink : Link2" class="size-4" />
+        {{ connectMode ? 'Connecting…' : 'Connect' }}
+      </Button>
       <Button size="sm" variant="outline" :disabled="!searched" @click="clearCloud">Clear</Button>
     </div>
+
+    <p v-if="connectMode" class="text-sm text-emerald-600 dark:text-emerald-400">
+      Connect mode: click a memory, then another, to link them.
+      <span v-if="pendingLink">First memory selected — pick the second.</span>
+    </p>
 
     <Alert v-if="error" variant="destructive">
       <AlertDescription>{{ error }}</AlertDescription>
@@ -60,8 +69,10 @@ import { useAuthStore } from '@/stores/auth'
 import { theme } from '@/lib/theme'
 import { truncate } from '@/utils/text'
 import { nsNodeColors } from '@/lib/nsColor'
+import { confirmDialog } from '@/lib/confirm'
+import { linkKey, linkEdge } from '@/lib/links'
 import { openInspector, inspectorChanged } from '@/lib/inspector'
-import { Cloud, Loader2, Search } from 'lucide-vue-next'
+import { Cloud, Link2, Loader2, Search, Unlink } from 'lucide-vue-next'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -79,6 +90,8 @@ const loading = ref(false)
 const error = ref('')
 const searched = ref(false)
 const resultCount = ref(0)
+const connectMode = ref(false)
+const pendingLink = ref(null)
 
 // Recolor nodes + labels when the theme toggles while a graph is on screen.
 watch(theme, () => { if (network) { recolorNodes(); render() } })
@@ -124,6 +137,7 @@ async function run() {
   const my = ++reqId
   loading.value = true
   error.value = ''
+  clearPending()
   try {
     // noReinforce: exploring is not a recall — never inflate the usage signal.
     const res = await memoryClient.search({ query: q, namespace: namespace.value, limit: limit.value, maxDistance: cutoff.value, noReinforce: true })
@@ -159,7 +173,24 @@ async function run() {
       })
     }
 
+    // Existing links between memories in this result set. physics:false keeps
+    // them out of the simulation, so the query->memory distance edges alone
+    // decide the radial layout (a spring per link would pull clusters together
+    // and distort distance).
+    const present = new Set(res.hits.map((h) => 'm:' + h.memory.id))
+    const linkSeen = new Set()
+    for (const h of res.hits) {
+      const a = 'm:' + h.memory.id
+      for (const lid of h.memory.linkedIds || []) {
+        const b = 'm:' + lid
+        if (!present.has(b) || linkSeen.has(linkKey(a, b))) continue
+        linkSeen.add(linkKey(a, b))
+        edgeList.push({ ...linkEdge(a, b), physics: false })
+      }
+    }
+
     if (res.hits.length === 0) {
+      connectMode.value = false
       toast.info(`No memories within distance ${cutoff.value} of "${truncate(q, 40)}".`)
     }
 
@@ -178,6 +209,8 @@ async function run() {
 }
 
 function clearCloud() {
+  connectMode.value = false
+  clearPending()
   if (nodes) nodes.clear()
   if (edges) edges.clear()
   searched.value = false
@@ -219,10 +252,86 @@ function render() {
   }
 }
 
+function toggleConnect() {
+  connectMode.value = !connectMode.value
+  clearPending()
+}
+
+function clearPending() {
+  pendingLink.value = null
+  if (network) network.unselectAll()
+}
+
+function onKeydown(e) {
+  if (e.key === 'Escape' && (pendingLink.value || connectMode.value)) clearPending()
+}
+
+// Keep each memory's linkedIds in sync locally: link/unlink are async server
+// side (NATS), so the inspector would otherwise show stale links.
+function setLinked(a, b, linked) {
+  for (const [x, y] of [[a, b], [b, a]]) {
+    const mem = nodes.get(x)?.mem
+    if (!mem) continue
+    const yid = y.slice(2)
+    const ids = (mem.linkedIds || []).filter((i) => i !== yid)
+    if (linked) ids.push(yid)
+    mem.linkedIds = ids
+  }
+}
+
+async function handleConnectClick(id) {
+  if (!pendingLink.value) {
+    pendingLink.value = id
+    network.selectNodes([id])
+    return
+  }
+  if (pendingLink.value === id) {
+    clearPending()
+    return
+  }
+  const a = pendingLink.value
+  const my = reqId
+  try {
+    await memoryClient.link({ id: a.slice(2), targetId: id.slice(2) })
+    // A search that landed meanwhile replaced the cloud — don't graft the edge onto it.
+    if (my !== reqId) return
+    if (!edges.get(linkKey(a, id))) edges.add({ ...linkEdge(a, id), physics: false })
+    setLinked(a, id, true)
+  } catch (e) {
+    handleError(e)
+  }
+  clearPending()
+}
+
+async function maybeUnlink(eid) {
+  const e = edges.get(eid)
+  if (!e) return
+  if (!(await confirmDialog('Remove this link?', { actionLabel: 'Remove' }))) return
+  const my = reqId
+  try {
+    await memoryClient.unlink({ id: String(e.from).slice(2), targetId: String(e.to).slice(2) })
+    if (my !== reqId) return
+    edges.remove(eid)
+    setLinked(e.from, e.to, false)
+  } catch (err) {
+    handleError(err)
+  }
+}
+
 function onClick(params) {
-  if (!params.nodes.length) return
+  if (!params.nodes.length) {
+    if (connectMode.value && params.edges.length && String(params.edges[0]).startsWith('link:')) {
+      clearPending()
+      maybeUnlink(params.edges[0])
+    }
+    return
+  }
   const id = params.nodes[0]
   if (!String(id).startsWith('m:')) return
+  if (connectMode.value) {
+    handleConnectClick(id)
+    return
+  }
   const mem = nodes.get(id)?.mem
   if (mem) openInspector(mem, resolveMemory)
 }
@@ -232,8 +341,10 @@ onMounted(() => {
   nodes = new DataSet([])
   edges = new DataSet([])
   render()
+  window.addEventListener('keydown', onKeydown)
 })
 onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onKeydown)
   if (network) {
     network.destroy()
     network = null
