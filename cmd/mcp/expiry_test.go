@@ -45,6 +45,11 @@ func TestSavePlumbsExpiresIn(t *testing.T) {
 	_, _, err = d.save(context.Background(), nil, SaveIn{Text: "durable"})
 	require.NoError(t, err)
 	assert.Empty(t, c.save.GetExpiresIn())
+	assert.False(t, c.save.GetNeverExpires(), "never_expires is opt-in")
+
+	_, _, err = d.save(context.Background(), nil, SaveIn{Text: "permanent merge", NeverExpires: true})
+	require.NoError(t, err)
+	assert.True(t, c.save.GetNeverExpires(), "an explicit never must reach the server or the merge inherits a source expiry")
 }
 
 // includeExpired must reach the server, and an expired hit must be labelled so the

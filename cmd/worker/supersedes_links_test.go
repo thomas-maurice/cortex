@@ -204,10 +204,12 @@ func TestSupersedesInheritsExpiry(t *testing.T) {
 		srcA, srcB time.Time
 		keep       time.Time
 		want       time.Time
+		never      bool
 	}{
-		{"all sources expire: latest wins", soon, later, time.Time{}, later},
-		{"one permanent source: stays permanent", soon, time.Time{}, time.Time{}, time.Time{}},
-		{"survivor's own expiry is kept", soon, later, own, own},
+		{"all sources expire: latest wins", soon, later, time.Time{}, later, false},
+		{"explicit never_expires: survivor stays permanent despite all-expiring sources", soon, later, time.Time{}, time.Time{}, true},
+		{"one permanent source: stays permanent", soon, time.Time{}, time.Time{}, time.Time{}, false},
+		{"survivor's own expiry is kept", soon, later, own, own, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -218,7 +220,7 @@ func TestSupersedesInheritsExpiry(t *testing.T) {
 			a, b, m := uuid.NewString(), uuid.NewString(), uuid.NewString()
 			seed(t, s, tenant, memory.Record{ID: a, Text: "a", ValidUntil: tc.srcA})
 			seed(t, s, tenant, memory.Record{ID: b, Text: "b", ValidUntil: tc.srcB})
-			rec := memory.Record{ID: m, Text: "merged", Namespace: "ns", CreatedAt: time.Now().UTC(), ValidUntil: tc.keep, Supersedes: []string{a, b}}
+			rec := memory.Record{ID: m, Text: "merged", Namespace: "ns", CreatedAt: time.Now().UTC(), ValidUntil: tc.keep, Supersedes: []string{a, b}, NeverExpires: tc.never}
 			require.NoError(t, bus.PublishIndex(ctx, s.js, rec))
 			s.waitIdle()
 			got, ok := s.fs.peek(tenant, m)

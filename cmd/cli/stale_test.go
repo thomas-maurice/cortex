@@ -108,3 +108,15 @@ func TestTrackingNotice(t *testing.T) {
 	assert.EqualValues(t, 90, staleWindowDays(&cortexv1.ListRequest{Stale: cortexv1.StaleMode_STALE_MODE_NOT_RECALLED_SINCE, StaleDays: 90}))
 	assert.EqualValues(t, 30, staleWindowDays(&cortexv1.ListRequest{Stale: cortexv1.StaleMode_STALE_MODE_NEVER_RECALLED}))
 }
+
+// --no-expiry on save and --expires are contradictory; rejected client-side
+// before any request is made.
+func TestSaveRejectsExpiresWithNoExpiry(t *testing.T) {
+	cmd := saveCmd()
+	cmd.SetArgs([]string{"--expires", "7d", "--no-expiry", "text"})
+	cmd.SilenceUsage, cmd.SilenceErrors = true, true
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "mutually exclusive")
+	assert.NotNil(t, saveCmd().Flags().Lookup("no-expiry"))
+}

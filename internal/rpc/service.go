@@ -157,9 +157,6 @@ type Service struct {
 	// tenant — each scans or buffers a whole namespace or trash (DeleteNamespace and
 	// the bulk PurgeTrash/RestoreFromTrash forms; read-only ListTrash is not gated).
 	scanGate tenantGate
-	// useLocks serialise RecordUse's read-modify-write per memory (striped by
-	// tenant+id) so concurrent deliveries in ONE server process cannot lose a count.
-	useLocks [useLockStripes]sync.Mutex
 	// afterGate, when non-nil, runs right after a gate is acquired; a non-nil
 	// return aborts the call. Test seam only (lets a test hold a call in flight).
 	afterGate func() error
@@ -290,6 +287,9 @@ func (s *Service) Save(ctx context.Context, req *connect.Request[cortexv1.SaveRe
 	if err != nil {
 		return nil, err
 	}
+	if req.Msg.GetNeverExpires() && (req.Msg.GetValidUntil() != nil || strings.TrimSpace(req.Msg.GetExpiresIn()) != "") {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("never_expires cannot be combined with valid_until or expires_in"))
+	}
 
 	rec := memory.Record{
 		ID:             uuid.NewString(),
@@ -301,6 +301,7 @@ func (s *Service) Save(ctx context.Context, req *connect.Request[cortexv1.SaveRe
 		ConversationID: req.Msg.GetConversationId(),
 		Supersedes:     supersedes,
 		ValidUntil:     validUntil,
+		NeverExpires:   req.Msg.GetNeverExpires(),
 	}
 	// UserID is stamped by PublishIndex from context; not read from req.Msg.
 	if err := bus.PublishIndex(ctx, s.js, rec); err != nil {

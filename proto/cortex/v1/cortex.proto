@@ -298,6 +298,12 @@ message SaveRequest {
   // valid_until must be in the future.
   google.protobuf.Timestamp valid_until = 20;
   string expires_in = 21;
+  // never_expires explicitly chooses "no expiry" for this memory. It matters when
+  // supersedes is set: if EVERY superseded source expires and no expiry is given,
+  // the worker makes the merged memory inherit the latest source expiry; this flag
+  // opts out so consolidating time-bound sources into a permanent fact works.
+  // Mutually exclusive with valid_until / expires_in. One-shot, not persisted.
+  bool never_expires = 22;
 }
 
 message SaveResponse {

@@ -1055,7 +1055,7 @@ func commitIndex(ctx context.Context, log *slog.Logger, js jetstream.JetStream, 
 	// validUntil is not index-owned, so a merge inherits its sources' expiry here,
 	// under the lock and BEFORE any source is trashed (see merge.InheritedExpiry;
 	// a retry after a source was trashed sees fewer sources and inherits nothing).
-	if len(srcIDs) > 0 {
+	if len(srcIDs) > 0 && !rec.NeverExpires {
 		keepUntil := rec.ValidUntil
 		if exists {
 			keepUntil = stored.ValidUntil

@@ -376,6 +376,7 @@ func main() {
 
 func saveCmd() *cobra.Command {
 	var namespace, expires string
+	var noExpiry bool
 	var tags, linkTo, supersedes []string
 	cmd := &cobra.Command{
 		Use:   "save <text>",
@@ -385,6 +386,9 @@ func saveCmd() *cobra.Command {
 			text := strings.TrimSpace(args[0])
 			if text == "" {
 				return fmt.Errorf("text must not be empty")
+			}
+			if expires != "" && noExpiry {
+				return fmt.Errorf("--expires and --no-expiry are mutually exclusive")
 			}
 			ns := namespace
 			if ns == "" {
@@ -397,6 +401,7 @@ func saveCmd() *cobra.Command {
 				LinkTo:         linkTo,
 				Supersedes:     supersedes,
 				ExpiresIn:      strings.TrimSpace(expires),
+				NeverExpires:   noExpiry,
 				Source:         source,
 				ConversationId: conversationID,
 			}))
@@ -412,6 +417,7 @@ func saveCmd() *cobra.Command {
 	cmd.Flags().StringSliceVarP(&linkTo, "link-to", "L", nil, "ID of an existing memory to link this one to (repeatable; applied after indexing)")
 	cmd.Flags().StringSliceVarP(&supersedes, "supersedes", "S", nil, "ID of an existing memory this one replaces (repeatable; the server deletes it once this memory is indexed)")
 	cmd.Flags().StringVar(&expires, "expires", "", `expire the memory after this long, e.g. 7d or 36h (for time-bound facts; expired memories stop being recalled)`)
+	cmd.Flags().BoolVar(&noExpiry, "no-expiry", false, "keep the memory permanent even when every --supersedes source expires (otherwise the merge inherits the latest source expiry)")
 	return cmd
 }
 
