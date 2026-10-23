@@ -93,5 +93,19 @@ func TestStorageInfoIntegration(t *testing.T) {
 				assert.Equal(t, len(vec), c.StoredDims)
 			}
 		}
+		// Constant cost: a scoped call never reads cluster-wide node status, whose
+		// size grows with every tenant in the cluster.
+		assert.Empty(t, one.Nodes)
+
+		// A caller with no shard in a class gets no tenant row (and no error):
+		// TenantsExists, not a full tenant listing, answers it.
+		none, err := st.StorageInfo(ctx, "tenant-that-does-not-exist")
+		require.NoError(t, err)
+		for _, c := range none.Classes {
+			if c.MultiTenant {
+				assert.Empty(t, c.Tenants, c.Logical)
+				assert.Zero(t, c.ObjectCount, c.Logical)
+			}
+		}
 	}
 }

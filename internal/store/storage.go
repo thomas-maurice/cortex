@@ -256,14 +256,18 @@ func (s *Store) StorageInfo(ctx context.Context, onlyTenant string) (*StorageInf
 
 	var aggs map[string]*classAgg
 	out := &StorageInfo{Orphans: findOrphans(names, targets, storageLogicalClasses())}
-	if st, nerr := s.client.Cluster().NodesStatusGetter().WithOutput("verbose").Do(ctx); nerr == nil && st != nil {
-		aggs = aggregateShards(st.Nodes)
-		for _, n := range st.Nodes {
-			ns := NodeStorage{Name: n.Name, Version: n.Version, GitHash: n.GitHash, OperationalMode: n.OperationalMode, ShardCount: int64(len(n.Shards))}
-			if n.Status != nil {
-				ns.Status = *n.Status
+	// Verbose node status lists EVERY shard of every tenant; a scoped caller would
+	// pay for the whole cluster to read one shard's status/queue, so skip it.
+	if onlyTenant == "" {
+		if st, nerr := s.client.Cluster().NodesStatusGetter().WithOutput("verbose").Do(ctx); nerr == nil && st != nil {
+			aggs = aggregateShards(st.Nodes)
+			for _, n := range st.Nodes {
+				ns := NodeStorage{Name: n.Name, Version: n.Version, GitHash: n.GitHash, OperationalMode: n.OperationalMode, ShardCount: int64(len(n.Shards))}
+				if n.Status != nil {
+					ns.Status = *n.Status
+				}
+				out.Nodes = append(out.Nodes, ns)
 			}
-			out.Nodes = append(out.Nodes, ns)
 		}
 	}
 
@@ -356,6 +360,9 @@ func countFromAggregate(data map[string]models.JSONObject, class string) int64 {
 // (status, queue), so a tenant known to only one source is still shown, and fills
 // exact per-tenant counts from Aggregate with bounded concurrency.
 func (s *Store) storageTenants(ctx context.Context, phys string, agg *classAgg, onlyTenant string) []TenantStorage {
+	if onlyTenant != "" {
+		return s.scopedTenant(ctx, phys, onlyTenant)
+	}
 	byTenant := map[string]*TenantStorage{}
 	if list, err := s.client.Schema().TenantsGetter().WithClassName(phys).Do(ctx); err == nil {
 		for _, t := range list {
@@ -403,6 +410,21 @@ func (s *Store) storageTenants(ctx context.Context, phys string, agg *classAgg, 
 	}
 	wg.Wait()
 	return out
+}
+
+// scopedTenant is storageTenants for one caller at constant cost: an existence
+// check instead of listing every tenant of the class (the client has no
+// single-tenant getter, so activity is left empty), then one Aggregate.
+// Exists failing → the tenant is shown with an unknown count, not hidden.
+func (s *Store) scopedTenant(ctx context.Context, phys, tenant string) []TenantStorage {
+	ok, err := s.client.Schema().TenantsExists().WithClassName(phys).WithTenant(tenant).Do(ctx)
+	if err != nil {
+		return []TenantStorage{{Tenant: tenant, ObjectCount: CountUnknown}}
+	}
+	if !ok {
+		return nil
+	}
+	return []TenantStorage{{Tenant: tenant, ObjectCount: s.aggregateCount(ctx, phys, tenant)}}
 }
 
 // sampleDims reads the `dims` provenance property of ONE object (no vector is

@@ -202,6 +202,9 @@ warning card (leftover from an interrupted migration?).
 - **Scoping is server-side**: a non-admin in multi-tenant mode gets the same RPC
   reduced to their own tenant (`scoped`: "Your data only"); no other tenant, node,
   orphan or user/API-key class data is sent. Visible to every logged-in user.
+  A scoped call costs the same however many tenants exist: it skips the
+  cluster-wide node status (so no indexing status / queue is shown) and checks its
+  own tenant with `TenantsExists` instead of listing every tenant.
 - Works during a schema migration (read-only RPC).
 
 ### Graph (`ui/src/views/GraphView.vue`)
