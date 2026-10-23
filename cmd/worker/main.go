@@ -87,7 +87,9 @@ const (
 	lockTTL    = dlock.DefaultTTL
 	// ackWait is set explicitly on both consumers; the pool sends InProgress every
 	// keepaliveInterval (5s) for a message's whole life, far inside it.
-	ackWait = 30 * time.Second
+	ackWait = bus.DefaultAckWait
+	// streamMigrateRetry is how often a deferred MEMORY stream migration is retried.
+	streamMigrateRetry = 30 * time.Second
 	// fetchReadyGrace: /readyz fails once JetStream pulls have failed continuously
 	// for this long.
 	fetchReadyGrace = 30 * time.Second
@@ -149,7 +151,13 @@ func main() {
 	}
 	defer nc.Close()
 
-	if err := bus.EnsureStream(ctx, js); err != nil {
+	busOpts, err := bus.OptionsFromEnv()
+	if err != nil {
+		log.Error("invalid retention setting", "err", err)
+		os.Exit(1)
+	}
+	busOpts = append(busOpts, bus.WithAckWait(ackWait), bus.WithLogger(log))
+	if err := bus.EnsureAndMigrate(ctx, js, streamMigrateRetry, busOpts...); err != nil {
 		log.Error("ensure stream", "err", err)
 		os.Exit(1)
 	}
@@ -199,7 +207,7 @@ func main() {
 	deps := &workerDeps{
 		log: log, m: m, js: js, locker: locker, stream: newStreamIdent(js), embedder: embedder,
 		stores: func(userID string) tenantStore { return st.Tenant(userID) }, chunker: chunker,
-		dedupDistance: dedupDistance, concurrency: concurrency, ackWait: ackWait,
+		dedupDistance: dedupDistance, concurrency: concurrency, ackWait: ackWait, busOpts: busOpts,
 	}
 	indexPool, linkPool, err := deps.startPools(ctx)
 	if err != nil {
@@ -229,14 +237,8 @@ func main() {
 
 // ensureConsumer creates (or updates) a durable pull consumer with the worker's
 // settings. The stream must exist.
-func ensureConsumer(ctx context.Context, js jetstream.JetStream, durable string, filters []string, maxDeliver int, ackWait time.Duration) (jetstream.Consumer, error) {
-	return js.CreateOrUpdateConsumer(ctx, memory.StreamName, jetstream.ConsumerConfig{
-		Durable:        durable,
-		AckPolicy:      jetstream.AckExplicitPolicy,
-		AckWait:        ackWait,
-		FilterSubjects: filters,
-		MaxDeliver:     maxDeliver,
-	})
+func ensureConsumer(ctx context.Context, js jetstream.JetStream, cfg jetstream.ConsumerConfig) (jetstream.Consumer, error) {
+	return bus.EnsureConsumer(ctx, js, cfg)
 }
 
 // workerDeps is everything the consumer loops need; main and the multi-replica
@@ -253,47 +255,60 @@ type workerDeps struct {
 	dedupDistance float32
 	concurrency   int
 	ackWait       time.Duration
+	busOpts       []bus.Option // retention settings, re-applied when the stream is re-ensured
 }
 
 // startPools creates the two durable consumers (the stream must already exist) and
 // starts `concurrency` loops on each, every loop pulling ONE message at a time (see
 // pool): bounded, and no replica can hoard a backlog. Correctness across goroutines
 // and replicas rests on the per-id locks and the indexedSeq guard. The pools
-// re-create a consumer (stream re-ensured first) only when that cannot replay history.
+// re-create a consumer (stream re-ensured first) only when that cannot replay history
+// (always true on the interest-retention stream; a legacy unmigrated stream is guarded).
 func (d *workerDeps) startPools(ctx context.Context) (index, link *pool, err error) {
 	// Links ride their own durable consumer, decoupled from indexing: an edge whose
 	// endpoint is still being embedded retries on this consumer's budget without
 	// blocking or being blocked by the index stream.
-	indexFilters := []string{memory.SubjectIndex, memory.SubjectSummary}
-	linkFilters := []string{memory.SubjectLink}
-	// Both consumers re-ensure the SAME stream when it is wiped; serialise that so
-	// one's stream update never overlaps the other's consumer create (nats-server
-	// v2.15.1 races fileStore.UpdateConfig against ConsumerStore on the stream config).
-	var ensureMu sync.Mutex
-	recreate := func(durable string, filters []string, maxDeliver int) func(context.Context) (jetstream.Consumer, error) {
+	cfgs := bus.ConsumerConfigs(d.ackWait)
+	idxCfg, lnkCfg := cfgs[0], cfgs[1]
+	// bus serialises every stream/consumer ensure in this process (nats-server
+	// v2.15.1 races fileStore.UpdateConfig against ConsumerStore on the stream
+	// config), including the background migration retry.
+	recreate := func(cfg jetstream.ConsumerConfig) func(context.Context) (jetstream.Consumer, error) {
 		return func(ctx context.Context) (jetstream.Consumer, error) {
-			ensureMu.Lock()
-			defer ensureMu.Unlock()
-			if err := bus.EnsureStream(ctx, d.js); err != nil {
+			if err := bus.EnsureStream(ctx, d.js, append(slices.Clone(d.busOpts), bus.WithAckWait(d.ackWait), bus.WithLogger(d.log))...); err != nil {
+				return nil, err // incl. ErrMigrationPending: a legacy stream would replay history
+			}
+			c, err := ensureConsumer(ctx, d.js, cfg)
+			if err != nil {
 				return nil, err
 			}
-			return ensureConsumer(ctx, d.js, durable, filters, maxDeliver, d.ackWait)
+			d.m.consumerRecreated()
+			if info, ierr := streamInfo(ctx, d.js); ierr == nil && info.State.Msgs > 0 {
+				d.log.Error("durable consumer was missing and has been recreated on a non-empty stream: "+
+					"messages published to it while it was absent were discarded (interest retention)",
+					"consumer", cfg.Durable, "streamMsgs", info.State.Msgs)
+			} else {
+				d.log.Warn("durable consumer was missing and has been recreated: "+
+					"messages for its subjects published while it was absent may have been discarded (interest retention)",
+					"consumer", cfg.Durable)
+			}
+			return c, nil
 		}
 	}
-	idx, err := ensureConsumer(ctx, d.js, memory.ConsumerName, indexFilters, memory.MaxDeliver, d.ackWait)
+	idx, err := ensureConsumer(ctx, d.js, idxCfg)
 	if err != nil {
 		return nil, nil, fmt.Errorf("create consumer: %w", err)
 	}
-	lnk, err := ensureConsumer(ctx, d.js, memory.LinkConsumerName, linkFilters, memory.LinkMaxDeliver, d.ackWait)
+	lnk, err := ensureConsumer(ctx, d.js, lnkCfg)
 	if err != nil {
 		return nil, nil, fmt.Errorf("create link consumer: %w", err)
 	}
 	index, link = newPool(d.concurrency, d.log, d.m), newPool(d.concurrency, d.log, d.m)
-	index.run(ctx, newConsumerRef(d.js, idx, recreate(memory.ConsumerName, indexFilters, memory.MaxDeliver)),
+	index.run(ctx, newConsumerRef(d.js, idx, recreate(idxCfg)),
 		func(wctx context.Context, msg jetstream.Msg) {
 			handle(wctx, d.log, d.m, d.js, d.locker, d.stream, d.embedder, d.stores, d.chunker, msg, d.dedupDistance)
 		})
-	link.run(ctx, newConsumerRef(d.js, lnk, recreate(memory.LinkConsumerName, linkFilters, memory.LinkMaxDeliver)),
+	link.run(ctx, newConsumerRef(d.js, lnk, recreate(lnkCfg)),
 		func(wctx context.Context, msg jetstream.Msg) {
 			handleLink(wctx, d.log, d.m, d.js, d.locker, d.stores, msg)
 		})

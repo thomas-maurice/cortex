@@ -109,16 +109,100 @@ read-modify-write is serialised by the per-memory lock described in
 [Horizontal scaling](#horizontal-scaling-worker-replicas). See
 [WEB_UI.md](WEB_UI.md) for how the graph UI and the MCP tools drive links.
 
-NATS stream `MEMORY`, subjects `memory.>`, file storage. Subject `memory.index`
+NATS streams (see [Streams and retention](#streams-and-retention)): `MEMORY`
+(subjects `memory.index`, `memory.summary`, `memory.link`) is the work queue and
+`MEMORY_DEAD` (subject `deadletter.memory`) holds dead-letters. Subject `memory.index`
 carries save events and `memory.summary` carries conversation summaries (both on
 the `indexer` consumer); `memory.link` carries edge mutations (the `linker`
-consumer); `memory.dead` carries dead-letters (same stream). The `indexer` is a
+consumer). The `indexer` is a
 durable consumer, explicit ack, `MaxDeliver: 10`, nak-with-delay (2s) on
 transient embed/write failures, term on unparseable payloads. A message that
-still fails on its 10th delivery is published to `memory.dead` (with the error
+still fails on its 10th delivery is published to `deadletter.memory` (with the error
 and delivery count) and acked — preserved for inspection/requeue via the CLI,
 never silently dropped.
 
+### Streams and retention
+
+`MEMORY` used to keep every message ever published (LimitsPolicy, no limits): disk
+grew without bound (memory texts included) and a recreated consumer replayed all
+history. Now:
+
+- **`MEMORY`: InterestPolicy + `QUEUE_MAX_AGE` (default 7d) + file storage.** JetStream
+  removes a message once every consumer *whose filter matches that message* has acked
+  it (Ack and Term both count). `indexer` filters `index`+`summary`, `linker` filters
+  `link`, so a link message waits only for the linker and an index message only for the
+  indexer (covered by `internal/bus/stream_test.go`). Ephemeral consumers (the ordered
+  consumers used by tests/tools) are AckNone and never hold interest. MaxAge is a
+  safety net only: unconsumed messages older than it are DROPPED, so it must exceed any
+  realistic outage. Interest has a sharp edge: a message published while NO matching
+  consumer exists is discarded immediately, which is why `bus.EnsureStream` creates both
+  durable consumers (create-if-missing; the worker's settings win via
+  CreateOrUpdate) BEFORE the stream gets its real subjects, and why a consumer deleted
+  by hand loses what is published in the gap (the worker logs that at Error and counts
+  `cortex_worker_consumer_recreated_total`).
+- **`MEMORY_DEAD`: LimitsPolicy, `DEAD_LETTER_MAX_AGE` (default 30d, `0` = keep),
+  MaxMsgs 10 000 / MaxBytes 512 MiB.** Its subject is outside `memory.>` (JetStream
+  forbids overlapping subjects, and the legacy stream still owns `memory.>` while
+  migrating). `FetchDead`, `DeadCount` (metrics, `cortex_dead_letters`), requeue and
+  purge all read this stream. Requeue republishes to `memory.index` then purges.
+- Both ages are strict Go durations (`bus.ParseAge`), applied by server and worker at
+  startup.
+
+**Migration** (`internal/bus/migrate.go`, run by `EnsureStream` in server and worker):
+retention is immutable, so a legacy (LimitsPolicy) `MEMORY` is replaced. Under a KV
+lock (`cortex_migrations`, key `memory-stream-retention`, 2m TTL so a crashed migrator
+cannot wedge it):
+
+1. Pre-check: both consumers must report 0 pending and 0 unacked (a missing consumer
+   only counts as idle if the stream holds no message for its subjects), else return
+   `ErrMigrationPending` and touch nothing.
+2. **Fence**: narrow the legacy stream's subjects from `memory.>` to `memory.dead`.
+   index/summary/link publishes now FAIL (no responders, the RPC returns an error and
+   the client retries) instead of being acked and then deleted with the stream.
+3. Wait (up to 5s) for the consumers to be idle again. If they are not, lift the fence
+   (restore `memory.>`) and return `ErrMigrationPending`.
+4. Copy legacy `memory.dead` messages to `MEMORY_DEAD` with `Nats-Msg-Id =
+   migrate:<legacy stream created>:<seq>`, skipping ids already present (idempotent
+   without relying on the 2m dedup window; headers preserved, original timestamps are
+   not, so the age clock restarts).
+5. Delete `MEMORY`, create the new one and log the counts.
+
+Crash safety: the fence is reversible and lifted on every non-success path; if a
+migrator dies with the fence up, the next attempt (after the lock's 2m TTL) sees the
+narrowed subjects and lifts it before doing anything else. A crash between delete and
+create leaves no stream; the next `EnsureStream` creates the new one (nothing to lose,
+everything was processed). Copied dead letters are never duplicated on retry.
+
+**Creating the new stream (migration and fresh install)** follows one order
+everywhere (`ensureQueue`): create `MEMORY` with only a placeholder subject
+(`memory.migrating`), create both durable consumers, THEN switch to the real subjects.
+Publishes in the gap fail loudly instead of being acked into an interest stream with
+no consumer (which discards them silently). This relies on nats-server accepting a
+consumer filter outside the stream's current subjects (true for the embedded server in
+the tests; the `nats` image in compose is the same family). All stream/consumer ensures
+in one process are serialised by a single mutex in `internal/bus` (the nats-server
+`UpdateConfig` vs `ConsumerStore` race), including the background migration retry.
+
+Processes that lose the lock (or see a backlog) get `ErrMigrationPending`, keep serving
+the old stream, and `EnsureAndMigrate` retries every 30s. Stream identity (`Created`)
+changes, which the existing `indexedStream` guard already handles (sequences restart
+at 1).
+
+**Upgrade, mixed versions, rollback.** Upgrade the server and ALL workers together.
+After the migration `MEMORY` is InterestPolicy: an OLD binary calls `CreateOrUpdate`
+with the legacy config, which JetStream rejects (retention is immutable), so it fails
+to start; and an old worker's dead-letter publish to `memory.dead` has no stream, so it
+fails (the message is retried, not lost). Rolling back is NOT supported without
+restoring the old stream yourself (re-create `MEMORY` as LimitsPolicy over `memory.>`
+and the two consumers; unconsumed messages are not kept anywhere else). Roll forward
+instead.
+
+**QUEUE_MAX_AGE drops** are silent in JetStream. Watch the gauge
+`cortex_queue_oldest_message_age_seconds` (age of the oldest message still in `MEMORY`,
+server `/metrics`): when it approaches `QUEUE_MAX_AGE`, workers are down or stuck and
+messages are about to be dropped.
+
+### Trash (soft delete)
 ### Trash (soft delete)
 
 Class `Trash` (declared in code like the others, `trashProperties`; field-tokenized
@@ -347,6 +431,8 @@ automatically without per-call bookkeeping.
 | `CORTEX_JWT_SECRET` | derived from `CORTEX_AUTH_TOKEN`, else random | server (signs UI JWTs) |
 | `TRASH_RETENTION` | `168h` (`0` = forever) | server (how long soft-deleted memories stay restorable; hourly sweep purges older entries across all tenants) |
 | `EXPIRY_GRACE` | `168h` (`0` = immediately) | server (how long an expired memory stays hidden-but-extendable before the hourly sweep moves it to the trash; strict Go duration) |
+| `QUEUE_MAX_AGE` | `168h` (`0` = no cap) | server+worker (MEMORY queue safety net: unconsumed messages older than this are DROPPED; must exceed any outage; strict Go duration) |
+| `DEAD_LETTER_MAX_AGE` | `720h` (`0` = keep) | server+worker (MEMORY_DEAD retention; strict Go duration) |
 | `CORTEX_MAX_REQUEST_BYTES` | `268435456` (256 MiB) | server (max RPC request body; raise for very large restores) |
 
 ## Living memory — decay + reinforcement (opt-in)
@@ -547,21 +633,20 @@ read-modify-writes `accessCount` without the lock; it is a ranking signal only).
 
 ### Missing consumer or stream
 
-The `MEMORY` stream has no retention limit, so every message ever published
-stays in it. A durable consumer recreated with the default delivery policy
-therefore replays the ENTIRE history: every memory re-embedded (embedding runs
-before the lock and stale check), every link op re-run, every summary. The worker
-handles the two cases differently:
+`MEMORY` retains by interest, so acked messages are gone and a recreated durable
+consumer has nothing to replay (a deleted consumer's owed messages are removed with
+it). The pool therefore re-ensures the stream and recreates its consumer
+automatically (throttled to once a second) whenever either disappears, including
+during the retention migration, which deletes and recreates `MEMORY`. Messages
+published in the gap before the consumer exists are discarded (no interest), so a
+hand-deleted consumer loses that window.
 
-- **Stream gone or empty** (NATS wiped): nothing to replay, so the pool re-ensures
-  the stream and the consumer with the startup configuration and carries on.
-- **Consumer gone while the stream holds messages**: NOT recreated. The worker logs
-  an Error (throttled), counts `cortex_worker_fetch_errors_total`, and its
-  `/readyz` goes unready after 30s so the operator notices. Recreate the consumer
-  deliberately with the worker's settings (explicit ack, AckWait 30s, MaxDeliver
-  10 for `indexer` / 50 for `linker`, the same filter subjects) and an explicit
-  start: new messages only, or `DeliverByStartSequence` at the first sequence that
-  still needs processing. The worker then resumes without a restart.
+The one exception is a **legacy unmigrated stream** (LimitsPolicy, see
+[Streams and retention](#streams-and-retention)), which still holds every message
+ever published: there a deleted consumer is NOT recreated while the stream has
+messages (it would replay the whole history). The worker logs an Error (throttled),
+counts `cortex_worker_fetch_errors_total` and goes unready after 30s; the pending
+migration normally resolves this once the backlog is drained.
 
 ## Multi-tenancy trust model and resource guards
 

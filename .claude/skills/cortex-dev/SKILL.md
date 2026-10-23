@@ -40,7 +40,7 @@ avoid colliding with other local services:
 |---------|-----------|-------|
 | server | **8088** → 8080 | Connect RPC + embedded UI. **Auth is ON in dev** (multi-tenant default): RPC calls need a bearer token (JWT from `/auth/login`, or an API key). Compose defaults the UI login to `admin` / `admin`, but the persisted bootstrap admin's password may differ — as of 2026-07-03 `admin`/`admin` is rejected on the local stack (see §1b). |
 | weaviate | 8081 (REST), 50051 (gRPC) | The live store — **has real data**. |
-| nats | 4223 (client), 8223 (mon) | JetStream; the index queue. |
+| nats | 4223 (client), 8223 (mon) | JetStream: `MEMORY` work queue (InterestPolicy, `QUEUE_MAX_AGE` 7d) + `MEMORY_DEAD` dead letters (`DEAD_LETTER_MAX_AGE` 30d). `bus.EnsureStream` migrates a legacy LimitsPolicy `MEMORY` once consumers are idle (see DESIGN "Streams and retention"). |
 | ollama | 11434 | Embeddings via batched `/api/embed` (Ollama >= 0.3.4; `embed.Client.EmbedBatch`, 32/request). Model `qwen3-embedding:0.6b` (1024-dim). |
 | worker | — | NATS → Ollama → Weaviate. The only writer process type, safe as N replicas (`docker compose up -d --scale worker=N`, see §4). Ops HTTP on `:9090` inside the container (`WORKER_METRICS_ADDR`; not published). |
 

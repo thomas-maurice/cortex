@@ -634,31 +634,26 @@ func TestLinkRemoveWithInvalidEndpoint(t *testing.T) {
 	assert.EqualValues(t, 1, add.termed.Load())
 }
 
-// Recreating a deleted durable consumer replays the ENTIRE stream (it keeps every
-// message ever published): every memory re-embedded, every link re-run. So a
-// consumer deleted while the stream holds messages must NOT be recreated; the
-// worker goes unready and counts the errors. A wiped STREAM (nothing to replay) is
-// recovered automatically.
-func TestConsumerDeletionNoReplayStreamDeletionRecovers(t *testing.T) {
+// MEMORY retains by interest: acked history is gone, so a deleted durable consumer
+// can be recreated without replaying anything (no memory re-embedded, no link op
+// re-run). The worker therefore recreates it on its own, and a wiped STREAM is
+// recovered the same way.
+func TestConsumerDeletionRecreatesWithoutReplay(t *testing.T) {
 	s := newStack(t, 1, time.Minute)
-	w := s.startWorker(1)
+	s.startWorker(1)
 	ctx := tenantCtx("")
-	first, second := uuid.NewString(), uuid.NewString()
+	first, third := uuid.NewString(), uuid.NewString()
 	require.NoError(t, bus.PublishIndex(ctx, s.js, memory.Record{ID: first, Text: "one", CreatedAt: time.Now()}))
 	s.waitIdle()
 	require.EqualValues(t, 1, s.fs.writes.Load())
 
-	// Consumer deleted, stream still holds history: no recreation, no replay.
 	require.NoError(t, s.js.DeleteConsumer(context.Background(), memory.StreamName, memory.ConsumerName))
-	require.NoError(t, bus.PublishIndex(ctx, s.js, memory.Record{ID: second, Text: "two", CreatedAt: time.Now()}))
-	require.Eventually(t, func() bool { return w.health.err(500*time.Millisecond) != nil },
-		20*time.Second, 100*time.Millisecond, "worker must go unready while its consumer is missing")
-	assert.Positive(t, testutil.ToFloat64(s.m.fetchErrs))
-	_, err := s.js.Consumer(context.Background(), memory.StreamName, memory.ConsumerName)
-	require.Error(t, err, "consumer must not have been recreated")
-	_, ok := s.fs.peek("", second)
-	assert.False(t, ok)
-	assert.EqualValues(t, 1, s.fs.writes.Load(), "no replay of history")
+	require.Eventually(t, func() bool {
+		_, err := s.js.Consumer(context.Background(), memory.StreamName, memory.ConsumerName)
+		return err == nil
+	}, 30*time.Second, 100*time.Millisecond, "worker never recreated its consumer")
+	time.Sleep(500 * time.Millisecond)
+	assert.EqualValues(t, 1, s.fs.writes.Load(), "recreating the consumer must not replay acked history")
 
 	// Stream wiped: nothing to replay, so the worker re-ensures stream + consumer.
 	require.NoError(t, s.js.DeleteStream(context.Background(), memory.StreamName))
@@ -666,11 +661,10 @@ func TestConsumerDeletionNoReplayStreamDeletionRecovers(t *testing.T) {
 		_, err := s.js.Consumer(context.Background(), memory.StreamName, memory.ConsumerName)
 		return err == nil
 	}, 30*time.Second, 100*time.Millisecond, "worker never recovered from a wiped stream")
-	third := uuid.NewString()
 	require.NoError(t, bus.PublishIndex(ctx, s.js, memory.Record{ID: third, Text: "three", CreatedAt: time.Now()}))
 	require.Eventually(t, func() bool { _, ok := s.fs.peek("", third); return ok },
 		30*time.Second, 100*time.Millisecond)
-	assert.NoError(t, w.health.err(500*time.Millisecond), "ready again after recovery")
+	assert.EqualValues(t, 2, s.fs.writes.Load(), "only the new message is indexed after recovery")
 }
 
 func TestFetchHealthTurnsUnreadyAfterContinuousFailure(t *testing.T) {

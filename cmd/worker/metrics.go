@@ -33,6 +33,7 @@ type metrics struct {
 	lockWait      prometheus.Histogram
 	fetchErrs     prometheus.Counter
 	holdTimeouts  prometheus.Counter
+	recreated     prometheus.Counter
 }
 
 func newMetrics(reg prometheus.Registerer) *metrics {
@@ -69,6 +70,10 @@ func newMetrics(reg prometheus.Registerer) *metrics {
 			Name: "cortex_worker_fetch_errors_total",
 			Help: "Failed JetStream pulls (consumer/stream gone, NATS unreachable). Missing consumers are re-created.",
 		}),
+		recreated: f.NewCounter(prometheus.CounterOpts{
+			Name: "cortex_worker_consumer_recreated_total",
+			Help: "Durable consumers re-created after being found missing. Messages published while one was missing were discarded (interest retention).",
+		}),
 		holdTimeouts: f.NewCounter(prometheus.CounterOpts{
 			Name: "cortex_worker_hold_timeouts_total",
 			Help: "Critical sections cut off by the lock hold deadline (3/4 of the lock TTL); the message is retried.",
@@ -91,6 +96,12 @@ func (m *metrics) observeLockWait(d time.Duration) {
 func (m *metrics) fetchError() {
 	if m != nil {
 		m.fetchErrs.Inc()
+	}
+}
+
+func (m *metrics) consumerRecreated() {
+	if m != nil {
+		m.recreated.Inc()
 	}
 }
 

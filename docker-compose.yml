@@ -159,6 +159,11 @@ services:
       # TRASH_RETENTION: ${TRASH_RETENTION:-168h}
       # How long an EXPIRED memory (valid_until passed) stays hidden-but-recoverable before the hourly sweep moves it to the trash (Go duration, NOT 7d; 0 = immediately; invalid = server won't start).
       # EXPIRY_GRACE: ${EXPIRY_GRACE:-168h}
+      # NATS retention (server AND worker must agree; Go durations, NOT 30d; 0 = no limit).
+      # QUEUE_MAX_AGE: unconsumed queue messages older than this are DROPPED (keep it above any outage).
+      # DEAD_LETTER_MAX_AGE: how long dead letters are kept for inspection/requeue.
+      # QUEUE_MAX_AGE: ${QUEUE_MAX_AGE:-168h}
+      # DEAD_LETTER_MAX_AGE: ${DEAD_LETTER_MAX_AGE:-720h}
       # Dedicated metrics listener (/metrics, /healthz, /readyz; unauthenticated)
       # inside the container. /metrics is never served on the API port (8080).
       # Not published to the host. Empty disables it (default is :9090).

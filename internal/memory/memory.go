@@ -22,20 +22,24 @@ const (
 	// global (NON-multi-tenant) collections that hold the user accounts and API
 	// keys. They exist only when CORTEX_MULTI_TENANT is on, and are read/written by
 	// the SERVER only (never the worker or a client).
-	UserClassName    = "User"
-	ApiKeyClassName  = "ApiKey"
-	StreamName       = "MEMORY"
-	SubjectIndex     = "memory.index"
-	SubjectSummary   = "memory.summary"
-	SubjectLink      = "memory.link"
-	SubjectDead      = "memory.dead"
-	SubjectAll       = "memory.>"
+	UserClassName   = "User"
+	ApiKeyClassName = "ApiKey"
+	StreamName      = "MEMORY"
+	SubjectIndex    = "memory.index"
+	SubjectSummary  = "memory.summary"
+	SubjectLink     = "memory.link"
+	// DeadStreamName holds dead letters in their OWN stream (age/size bounded),
+	// separate from the interest-retained work queue StreamName. SubjectDead lives
+	// OUTSIDE memory.> so the two streams' subjects never overlap (JetStream forbids
+	// that); the legacy "memory.dead" subject only exists in pre-migration streams.
+	DeadStreamName   = "MEMORY_DEAD"
+	SubjectDead      = "deadletter.memory"
 	ConsumerName     = "indexer"
 	LinkConsumerName = "linker"
 
 	// MaxDeliver is how many times the worker attempts to index a message
-	// before giving up and dead-lettering it to SubjectDead. Both subjects live
-	// in StreamName (covered by SubjectAll), so dead letters persist for review.
+	// before giving up and dead-lettering it to SubjectDead (stream DeadStreamName),
+	// so dead letters persist for review.
 	MaxDeliver = 10
 
 	// LinkMaxDeliver is the link consumer's retry budget. It is much larger than

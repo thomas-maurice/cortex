@@ -43,6 +43,9 @@ var version = "dev"
 // the remaining interval instead.
 const backupStartupDelay = time.Minute
 
+// streamMigrateRetry is how often a deferred MEMORY stream migration is retried.
+const streamMigrateRetry = 30 * time.Second
+
 // defaultTrashRetention is used when TRASH_RETENTION is unset.
 const defaultTrashRetention = 168 * time.Hour
 
@@ -339,7 +342,12 @@ func main() {
 		os.Exit(1)
 	}
 	defer nc.Close()
-	if err := bus.EnsureStream(ctx, js); err != nil {
+	busOpts, err := bus.OptionsFromEnv()
+	if err != nil {
+		log.Error("invalid retention setting", "err", err)
+		os.Exit(1)
+	}
+	if err := bus.EnsureAndMigrate(ctx, js, streamMigrateRetry, append(busOpts, bus.WithLogger(log))...); err != nil {
 		log.Error("ensure stream", "err", err)
 		os.Exit(1)
 	}
