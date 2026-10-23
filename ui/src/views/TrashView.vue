@@ -25,6 +25,7 @@
         <option value="stale-review">stale-review</option>
         <option value="duplicate-review">duplicate-review</option>
         <option value="supersedes">supersedes</option>
+        <option value="merged-into">merged-into</option>
         <option value="namespace-delete">namespace-delete</option>
         <option value="expired">expired</option>
       </select>
