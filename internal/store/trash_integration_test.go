@@ -108,7 +108,7 @@ func TestTrashWriteFailureDeletesNothing(t *testing.T) {
 	require.NoError(t, ts.ReplaceChunks(ctx, rec, []ChunkVec{{Index: 0, Text: "must survive", Vector: trashVec}}))
 
 	// Break the trash: drop its class so the write fails.
-	require.NoError(t, st.client.Schema().ClassDeleter().WithClassName(memory.TrashClassName).Do(ctx))
+	require.NoError(t, st.DeleteTrashClass(ctx))
 
 	err := ts.Delete(ctx, rec.ID)
 	require.Error(t, err, "delete must fail loudly when it cannot trash")

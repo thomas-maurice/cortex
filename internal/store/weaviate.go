@@ -133,10 +133,11 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 	return s.ensureClass(ctx, trashClass(s.multiTenant), trashProperties())
 }
 
-// ensureClass creates the class if it is absent, else adds any missing
-// properties (non-destructive), so upgrades don't require a wipe. When the
-// class already exists its MT config is NOT touched — EnsureSchema is additive
-// and Weaviate forbids flipping MT on an existing class anyway.
+// ensureClass brings one logical class up to date. Absent (fresh install): it is
+// created as <Name>_v1 behind the alias <Name>. Present, whether an alias or a
+// plain pre-alias class (which migration #1 converts): any missing properties are
+// added, non-destructively, to the PHYSICAL class. The class's MT config is NOT
+// touched — Weaviate forbids flipping MT on an existing class anyway.
 func (s *Store) ensureClass(ctx context.Context, class *models.Class, props []*models.Property) error {
 	exists, err := s.client.Schema().ClassExistenceChecker().
 		WithClassName(class.Class).Do(ctx)
@@ -144,12 +145,13 @@ func (s *Store) ensureClass(ctx context.Context, class *models.Class, props []*m
 		return fmt.Errorf("check class %s: %w", class.Class, err)
 	}
 	if !exists {
-		if err := s.client.Schema().ClassCreator().WithClass(class).Do(ctx); err != nil {
-			return fmt.Errorf("create class %s: %w", class.Class, err)
-		}
-		return nil
+		return s.createAliased(ctx, class)
 	}
-	return s.ensureProps(ctx, class.Class, props)
+	phys, err := s.PhysicalClass(ctx, class.Class)
+	if err != nil {
+		return err
+	}
+	return s.ensureProps(ctx, phys, props)
 }
 
 // memoryClass is the authoritative Memory class definition.
@@ -188,7 +190,7 @@ func memoryProperties() []*models.Property {
 		// "demo-2" (shared token) and a `conversationId`/UUID Equal match on the
 		// hyphen-split tokens — i.e. fuzzy, wrong scoping. "field" makes them exact.
 		{Name: "namespace", DataType: []string{"text"}, Tokenization: "field"},
-		{Name: "tags", DataType: []string{"text[]"}},
+		{Name: "tags", DataType: []string{"text[]"}, Tokenization: "field"},
 		{Name: "source", DataType: []string{"text"}, Tokenization: "field"},
 		{Name: "createdAt", DataType: []string{"date"}},
 		{Name: "model", DataType: []string{"text"}},
@@ -284,10 +286,10 @@ func (s *Store) ensureProps(ctx context.Context, className string, props []*mode
 // it, only a class rebuild + reindex can — so VerifySchema surfaces it loudly.
 func expectedFieldTokenized() map[string][]string {
 	return map[string][]string{
-		memory.ClassName:        {"namespace", "source", "conversationId"},
-		memory.ChunkClassName:   {"memoryId", "namespace"},
+		memory.ClassName:        {"namespace", "source", "conversationId", "tags"},
+		memory.ChunkClassName:   {"memoryId", "namespace", "tags"},
 		memory.SummaryClassName: {"namespace", "source", "conversationId"},
-		memory.TrashClassName:   {"memoryId", "namespace"},
+		memory.TrashClassName:   {"memoryId", "namespace", "tags"},
 	}
 }
 
@@ -334,7 +336,7 @@ func (s *Store) VerifySchema(ctx context.Context) ([]string, error) {
 		for _, key := range fieldKeys[className] {
 			if p, ok := have[key]; ok && p.Tokenization != "field" {
 				problems = append(problems, fmt.Sprintf(
-					"class %s property %q has tokenization %q, want \"field\" — namespace/id filters are fuzzy; rebuild + reindex to fix",
+					"class %s property %q has tokenization %q, want \"field\" — namespace/id/tag filters are fuzzy; schema migration #1 (or a rebuild + reindex) fixes it",
 					className, key, p.Tokenization))
 			}
 		}
@@ -372,8 +374,8 @@ func (s *Store) VerifySchema(ctx context.Context) ([]string, error) {
 // rebuild in MT mode is an admin-wide operation.
 func (s *Store) DeleteClass(ctx context.Context) error {
 	for _, name := range []string{memory.ClassName, memory.ChunkClassName, memory.SummaryClassName} {
-		if err := s.client.Schema().ClassDeleter().WithClassName(name).Do(ctx); err != nil {
-			return fmt.Errorf("delete class %s: %w", name, err)
+		if err := s.dropLogical(ctx, name); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -381,10 +383,7 @@ func (s *Store) DeleteClass(ctx context.Context) error {
 
 // DeleteTrashClass drops the Trash class (and its objects).
 func (s *Store) DeleteTrashClass(ctx context.Context) error {
-	if err := s.client.Schema().ClassDeleter().WithClassName(memory.TrashClassName).Do(ctx); err != nil {
-		return fmt.Errorf("delete class %s: %w", memory.TrashClassName, err)
-	}
-	return nil
+	return s.dropLogical(ctx, memory.TrashClassName)
 }
 
 // DeleteAllClasses drops every memory class including Trash. Needed only where

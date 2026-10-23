@@ -49,7 +49,7 @@ func trashProperties() []*models.Property {
 		{Name: "memoryId", DataType: []string{"text"}, Tokenization: "field"},
 		{Name: "text", DataType: []string{"text"}},
 		{Name: "namespace", DataType: []string{"text"}, Tokenization: "field"},
-		{Name: "tags", DataType: []string{"text[]"}},
+		{Name: "tags", DataType: []string{"text[]"}, Tokenization: "field"},
 		{Name: "source", DataType: []string{"text"}, Tokenization: "field"},
 		{Name: "conversationId", DataType: []string{"text"}, Tokenization: "field"},
 		{Name: "createdAt", DataType: []string{"date"}},

@@ -28,6 +28,7 @@ import (
 	"github.com/thomas-maurice/cortex/internal/bus"
 	"github.com/thomas-maurice/cortex/internal/embed"
 	"github.com/thomas-maurice/cortex/internal/identity"
+	"github.com/thomas-maurice/cortex/internal/migrate"
 	"github.com/thomas-maurice/cortex/internal/obs"
 	"github.com/thomas-maurice/cortex/internal/rpc"
 	"github.com/thomas-maurice/cortex/internal/store"
@@ -358,12 +359,25 @@ func main() {
 		os.Exit(1)
 	}
 	st.SetMultiTenant(multiTenant)
-	// The server is the query owner, so it ensures the schema it reads exists.
-	// EnsureSchema is idempotent and additive (it only adds missing properties),
-	// so deploying a server that knows about a new property migrates the class
-	// without waiting on the worker. Retry while Weaviate finishes booting.
-	if err := ensureSchemaWithRetry(ctx, log, st); err != nil {
-		log.Error("ensure schema", "err", err)
+	// The server is the query owner and the ONLY process that migrates the schema.
+	// The runner takes the cluster-wide migration lock, then EnsureSchema (idempotent
+	// and additive: deploying a server that knows about a new property migrates the
+	// class without waiting on the worker; retried while Weaviate finishes booting),
+	// then applies any pending schema migrations (internal/migrate). Other replicas
+	// wait for the lock; the worker waits for the result. A failed migration is fatal:
+	// serving on a half-migrated store is worse than not serving.
+	meta, err := migrate.OpenMeta(ctx, js)
+	if err != nil {
+		log.Error("open meta bucket", "err", err)
+		os.Exit(1)
+	}
+	host, _ := os.Hostname() // ignored: owner is a debugging label only
+	owner := fmt.Sprintf("server %s/%d", host, os.Getpid())
+	maint := migrate.NewMaintenance(meta, owner, log)
+	runner := migrate.NewRunner(meta, &migrate.Env{Store: st, Log: log, Maint: maint}, owner)
+	runner.EnsureSchema = func(ctx context.Context) error { return ensureSchemaWithRetry(ctx, log, st) }
+	if err := runner.Run(ctx); err != nil {
+		log.Error("schema migration", "err", err)
 		os.Exit(1)
 	}
 	checkSchema(ctx, log, st)
@@ -401,17 +415,30 @@ func main() {
 		UsageTrackingSince: trackingSince,
 	}, log)
 
+	svc.SetMigrations(runner)
+	svc.SetMaintenance(maint.Active)
+
 	// Hourly expiry sweep: memories expired for longer than EXPIRY_GRACE move to Trash.
 	log.Info("expiry sweep scheduled", "grace", expiryGrace, "every", trashSweepInterval)
 	go func() {
 		ticker := time.NewTicker(trashSweepInterval)
 		defer ticker.Stop()
 		for {
-			n, err := svc.SweepExpired(ctx)
-			if err != nil {
-				log.Error("expiry sweep failed", "moved", n, "err", err)
+			if maint.Active(ctx) {
+				log.Info("expiry sweep skipped: schema migration in progress")
 			} else {
-				log.Info("expiry sweep", "moved", n)
+				// Stops between requests if a migration starts mid-sweep.
+				sctx, cancel := maint.CancelOnActive(ctx)
+				n, err := svc.SweepExpired(sctx)
+				cancel()
+				switch {
+				case err != nil && maint.Active(ctx):
+					log.Info("expiry sweep interrupted: schema migration started", "moved", n)
+				case err != nil:
+					log.Error("expiry sweep failed", "moved", n, "err", err)
+				default:
+					log.Info("expiry sweep", "moved", n)
+				}
 			}
 			select {
 			case <-ctx.Done():
@@ -428,11 +455,20 @@ func main() {
 			ticker := time.NewTicker(trashSweepInterval)
 			defer ticker.Stop()
 			for {
-				n, err := svc.SweepTrash(ctx)
-				if err != nil {
-					log.Error("trash sweep failed", "purged", n, "err", err)
+				if maint.Active(ctx) {
+					log.Info("trash sweep skipped: schema migration in progress")
 				} else {
-					log.Info("trash sweep", "purged", n)
+					sctx, cancel := maint.CancelOnActive(ctx)
+					n, err := svc.SweepTrash(sctx)
+					cancel()
+					switch {
+					case err != nil && maint.Active(ctx):
+						log.Info("trash sweep interrupted: schema migration started", "purged", n)
+					case err != nil:
+						log.Error("trash sweep failed", "purged", n, "err", err)
+					default:
+						log.Info("trash sweep", "purged", n)
+					}
 				}
 				select {
 				case <-ctx.Done():
@@ -497,7 +533,7 @@ func main() {
 	}
 
 	// Metrics interceptor goes outermost so auth-rejected calls are counted too.
-	interceptors := []connect.Interceptor{rpc.ServerLogInterceptor(log), rpc.ServerAuthInterceptor(auth)}
+	interceptors := []connect.Interceptor{rpc.ServerLogInterceptor(log), rpc.ServerAuthInterceptor(auth), rpc.MaintenanceInterceptor(maint.Active)}
 	var reg *prometheus.Registry
 	if metricsAddr != "" {
 		reg = obs.NewRegistry()

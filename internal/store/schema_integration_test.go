@@ -37,7 +37,8 @@ func TestVerifySchema(t *testing.T) {
 	})
 
 	t.Run("a missing class is detected and named", func(t *testing.T) {
-		require.NoError(t, st.client.Schema().ClassDeleter().WithClassName(memory.ChunkClassName).Do(ctx))
+		// ClassDeleter on the alias would silently delete nothing: drop the logical class properly.
+		require.NoError(t, st.dropLogical(ctx, memory.ChunkClassName))
 		problems, err := st.VerifySchema(ctx)
 		require.NoError(t, err)
 		require.NotEmpty(t, problems)

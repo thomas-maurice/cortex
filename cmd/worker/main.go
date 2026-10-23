@@ -28,6 +28,7 @@ import (
 	"github.com/thomas-maurice/cortex/internal/identity"
 	"github.com/thomas-maurice/cortex/internal/memory"
 	"github.com/thomas-maurice/cortex/internal/merge"
+	"github.com/thomas-maurice/cortex/internal/migrate"
 	"github.com/thomas-maurice/cortex/internal/obs"
 	"github.com/thomas-maurice/cortex/internal/store"
 )
@@ -168,10 +169,18 @@ func main() {
 		os.Exit(1)
 	}
 	st.SetMultiTenant(multiTenant)
-	// Weaviate may still be starting on a fresh stack; retry rather than
-	// crash-loop on the restart policy.
-	if err := ensureSchemaWithRetry(ctx, log, st); err != nil {
-		log.Error("ensure schema", "err", err)
+	// The worker never creates or migrates the schema: the server does, under a
+	// cluster-wide lock. Writing before that finishes could hit a half-migrated store
+	// (or, on a fresh stack, no store), so wait until the schema is at the version
+	// this build expects. EnsureSchema is deliberately NOT called here: during
+	// another replica's cutover it could create a class that collides with the alias.
+	meta, err := migrate.OpenMeta(ctx, js)
+	if err != nil {
+		log.Error("open meta bucket", "err", err)
+		os.Exit(1)
+	}
+	if err := migrate.WaitUntilCurrent(ctx, meta, migrate.Latest(), log, 2*time.Second); err != nil {
+		log.Error("waiting for schema migrations", "err", err)
 		os.Exit(1)
 	}
 	checkSchema(ctx, log, st)
@@ -204,18 +213,29 @@ func main() {
 		"chunk_max_tokens", chunkMaxTokens, "chunk_overlap", chunkOverlap, "multi_tenant", multiTenant)
 
 	locker.Instrument(log, m.lockInfraError, m.observeLockWait)
+	workerID := fmt.Sprintf("%s-%d-%s", host, os.Getpid(), uuid.NewString()[:8])
+	maint := migrate.NewMaintenance(meta, "worker "+workerID, log)
 	deps := &workerDeps{
 		log: log, m: m, js: js, locker: locker, stream: newStreamIdent(js), embedder: embedder,
 		stores: func(userID string) tenantStore { return st.Tenant(userID) }, chunker: chunker,
 		dedupDistance: dedupDistance, concurrency: concurrency, ackWait: ackWait, busOpts: busOpts,
+		hold: maint.Active, holdGen: maint.CachedGen,
 	}
-	indexPool, linkPool, err := deps.startPools(ctx)
+	// Announce this worker BEFORE its consumers exist, with the real held state: a
+	// migrator that raises the flag in the gap must see a worker that is not yet
+	// parked for it, not an absent one.
+	var indexPool, linkPool *pool
+	hb := migrate.NewHeartbeat(meta, workerID, log, func() (int64, int) { return poolsState(indexPool, linkPool) })
+	hb.PublishNow(ctx, 0, 0)
+
+	indexPool, linkPool, err = deps.startPools(ctx)
 	if err != nil {
 		log.Error("start consumers", "err", err)
 		os.Exit(1)
 	}
-	defer indexPool.wait()
-	defer linkPool.wait()
+	// Keep publishing the real in-flight count until BOTH pools have drained, and only
+	// then remove the key (shutdown can take up to shutdownGrace per message).
+	defer startHeartbeat(ctx, hb, indexPool, linkPool)()
 
 	if metricsAddr != "" {
 		checks := obs.DependencyChecks(nc, st, embedder)
@@ -256,6 +276,37 @@ type workerDeps struct {
 	concurrency   int
 	ackWait       time.Duration
 	busOpts       []bus.Option // retention settings, re-applied when the stream is re-ensured
+	// hold, when non-nil and true, makes the pools stop fetching (the stream buffers):
+	// schema-migration maintenance mode. In-flight messages finish.
+	hold func(context.Context) bool
+	// holdGen reports the maintenance generation the last hold check saw (optional).
+	holdGen func() int64
+}
+
+// poolsState is the heartbeat payload: the maintenance generation BOTH pools are
+// parked for (0 if either is not) and the total number of busy loops.
+func poolsState(index, link *pool) (int64, int) {
+	if index == nil || link == nil {
+		return 0, 0
+	}
+	held := min(index.held.Load(), link.held.Load())
+	return held, int(index.busy.Load() + link.busy.Load())
+}
+
+// startHeartbeat runs hb under a context that outlives the worker's, and returns the
+// shutdown func: it waits for the pools (so in-flight messages keep being reported as
+// in flight), then stops publishing and removes the key.
+func startHeartbeat(ctx context.Context, hb *migrate.Heartbeat, index, link *pool) (shutdown func()) {
+	hctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	done := make(chan struct{})
+	go func() { defer close(done); hb.Run(hctx) }()
+	return func() {
+		index.wait()
+		link.wait()
+		cancel()
+		<-done
+		hb.Remove(context.Background())
+	}
 }
 
 // startPools creates the two durable consumers (the stream must already exist) and
@@ -304,6 +355,8 @@ func (d *workerDeps) startPools(ctx context.Context) (index, link *pool, err err
 		return nil, nil, fmt.Errorf("create link consumer: %w", err)
 	}
 	index, link = newPool(d.concurrency, d.log, d.m), newPool(d.concurrency, d.log, d.m)
+	index.hold, link.hold = d.hold, d.hold
+	index.holdGen, link.holdGen = d.holdGen, d.holdGen
 	index.run(ctx, newConsumerRef(d.js, idx, recreate(idxCfg)),
 		func(wctx context.Context, msg jetstream.Msg) {
 			handle(wctx, d.log, d.m, d.js, d.locker, d.stream, d.embedder, d.stores, d.chunker, msg, d.dedupDistance)
@@ -347,25 +400,6 @@ func checkSchema(ctx context.Context, log *slog.Logger, st *store.Store) {
 	}
 	log.Warn("weaviate schema needs attention — indexing/search still work, but a `cortex reindex` / class rebuild is recommended",
 		"issues", len(problems))
-}
-
-// ensureSchemaWithRetry tries to create the schema, backing off while Weaviate
-// finishes booting. Gives up after ~30s.
-func ensureSchemaWithRetry(ctx context.Context, log *slog.Logger, st *store.Store) error {
-	const attempts = 15
-	var err error
-	for i := range attempts {
-		if err = st.EnsureSchema(ctx); err == nil {
-			return nil
-		}
-		log.Info("waiting for weaviate", "attempt", i+1, "err", err)
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(2 * time.Second):
-		}
-	}
-	return err
 }
 
 // handle dispatches by subject: fact-index events and conversation-summary

@@ -706,6 +706,7 @@ authenticate with `--token` / `CORTEX_AUTH_TOKEN`.
 | `cortex export -o backup.json` | Dump all memories (text + metadata, no vectors) to JSON. |
 | `cortex import backup.json` | Restore a dump into the target via its NATS ingest queue (worker re-embeds). Preserves ids/links (over an existing memory: earliest `createdAt` wins, `conversationId` never blanked); point `--server` at the target. See [scripts/prod-to-dev.sh](scripts/prod-to-dev.sh). |
 | `cortex reindex --yes` | Re-embed every memory through the worker (see below). |
+| `cortex migrate status` | Admin: schema-migration history, pending migrations, migration lock holder and whether writes are paused (migrations themselves run automatically at server start). |
 | `cortex migrate-mt [--yes]` | Migrate a non-MT store to multi-tenancy (one-shot; requires `CORTEX_MULTI_TENANT=true` on the server). |
 | `cortex users list \| get <u> \| add <u> [--role] \| delete <u> \| set-role <u> <role> \| reset-password <u>` | Manage users (multi-tenant mode; needs an **admin** `--token`). The break-glass path to fix accounts without the web UI. |
 | `cortex status` | Server health + store size (nats/weaviate/ollama/model/count). |
@@ -746,6 +747,35 @@ Point the **worker** at the new model first (`OLLAMA_MODEL` in `docker-compose.y
 then `docker compose up -d worker`), and make sure the CLI uses the same model,
 before running `reindex`. Every memory records which model embedded it — visible
 in `cortex list` and used by reindex to decide whether a rebuild is needed.
+
+## Schema migrations and upgrades
+
+Schema changes that Weaviate cannot apply in place (e.g. a property's tokenization)
+are handled by versioned **schema migrations** that run **automatically** when the
+server starts, before it serves. Nothing to do on upgrade: pull the new image and
+restart. A migration copies the affected classes with their stored vectors
+(**no re-embedding**) into a new versioned class and switches over atomically.
+Indexing pauses briefly while the data is copied (each worker finishes the message it
+is on, then stops fetching and NATS buffers; a write RPC like delete answers "maintenance, retry shortly"; reads keep
+working) — seconds for a typical personal store, roughly one second per 8,000
+objects — and resumes by itself. If the server is killed mid-migration, the next start
+resumes it. With several server replicas, one migrates and the others wait; workers
+wait until the schema is current.
+
+**Upgrade order:** stop or upgrade every worker and server replica before the new
+server boots. Older builds ignore the pause and cannot be detected, so a mixed fleet
+can lose writes during a migration. If a worker cannot go idle within 2 minutes, or a
+tenant is inactive, the migration aborts with a clear error and the server refuses to
+start; fix the cause and restart (nothing is half-applied).
+
+`cortex migrate status` (admin) shows the history, anything pending, and whether
+writes are currently paused.
+
+Migration #1 (`tags-field-tokenization`): classes become alias-backed
+(`Memory` is an alias of `Memory_v1`, ...) and the **tags filter becomes exact and
+case-sensitive** (it used to also match `Foo` and `foo-bar` when filtering by `foo`).
+Tag values are unchanged. Fresh installs are born in this shape and skip it.
+Developer docs: `docs/DESIGN.md` "Schema migrations".
 
 ## Multi-tenancy and migration (`cortex migrate-mt`)
 
@@ -1168,7 +1198,8 @@ internal/
   chunk/           token-bounded, overlapping text splitter (tiktoken, offline)
   recall/          recall-hook query logic (chunk sampling, merge, limit/cutoff) shared by the hook and PreviewRecall
   embed/           Ollama embeddings client
-  store/           Weaviate: schema, upsert, chunk-based gRPC search, links, delete
+  store/           Weaviate: schema, upsert, chunk-based gRPC search, links, delete; alias helpers, class copy/swap
+  migrate/         schema-migration framework (registry, runner, lock, maintenance mode)
   rpc/             Connect service impl, auth (token+JWT), login, JWT, client helper
 ui/                embedded Vue 3 SPA (Memories, Graph, Explore, Recall preview, Sessions, Namespaces, Tags, Duplicates, Trash, Preferences, Backup, Indexing, Status)
 testdata/          fake seed memories for a dev stack (cortex import format)

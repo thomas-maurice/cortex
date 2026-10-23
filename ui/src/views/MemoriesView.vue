@@ -109,8 +109,6 @@
       No memories found.
     </div>
 
-    <p v-if="filteredNote" class="text-xs text-muted-foreground">{{ filteredNote }}</p>
-
     <Card v-for="m in memories" :key="m.id">
       <CardContent class="py-4">
         <div class="flex items-start justify-between gap-3">
@@ -299,44 +297,10 @@ function handleError(e) {
   error.value = e.message || 'Request failed'
 }
 
-// Weaviate's `tags` is word-tokenized, so its tag filter is fuzzy (case/token
-// matches); the Tags view counts exact tags. We re-filter to exact,
-// case-sensitive equality so the list matches the Tags view count. Because the
-// fuzzy server page can contain non-matches, a fixed 50-row page could come back
-// short (or empty) even though exact matches exist further down: when filtering
-// shrank a FULL server page, re-ask with a doubled limit (the API has no offset),
-// bounded to MAX_ROUNDS, until the exact list fills a page or the server runs out.
+// The server's tag filter is exact and case-sensitive (`tags` uses field
+// tokenization since schema migration #1), so a page is fetched as-is.
 const PAGE = 50
-const MAX_ROUNDS = 10
-const SERVER_MAX = 10000
 const PAGE_SIZE = PAGE
-const filteredNote = ref('')
-
-function exactTagMatch(list) {
-  return activeTags.value.length
-    ? list.filter((m) => activeTags.value.every((t) => (m.tags || []).includes(t)))
-    : list
-}
-
-// fetchPage(limit) -> array of memories. Returns the exact-filtered page.
-async function fetchExact(fetchPage) {
-  filteredNote.value = ''
-  let limit = PAGE
-  for (let round = 0; round < MAX_ROUNDS; round++) {
-    const raw = await fetchPage(limit)
-    const exact = exactTagMatch(raw)
-    const serverExhausted = raw.length < limit
-    if (exact.length >= PAGE || serverExhausted || limit >= SERVER_MAX || !activeTags.value.length) {
-      if (raw.length > exact.length) {
-        filteredNote.value = `${raw.length - exact.length} fuzzy tag match(es) hidden: only exact, case-sensitive tags are shown.`
-      }
-      return exact.slice(0, PAGE)
-    }
-    limit = Math.min(limit * 2, SERVER_MAX)
-  }
-  filteredNote.value = 'Search depth limit reached: some matches may not be shown.'
-  return exactTagMatch(await fetchPage(limit)).slice(0, PAGE)
-}
 
 // reload restarts from the first page (filters changed / refresh); load keeps
 // the current page (used after edits and bulk deletes).
@@ -358,8 +322,6 @@ async function load(retry = false) {
   selected.value = new Set()
   try {
     if (staleActive.value) {
-      // The server filters tags exactly in stale mode: no client-side post-filter (it would break totals/pages).
-      filteredNote.value = ''
       const req = { namespace: namespace.value, limit: PAGE_SIZE, offset: offset.value, tags: activeTags.value, minAgeDays: STALE_MIN_AGE_DAYS, includePreferences: includePrefs.value, includeExpired: includeExpired.value }
       if (stale.value === 'never') {
         req.stale = StaleMode.NEVER_RECALLED
@@ -379,15 +341,11 @@ async function load(retry = false) {
     } else if (query.value.trim()) {
       // noReinforce: browsing in the UI must not count as a recall — only the
       // agent's (MCP) searches feed the living-memory usage signal.
-      memories.value = await fetchExact(async (limit) => {
-        const res = await memoryClient.search({ query: query.value, namespace: namespace.value, limit, tags: activeTags.value, noReinforce: true, includeExpired: includeExpired.value })
-        return res.hits.map((h) => ({ ...h.memory, _distance: h.distance, _match: h.match }))
-      })
+      const res = await memoryClient.search({ query: query.value, namespace: namespace.value, limit: PAGE, tags: activeTags.value, noReinforce: true, includeExpired: includeExpired.value })
+      memories.value = res.hits.map((h) => ({ ...h.memory, _distance: h.distance, _match: h.match }))
     } else {
-      memories.value = await fetchExact(async (limit) => {
-        const res = await memoryClient.list({ namespace: namespace.value, limit, tags: activeTags.value, includeExpired: includeExpired.value })
-        return res.memories
-      })
+      const res = await memoryClient.list({ namespace: namespace.value, limit: PAGE, tags: activeTags.value, includeExpired: includeExpired.value })
+      memories.value = res.memories
     }
   } catch (e) {
     if (staleActive.value && e instanceof ConnectError && e.code === Code.ResourceExhausted) {

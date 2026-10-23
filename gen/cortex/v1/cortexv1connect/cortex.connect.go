@@ -125,6 +125,9 @@ const (
 	MemoryServicePurgeTrashProcedure = "/cortex.v1.MemoryService/PurgeTrash"
 	// MemoryServiceMigrateMTProcedure is the fully-qualified name of the MemoryService's MigrateMT RPC.
 	MemoryServiceMigrateMTProcedure = "/cortex.v1.MemoryService/MigrateMT"
+	// MemoryServiceListMigrationsProcedure is the fully-qualified name of the MemoryService's
+	// ListMigrations RPC.
+	MemoryServiceListMigrationsProcedure = "/cortex.v1.MemoryService/ListMigrations"
 	// MemoryServiceBackupSelfProcedure is the fully-qualified name of the MemoryService's BackupSelf
 	// RPC.
 	MemoryServiceBackupSelfProcedure = "/cortex.v1.MemoryService/BackupSelf"
@@ -318,6 +321,11 @@ type MemoryServiceClient interface {
 	// off or if the classes are already MT (nothing to migrate). Safe to retry
 	// after a partial failure — re-import is upsert-by-id.
 	MigrateMT(context.Context, *connect.Request[v1.MigrateMTRequest]) (*connect.Response[v1.MigrateMTResponse], error)
+	// ListMigrations reports the Weaviate schema-migration history: every migration
+	// this server build knows, whether it has been applied to the store, and whether
+	// a migration run / maintenance mode is in progress. Admin only. Migrations run
+	// automatically at server start; this is the read-only view (`cortex migrate status`).
+	ListMigrations(context.Context, *connect.Request[v1.ListMigrationsRequest]) (*connect.Response[v1.ListMigrationsResponse], error)
 	// ---- Self-service backup (any authenticated user) ----
 	// BackupSelf returns a backup of the CALLER's OWN data — their tenant's
 	// memories and conversation summaries — as a downloadable file. Not
@@ -626,6 +634,12 @@ func NewMemoryServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(memoryServiceMethods.ByName("MigrateMT")),
 			connect.WithClientOptions(opts...),
 		),
+		listMigrations: connect.NewClient[v1.ListMigrationsRequest, v1.ListMigrationsResponse](
+			httpClient,
+			baseURL+MemoryServiceListMigrationsProcedure,
+			connect.WithSchema(memoryServiceMethods.ByName("ListMigrations")),
+			connect.WithClientOptions(opts...),
+		),
 		backupSelf: connect.NewClient[v1.BackupSelfRequest, v1.BackupSelfResponse](
 			httpClient,
 			baseURL+MemoryServiceBackupSelfProcedure,
@@ -782,6 +796,7 @@ type memoryServiceClient struct {
 	restoreFromTrash        *connect.Client[v1.RestoreFromTrashRequest, v1.RestoreFromTrashResponse]
 	purgeTrash              *connect.Client[v1.PurgeTrashRequest, v1.PurgeTrashResponse]
 	migrateMT               *connect.Client[v1.MigrateMTRequest, v1.MigrateMTResponse]
+	listMigrations          *connect.Client[v1.ListMigrationsRequest, v1.ListMigrationsResponse]
 	backupSelf              *connect.Client[v1.BackupSelfRequest, v1.BackupSelfResponse]
 	restoreSelf             *connect.Client[v1.RestoreSelfRequest, v1.RestoreSelfResponse]
 	backupAll               *connect.Client[v1.BackupAllRequest, v1.BackupAllResponse]
@@ -986,6 +1001,11 @@ func (c *memoryServiceClient) PurgeTrash(ctx context.Context, req *connect.Reque
 // MigrateMT calls cortex.v1.MemoryService.MigrateMT.
 func (c *memoryServiceClient) MigrateMT(ctx context.Context, req *connect.Request[v1.MigrateMTRequest]) (*connect.Response[v1.MigrateMTResponse], error) {
 	return c.migrateMT.CallUnary(ctx, req)
+}
+
+// ListMigrations calls cortex.v1.MemoryService.ListMigrations.
+func (c *memoryServiceClient) ListMigrations(ctx context.Context, req *connect.Request[v1.ListMigrationsRequest]) (*connect.Response[v1.ListMigrationsResponse], error) {
+	return c.listMigrations.CallUnary(ctx, req)
 }
 
 // BackupSelf calls cortex.v1.MemoryService.BackupSelf.
@@ -1219,6 +1239,11 @@ type MemoryServiceHandler interface {
 	// off or if the classes are already MT (nothing to migrate). Safe to retry
 	// after a partial failure — re-import is upsert-by-id.
 	MigrateMT(context.Context, *connect.Request[v1.MigrateMTRequest]) (*connect.Response[v1.MigrateMTResponse], error)
+	// ListMigrations reports the Weaviate schema-migration history: every migration
+	// this server build knows, whether it has been applied to the store, and whether
+	// a migration run / maintenance mode is in progress. Admin only. Migrations run
+	// automatically at server start; this is the read-only view (`cortex migrate status`).
+	ListMigrations(context.Context, *connect.Request[v1.ListMigrationsRequest]) (*connect.Response[v1.ListMigrationsResponse], error)
 	// ---- Self-service backup (any authenticated user) ----
 	// BackupSelf returns a backup of the CALLER's OWN data — their tenant's
 	// memories and conversation summaries — as a downloadable file. Not
@@ -1523,6 +1548,12 @@ func NewMemoryServiceHandler(svc MemoryServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(memoryServiceMethods.ByName("MigrateMT")),
 		connect.WithHandlerOptions(opts...),
 	)
+	memoryServiceListMigrationsHandler := connect.NewUnaryHandler(
+		MemoryServiceListMigrationsProcedure,
+		svc.ListMigrations,
+		connect.WithSchema(memoryServiceMethods.ByName("ListMigrations")),
+		connect.WithHandlerOptions(opts...),
+	)
 	memoryServiceBackupSelfHandler := connect.NewUnaryHandler(
 		MemoryServiceBackupSelfProcedure,
 		svc.BackupSelf,
@@ -1713,6 +1744,8 @@ func NewMemoryServiceHandler(svc MemoryServiceHandler, opts ...connect.HandlerOp
 			memoryServicePurgeTrashHandler.ServeHTTP(w, r)
 		case MemoryServiceMigrateMTProcedure:
 			memoryServiceMigrateMTHandler.ServeHTTP(w, r)
+		case MemoryServiceListMigrationsProcedure:
+			memoryServiceListMigrationsHandler.ServeHTTP(w, r)
 		case MemoryServiceBackupSelfProcedure:
 			memoryServiceBackupSelfHandler.ServeHTTP(w, r)
 		case MemoryServiceRestoreSelfProcedure:
@@ -1906,6 +1939,10 @@ func (UnimplementedMemoryServiceHandler) PurgeTrash(context.Context, *connect.Re
 
 func (UnimplementedMemoryServiceHandler) MigrateMT(context.Context, *connect.Request[v1.MigrateMTRequest]) (*connect.Response[v1.MigrateMTResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cortex.v1.MemoryService.MigrateMT is not implemented"))
+}
+
+func (UnimplementedMemoryServiceHandler) ListMigrations(context.Context, *connect.Request[v1.ListMigrationsRequest]) (*connect.Response[v1.ListMigrationsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cortex.v1.MemoryService.ListMigrations is not implemented"))
 }
 
 func (UnimplementedMemoryServiceHandler) BackupSelf(context.Context, *connect.Request[v1.BackupSelfRequest]) (*connect.Response[v1.BackupSelfResponse], error) {
