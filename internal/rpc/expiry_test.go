@@ -70,6 +70,15 @@ func TestSaveAndUpdateRejectBadExpiryBeforeAnyStoreAccess(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInvalidArgument, connectCode(t, err))
 
+	for name, req := range map[string]*cortexv1.SaveRequest{
+		"never_expires plus expires_in":  {Text: "x", NeverExpires: true, ExpiresIn: "1d"},
+		"never_expires plus valid_until": {Text: "x", NeverExpires: true, ValidUntil: timestamppb.New(time.Now().Add(time.Hour))},
+	} {
+		_, err := svc.Save(ctx, connect.NewRequest(req))
+		require.Error(t, err, name)
+		assert.Equal(t, connect.CodeInvalidArgument, connectCode(t, err), name)
+	}
+
 	id := uuid.NewString()
 	for name, req := range map[string]*cortexv1.UpdateMemoryRequest{
 		"bad expires_in":             {Id: id, Text: "x", ExpiresIn: "nope"},

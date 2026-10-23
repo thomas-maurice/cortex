@@ -485,12 +485,13 @@ func main() {
 // ---- memory_save ----
 
 type SaveIn struct {
-	Text       string   `json:"text" jsonschema:"the memory content to store; a self-contained note that captures the fact AND enough context to be understood on its own later. Can be as long as needed; strongly prefer Markdown formatting (headings, bullets, code fences) as the UI renders it as Markdown"`
-	Namespace  string   `json:"namespace,omitempty" jsonschema:"optional namespace to scope the memory (e.g. a project name); defaults to the current project's namespace (the MCP-derived default)"`
-	Tags       []string `json:"tags,omitempty" jsonschema:"optional free-form tags for later filtering"`
-	LinkTo     []string `json:"linkTo,omitempty" jsonschema:"optional IDs of related memories to bidirectionally link this new memory to (e.g. from a prior memory_search). Linking is queued and applied once both memories are indexed, so the targets do not need to be indexed yet — they just need to be real memory IDs that exist or are being saved"`
-	Supersedes []string `json:"supersedes,omitempty" jsonschema:"optional IDs of EXISTING memories this new memory replaces (e.g. the sources from a cortex_consolidate manifest that this merged memory absorbs); the server deletes them automatically once this memory is durably indexed and this memory inherits their links (no need to pass linkTo for them), so do not also call cortex_memory_delete on them. Only pass IDs you actually merged into this text"`
-	ExpiresIn  string   `json:"expiresIn,omitempty" jsonschema:"set for TIME-BOUND facts that stop being true after a while (a freeze until Friday, this week's focus): how long the memory stays valid, e.g. \"7d\" or \"36h\" (days or Go durations; max 10 years). After that it is no longer returned by search or recall. Omit for durable facts"`
+	Text         string   `json:"text" jsonschema:"the memory content to store; a self-contained note that captures the fact AND enough context to be understood on its own later. Can be as long as needed; strongly prefer Markdown formatting (headings, bullets, code fences) as the UI renders it as Markdown"`
+	Namespace    string   `json:"namespace,omitempty" jsonschema:"optional namespace to scope the memory (e.g. a project name); defaults to the current project's namespace (the MCP-derived default)"`
+	Tags         []string `json:"tags,omitempty" jsonschema:"optional free-form tags for later filtering"`
+	LinkTo       []string `json:"linkTo,omitempty" jsonschema:"optional IDs of related memories to bidirectionally link this new memory to (e.g. from a prior memory_search). Linking is queued and applied once both memories are indexed, so the targets do not need to be indexed yet — they just need to be real memory IDs that exist or are being saved"`
+	Supersedes   []string `json:"supersedes,omitempty" jsonschema:"optional IDs of EXISTING memories this new memory replaces (e.g. the sources from a cortex_consolidate manifest that this merged memory absorbs); the server deletes them automatically once this memory is durably indexed and this memory inherits their links (no need to pass linkTo for them), so do not also call cortex_memory_delete on them. Only pass IDs you actually merged into this text"`
+	ExpiresIn    string   `json:"expiresIn,omitempty" jsonschema:"set for TIME-BOUND facts that stop being true after a while (a freeze until Friday, this week's focus): how long the memory stays valid, e.g. \"7d\" or \"36h\" (days or Go durations; max 10 years). After that it is no longer returned by search or recall. Omit for durable facts"`
+	NeverExpires bool     `json:"neverExpires,omitempty" jsonschema:"set true when consolidating TIME-BOUND source memories (supersedes) into a PERMANENT fact: by default a merge whose sources ALL expire inherits the latest source expiry; this keeps the new memory permanent. Cannot be combined with expiresIn"`
 }
 
 type SaveOut struct {
@@ -512,6 +513,7 @@ func (d *deps) save(ctx context.Context, _ *mcp.CallToolRequest, in SaveIn) (*mc
 		LinkTo:         in.LinkTo,
 		Supersedes:     in.Supersedes,
 		ExpiresIn:      strings.TrimSpace(in.ExpiresIn),
+		NeverExpires:   in.NeverExpires,
 		Source:         d.source,
 		ConversationId: d.conversationID,
 	}))

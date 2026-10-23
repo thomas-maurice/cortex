@@ -506,7 +506,7 @@ The MCP server exposes these tools to Claude:
 
 | Tool | What it does |
 |------|--------------|
-| `cortex_memory_save` | Queue a memory for indexing. Args: `text`, `namespace?`, `tags?`, `expiresIn?` (e.g. `"7d"`, `"36h"` — set it for TIME-BOUND facts; the memory stops being recalled once it lapses), `linkTo?` (ids to bidirectionally link this memory to — queued and applied once both ends are indexed, so targets need not exist yet), `supersedes?` (ids this memory replaces — the worker trashes them once this one is indexed; this memory inherits their links). Returns its `id`. |
+| `cortex_memory_save` | Queue a memory for indexing. Args: `text`, `namespace?`, `tags?`, `expiresIn?` (e.g. `"7d"`, `"36h"` — set it for TIME-BOUND facts; the memory stops being recalled once it lapses), `neverExpires?` (with `supersedes`: keep the merged memory permanent even if every source expires; otherwise it inherits the latest source expiry), `linkTo?` (ids to bidirectionally link this memory to — queued and applied once both ends are indexed, so targets need not exist yet), `supersedes?` (ids this memory replaces — the worker trashes them once this one is indexed; this memory inherits their links). Returns its `id`. |
 | `cortex_memory_search` | **Hybrid** search (BM25 keyword + vector, blended by `SEARCH_ALPHA`, default 0.5) so exact tokens/codenames resolve, not just semantic matches. Args: `query`, `namespace?` (`*` = all namespaces), `limit?`, `tags?` (must have all), `excludeTags?`, `maxDistance?` (relevance cutoff), `includeExpired?` (also return expired memories; hidden by default). Each hit includes its `validUntil`/`expired` when time-bound; its `id`, any `linkedIds`, `matched` (for long, chunk-indexed memories: the excerpt that matched the query; omitted when it is the whole text), and any `dupCandidates` (flagged likely-duplicates — the output hints when consolidation would help). When **living memory** is enabled (`RERANK_WEIGHT`>0, off by default), search also re-orders results by recency-decayed usage and reinforces its top hit(s) — frequently-recalled memories float up over time. See [`docs/DESIGN.md`](docs/DESIGN.md#living-memory--decay--reinforcement-opt-in). |
 | `cortex_tags_list` | **Read-only** tag listing (`namespace?`): each tag in use with its memory count, most used first. Call it before saving to REUSE an existing tag instead of inventing `k8s`/`kubernetes` variants. Rename/delete are intentionally not exposed over MCP (use the CLI/UI). |
 | `cortex_memory_get` | Fetch ONE memory by `id`, full text (follow `linkedIds` from search hits, or ids from `cortex_consolidate` / `cortex_review_candidates`). Same shape as a search hit; counts as delivered for session dedup so later searches stub it; does not reinforce. |
@@ -693,7 +693,7 @@ authenticate with `--token` / `CORTEX_AUTH_TOKEN`.
 
 | Command | What it does |
 |---------|--------------|
-| `cortex save "<text>" -n <ns> -t tag [-S <id>] [--expires 7d]` | Queue a memory (server publishes to NATS). `-S/--supersedes` lists ids this memory replaces (deleted after indexing). `--expires` (`7d`, `36h`) makes it a time-bound fact that stops being recalled after that long. |
+| `cortex save "<text>" -n <ns> -t tag [-S <id>] [--expires 7d]` | Queue a memory (server publishes to NATS). `-S/--supersedes` lists ids this memory replaces (deleted after indexing). `--expires` (`7d`, `36h`) makes it a time-bound fact that stops being recalled after that long. `--no-expiry` keeps a merge (`-S`) permanent even when every superseded source expires. |
 | `cortex edit <id> ["<text>"] [--expires 7d \| --no-expiry]` | Edit a memory's text (re-embedded) and/or its expiry. The text may be omitted when only the expiry changes: that is applied directly, with no re-embedding. |
 | `cortex list -n '*' [-t tag] [-x tag] [--include-expired]` | List memories newest-first; filter by namespace/tags. Expired memories are hidden unless `--include-expired`. |
 | `cortex get <id> [--json]` | Show one memory by id (incl. linked ids); `--json` uses the `export` record shape. |
@@ -841,7 +841,10 @@ true. Give them an expiry:
 
 - **Save:** MCP `expiresIn: "7d"`, CLI `cortex save --expires 7d`, the UI's expiry
   picker, or the API's `valid_until` (absolute) / `expires_in` (relative; `7d`, `36h`;
-  must be > 0 and at most 10 years; exactly one of the two).
+  must be > 0 and at most 10 years; exactly one of the two). When a save supersedes
+  memories that ALL expire and sets no expiry, the merged memory inherits the latest
+  source expiry; opt out with MCP `neverExpires: true`, CLI `--no-expiry` or API
+  `never_expires` (exclusive with the other two).
 - **Change:** `cortex edit <id> --expires 3d` / `--no-expiry`, or the inspector. An
   expiry-only change is a metadata merge — nothing is re-embedded.
 - **Effect:** once `valid_until` has passed the memory is hidden from Search, List,

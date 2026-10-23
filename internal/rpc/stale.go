@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"hash/fnv"
 	"slices"
 	"strings"
 	"sync"
@@ -31,8 +30,9 @@ const (
 	hoursPerDay        = 24
 	maxRecordUseIDs    = 100
 	recordUseWorkers   = 8
-	useLockStripes     = 64
-	maxStaleDays       = 36500 // 100 years; keeps days*24h inside time.Duration
+	recordUseLockWait  = 2 * time.Second // best-effort signal: never queue callers behind a busy lock
+	recordUseDeadline  = 5 * time.Second // whole-call bound; remaining ids are skipped
+	maxStaleDays       = 36500           // 100 years; keeps days*24h inside time.Duration
 )
 
 // listStale serves List in stale-review mode (see store.ListStale).
@@ -181,23 +181,17 @@ func staleExcludeTags(req *cortexv1.ListRequest) []string {
 	return append(slices.Clone(excl), preferenceTag)
 }
 
-func (s *Service) useLock(ctx context.Context, id string) *sync.Mutex {
-	h := fnv.New32a()
-	_, _ = h.Write([]byte(gateKey(ctx) + "/" + id))
-	return &s.useLocks[h.Sum32()%useLockStripes]
-}
-
 // RecordUse notes that memories were delivered into an agent's context: useCount
 // += 1, lastUsedAt = now, as a metadata-only merge (no re-embed). Best-effort by
 // design: unknown ids (deleted, other tenant) are skipped, per-id failures are
 // logged and do not fail the call.
 //
 // Lost increments: Weaviate has no atomic increment, so each id is a
-// read-modify-write guarded by an in-process striped mutex (no NATS lock; a
-// server round trip per delivery would cost more than the signal is worth).
-// Across several server replicas two concurrent deliveries of one memory could
-// lose a count — harmless, since stale review only needs "used at all" and
-// "last used", and lastUsedAt is stamped either way.
+// read-modify-write under the shared per-memory NATS lock (the worker's key
+// scheme), which is correct across server replicas. The wait is bounded
+// (recordUseLockWait): an id whose lock cannot be taken in time is skipped (debug
+// log, not counted as recorded) rather than blocking the caller — this is a usage
+// signal, not data of record.
 func (s *Service) RecordUse(ctx context.Context, req *connect.Request[cortexv1.RecordUseRequest]) (*connect.Response[cortexv1.RecordUseResponse], error) {
 	ids, err := normalizeMemoryIDs("ids", req.Msg.GetIds())
 	if err != nil {
@@ -221,6 +215,10 @@ func (s *Service) RecordUse(ctx context.Context, req *connect.Request[cortexv1.R
 	if err != nil {
 		return nil, err
 	}
+	// Usage is a best-effort signal: bound the whole call so lock contention
+	// can't make one request take tens of seconds (ids left over are skipped).
+	ctx, cancel := context.WithTimeout(ctx, recordUseDeadline)
+	defer cancel()
 	var (
 		wg       sync.WaitGroup
 		recorded atomic.Int32
@@ -228,14 +226,21 @@ func (s *Service) RecordUse(ctx context.Context, req *connect.Request[cortexv1.R
 	sem := make(chan struct{}, recordUseWorkers)
 	now := time.Now().UTC()
 	for _, id := range uniq {
+		if ctx.Err() != nil {
+			break
+		}
 		sem <- struct{}{}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
-			mu := s.useLock(ctx, id)
-			mu.Lock()
-			defer mu.Unlock()
+			lctx, unlock, err := s.lockMemoriesWait(ctx, recordUseLockWait, id)
+			if err != nil {
+				s.log.Debug("record-use: lock busy or unavailable, skipping", "id", id, "source", req.Msg.GetSource(), "err", err)
+				return
+			}
+			defer unlock()
+			ctx := lctx
 			rec, ok, err := ts.Get(ctx, id)
 			if err != nil {
 				s.log.Warn("record-use: get failed, skipping", "id", id, "source", req.Msg.GetSource(), "err", err)

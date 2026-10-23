@@ -2,6 +2,7 @@ package rpc
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -127,6 +128,11 @@ func TestStaleAndDeleteManyIntegration(t *testing.T) {
 	})
 
 	t.Run("RecordUse", func(t *testing.T) {
+		// Two "replicas" share one lock service (the seam stands in for the NATS dlock).
+		locks := &sharedMemLocks{held: map[string]chan struct{}{}}
+		svc.memLocks = locks.lock
+		defer func() { svc.memLocks = nil }()
+		svc2 := &Service{cfg: svc.cfg, store: st, log: slog.Default(), memLocks: locks.lock}
 		use := func(c context.Context, ids ...string) int32 {
 			r, err := svc.RecordUse(c, connect.NewRequest(&cortexv1.RecordUseRequest{Ids: ids, Source: "test"}))
 			require.NoError(t, err)
@@ -144,16 +150,34 @@ func TestStaleAndDeleteManyIntegration(t *testing.T) {
 		require.NoError(t, err)
 		assert.Zero(t, bobRec.UseCount, "alice must not be able to touch bob's usage")
 
-		// Concurrent deliveries of one memory must not lose increments (per-id lock).
+		// Concurrent deliveries of one memory through TWO replicas must not lose
+		// increments (shared per-memory lock, not an in-process mutex).
 		var wg sync.WaitGroup
-		for range 12 {
+		for i := range 12 {
 			wg.Add(1)
-			go func() { defer wg.Done(); use(alice, recent) }()
+			go func() {
+				defer wg.Done()
+				s := svc
+				if i%2 == 1 {
+					s = svc2
+				}
+				_, err := s.RecordUse(alice, connect.NewRequest(&cortexv1.RecordUseRequest{Ids: []string{recent}}))
+				assert.NoError(t, err)
+			}()
 		}
 		wg.Wait()
 		final, _, err := ta.Get(ctx, recent)
 		require.NoError(t, err)
 		assert.Equal(t, after.UseCount+12, final.UseCount)
+
+		// A lock that cannot be taken is skipped, not waited on and not an error.
+		svc.memLocks = func(context.Context, string, []string) (context.Context, func(), error) {
+			return nil, nil, errors.New("busy")
+		}
+		busyResp, err := svc.RecordUse(alice, connect.NewRequest(&cortexv1.RecordUseRequest{Ids: []string{recent}}))
+		require.NoError(t, err)
+		assert.Zero(t, busyResp.Msg.Recorded)
+		svc.memLocks = locks.lock
 
 		// Use takes a never-used memory out of the stale list.
 		assert.Contains(t, idsOf(list(alice, &cortexv1.ListRequest{Stale: cortexv1.StaleMode_STALE_MODE_NEVER_RECALLED})), never)
@@ -243,4 +267,36 @@ func TestDeleteManyRejectsBadReason(t *testing.T) {
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 	_, err = svc.RecordUse(context.Background(), connect.NewRequest(&cortexv1.RecordUseRequest{Ids: make([]string, maxRecordUseIDs+1)}))
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+}
+
+// sharedMemLocks is an in-memory stand-in for the NATS per-memory lock, shared by
+// several Service instances to model replicas.
+type sharedMemLocks struct {
+	mu   sync.Mutex
+	held map[string]chan struct{}
+}
+
+func (l *sharedMemLocks) lock(ctx context.Context, tenant string, ids []string) (context.Context, func(), error) {
+	var taken []string
+	for _, id := range ids {
+		k := tenant + "/" + id
+		for {
+			l.mu.Lock()
+			if _, busy := l.held[k]; !busy {
+				l.held[k] = make(chan struct{})
+				l.mu.Unlock()
+				break
+			}
+			l.mu.Unlock()
+			time.Sleep(time.Millisecond)
+		}
+		taken = append(taken, k)
+	}
+	return ctx, func() {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		for _, k := range taken {
+			delete(l.held, k)
+		}
+	}, nil
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"time"
 
 	"connectrpc.com/connect"
 
@@ -22,6 +23,13 @@ import (
 // tenant is the authenticated user id ("" when there is no identity), matching the
 // UserID the worker reads off the queue payload.
 func (s *Service) lockMemories(ctx context.Context, ids ...string) (context.Context, func(), error) {
+	return s.lockMemoriesWait(ctx, 0, ids...)
+}
+
+// lockMemoriesWait is lockMemories with a bounded wait (wait <= 0 means the
+// locker's full default). Best-effort callers (RecordUse) use a short wait and
+// skip on failure instead of queueing behind a long holder.
+func (s *Service) lockMemoriesWait(ctx context.Context, wait time.Duration, ids ...string) (context.Context, func(), error) {
 	if s.memLocks != nil {
 		return s.memLocks(ctx, gateKey(ctx), ids)
 	}
@@ -34,7 +42,10 @@ func (s *Service) lockMemories(ctx context.Context, ids ...string) (context.Cont
 	for i, id := range ids {
 		keys[i] = dlock.Key("mem", tenant, id)
 	}
-	hctx, release, err := l.AcquireAll(ctx, keys, l.Wait())
+	if wait <= 0 {
+		wait = l.Wait()
+	}
+	hctx, release, err := l.AcquireAll(ctx, keys, wait)
 	if err != nil {
 		return nil, nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("could not lock memories (busy, retry): %w", err))
 	}

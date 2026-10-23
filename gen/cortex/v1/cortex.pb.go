@@ -346,8 +346,14 @@ type SaveRequest struct {
 	// Optional expiry for a time-bound fact: either an absolute valid_until or a
 	// relative expires_in ("7d", "36h"; days supported; > 0 and <= 10 years), not both.
 	// valid_until must be in the future.
-	ValidUntil    *timestamppb.Timestamp `protobuf:"bytes,20,opt,name=valid_until,json=validUntil,proto3" json:"valid_until,omitempty"`
-	ExpiresIn     string                 `protobuf:"bytes,21,opt,name=expires_in,json=expiresIn,proto3" json:"expires_in,omitempty"`
+	ValidUntil *timestamppb.Timestamp `protobuf:"bytes,20,opt,name=valid_until,json=validUntil,proto3" json:"valid_until,omitempty"`
+	ExpiresIn  string                 `protobuf:"bytes,21,opt,name=expires_in,json=expiresIn,proto3" json:"expires_in,omitempty"`
+	// never_expires explicitly chooses "no expiry" for this memory. It matters when
+	// supersedes is set: if EVERY superseded source expires and no expiry is given,
+	// the worker makes the merged memory inherit the latest source expiry; this flag
+	// opts out so consolidating time-bound sources into a permanent fact works.
+	// Mutually exclusive with valid_until / expires_in. One-shot, not persisted.
+	NeverExpires  bool `protobuf:"varint,22,opt,name=never_expires,json=neverExpires,proto3" json:"never_expires,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -443,6 +449,13 @@ func (x *SaveRequest) GetExpiresIn() string {
 		return x.ExpiresIn
 	}
 	return ""
+}
+
+func (x *SaveRequest) GetNeverExpires() bool {
+	if x != nil {
+		return x.NeverExpires
+	}
+	return false
 }
 
 type SaveResponse struct {
@@ -7754,7 +7767,7 @@ const file_cortex_v1_cortex_proto_rawDesc = "" +
 	"validUntil\x12\x1b\n" +
 	"\tuse_count\x18\x1e \x01(\x05R\buseCount\x12<\n" +
 	"\flast_used_at\x18\x1f \x01(\v2\x1a.google.protobuf.TimestampR\n" +
-	"lastUsedAt\"\xa9\x02\n" +
+	"lastUsedAt\"\xce\x02\n" +
 	"\vSaveRequest\x12\x12\n" +
 	"\x04text\x18\x01 \x01(\tR\x04text\x12\x1c\n" +
 	"\tnamespace\x18\x02 \x01(\tR\tnamespace\x12\x12\n" +
@@ -7768,7 +7781,8 @@ const file_cortex_v1_cortex_proto_rawDesc = "" +
 	"\vvalid_until\x18\x14 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
 	"validUntil\x12\x1d\n" +
 	"\n" +
-	"expires_in\x18\x15 \x01(\tR\texpiresIn\"6\n" +
+	"expires_in\x18\x15 \x01(\tR\texpiresIn\x12#\n" +
+	"\rnever_expires\x18\x16 \x01(\bR\fneverExpires\"6\n" +
 	"\fSaveResponse\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x16\n" +
 	"\x06status\x18\x02 \x01(\tR\x06status\"\x96\x02\n" +

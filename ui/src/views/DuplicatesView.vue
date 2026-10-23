@@ -90,7 +90,7 @@
           </p>
           <p v-if="expiredSides" class="text-sm text-amber-600 dark:text-amber-400">
             {{ expiredSides === 2 ? 'Both originals are' : 'One of the originals is' }} already expired (hidden from search and recall).
-            <template v-if="expiredSides === 2">Unless you pick a future expiry date below, the merged memory inherits the later, already lapsed expiry.</template>
+            <template v-if="expiredSides === 2">Pick a future expiry date or "Never expires" below; the merged memory no longer inherits the lapsed expiry.</template>
             <template v-else>The merged memory only expires if both originals do; check the expiry below.</template>
           </p>
           <Textarea v-model="draft.text" rows="12" placeholder="Merged memory text…" />
@@ -101,7 +101,7 @@
           <ExpiryPicker v-model:model="draftExpiry" />
           <p class="text-xs text-muted-foreground">
             Prefilled from the originals: the merged memory expires only if both do (at the later date). Choosing
-            "Never expires" while both originals expire still inherits the later expiry.
+            "Never expires" keeps it permanent even when both originals expire.
           </p>
         </div>
         <DialogFooter>
@@ -271,6 +271,8 @@ async function saveMerge() {
       tags,
       supersedes: draft.value.supersedes,
       ...exp,
+      // An explicit "never expires" must beat the worker's expiry inheritance.
+      neverExpires: draftExpiry.value.preset === 'none',
     })
     mergeOpen.value = false
     // The originals stay live until the worker indexes the merge, so a reload

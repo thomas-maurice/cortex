@@ -61,7 +61,8 @@ function untilMs(m) {
 
 // Expiry the merged memory should start with, mirroring the worker's rule
 // (internal/merge.InheritedExpiry): only when BOTH originals expire does the merge
-// expire, at the LATER of the two; if either is permanent it stays permanent.
+// expire, at the LATER of the two; if either is permanent it stays permanent. An
+// explicit "never" in the dialog is sent as never_expires and skips the inheritance.
 // Returns { model, expiredSides } where model is an ExpiryPicker model and
 // expiredSides counts originals whose expiry has already passed. A latest expiry
 // already in the past cannot be a picker date (must be in the future), so it

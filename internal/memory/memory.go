@@ -138,6 +138,11 @@ type Record struct {
 	// (Save, replace_tags edits, import/restore, dead-letter retry of those) leave
 	// it false.
 	KeepTags bool `json:"keepTags,omitempty"`
+	// NeverExpires (NATS payload only, never persisted) is the Save caller's
+	// explicit "no expiry": the worker then skips the supersedes expiry inheritance
+	// (merge.InheritedExpiry) so a permanent merge of time-bound sources stays
+	// permanent. Old messages decode to false (inheritance as before).
+	NeverExpires bool `json:"neverExpires,omitempty"`
 
 	// UserID is the tenant this record belongs to (NATS payload only; not a Weaviate property).
 	UserID string `json:"userId,omitempty"`

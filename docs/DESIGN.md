@@ -179,9 +179,13 @@ trashed): when the merged memory has no expiry and EVERY source has one, it gets
 source expiry via `SetValidUntil`; one permanent source keeps it permanent; a memory that
 already has an expiry keeps it; and if a source is already missing (an interrupted earlier
 attempt, or a bogus id) nothing is inherited, so a redelivery cannot turn a permanent merge
-into an expiring one. `MergeInto` never changes the kept memory's expiry. A Save cannot
-express an explicit "never expires" against that rule, so it is always inherited when all
-sources expire. The Duplicates merge dialog prefills the same value.
+into an expiring one. `MergeInto` never changes the kept memory's expiry. An explicit
+"never expires" is `SaveRequest.never_expires` (NATS-only `Record.NeverExpires`, old messages
+default false): the worker then skips the inheritance, so consolidating time-bound sources
+into a permanent fact works. It is mutually exclusive with `valid_until`/`expires_in`
+(InvalidArgument). The Duplicates merge dialog prefills the inherited value and sends
+`never_expires` when its picker is on "Never expires"; MCP `neverExpires`, CLI
+`cortex save --no-expiry`.
 
 **Locking of merges.** The server shares the worker's per-memory lock scheme (same KV
 bucket `dlock.DefaultBucket`, `dlock.Key("mem", tenant, id)`, `Service.lockMemories`, the ONE server-side
@@ -476,10 +480,11 @@ integration test), which is why server-side merges need no KV lock.
 | `useCount`, `lastUsedAt` | server `RecordUse` (merge; actual-use tracking for stale review, independent of reinforcement) | never writes on an existing memory (a CREATE from import/restore carries them); the merge carry-over (`internal/merge`) sums them onto the survivor, like `accessCount` |
 | `notDuplicateOf` | server `DismissDuplicate` (merge) | never writes |
 
-`RecordUse` read-modify-writes `useCount` under an in-process per-(tenant,id) striped
-mutex, not the NATS lock: a lock round trip per delivery would cost more than the signal
-is worth, and with several SERVER replicas a concurrent pair can lose a count — harmless,
-because stale review only needs "used at all" and "last used". Usage tracking has a
+`RecordUse` read-modify-writes `useCount` under the shared per-memory NATS lock
+(`lockMemories`, same `mem/<tenant>/<id>` key as the worker), so replicas do not lose
+counts. The wait is bounded (2s per id): if the lock cannot be taken the id is skipped
+(debug log, not counted in `recorded`) because this is a best-effort usage signal that
+must never block callers for long. Usage tracking has a
 server-wide epoch (`usage_tracking_since` in the `cortex_meta` KV bucket, create-once at
 server start): usage before it was invisible, so never-used memories are judged from
 `max(createdAt, epoch)`.

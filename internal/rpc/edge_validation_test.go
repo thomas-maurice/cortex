@@ -138,6 +138,22 @@ func TestSaveQueuesTrimmedSupersedes(t *testing.T) {
 	assert.Equal(t, []string{id}, rec.Supersedes)
 }
 
+// never_expires must travel on the index payload: the worker is the one that
+// decides whether to inherit a source expiry.
+func TestSaveQueuesNeverExpires(t *testing.T) {
+	svc, _ := edgeTestService(t)
+	ctx := context.Background()
+	_, err := svc.Save(ctx, connect.NewRequest(&cortexv1.SaveRequest{Text: "permanent", Supersedes: []string{uuid.NewString()}, NeverExpires: true}))
+	require.NoError(t, err)
+	st, err := svc.js.Stream(ctx, memory.StreamName)
+	require.NoError(t, err)
+	raw, err := st.GetLastMsgForSubject(ctx, memory.SubjectIndex)
+	require.NoError(t, err)
+	var rec memory.Record
+	require.NoError(t, json.Unmarshal(raw.Data, &rec))
+	assert.True(t, rec.NeverExpires)
+}
+
 // uuid.Parse accepts several spellings of one id; they must all be stored in the
 // canonical form, otherwise the same memory could be referenced by ids that
 // never compare equal (and a self-link would slip past the check).
