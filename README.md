@@ -964,12 +964,14 @@ The runtime image is distroless (no wget/curl), so the compose healthcheck runs 
 | `cortex_rpc_requests_total{procedure,code}` | server | `code` is `ok` or a Connect code |
 | `cortex_rpc_duration_seconds{procedure}` | server | histogram |
 | `cortex_index_queue_pending` | server | JetStream index consumer backlog, read at scrape time |
+| `cortex_queue_oldest_message_age_seconds` | server | age of the oldest message in the `MEMORY` queue; approaching `QUEUE_MAX_AGE` means unconsumed messages are about to be dropped |
 | `cortex_dead_letters` | server | dead-lettered messages held in the stream |
 | `cortex_worker_messages_total{subject_kind,outcome}` | worker | kind `index\|summary\|link`; outcome `ack\|retry\|dead\|term\|stale` (`stale` = acked and skipped because a newer version of that memory was already stored) |
 | `cortex_embed_duration_seconds` / `cortex_embed_errors_total` | worker | Ollama embed latency (retries included) / failures |
 | `cortex_index_duration_seconds` | worker | full index-message handling |
 | `cortex_lock_infra_errors_total` / `cortex_lock_wait_seconds` | worker | lock-bucket (NATS KV) errors other than contention (each is repaired and retried) / time to acquire one per-id lock |
-| `cortex_worker_fetch_errors_total` | worker | failed JetStream pulls. Worker `/readyz` fails once pulls have failed continuously for 30s. A wiped stream is re-ensured (with its consumers) automatically; a consumer deleted while the stream still holds messages is NOT recreated (see "Scaling the worker") |
+| `cortex_worker_consumer_recreated_total` | worker | durable consumers re-created after going missing (messages published meanwhile were discarded; also logged at Error) |
+| `cortex_worker_fetch_errors_total` | worker | failed JetStream pulls. Worker `/readyz` fails once pulls have failed continuously for 30s. A wiped stream or deleted consumer is re-ensured automatically (see "Scaling the worker") |
 | `cortex_worker_hold_timeouts_total` | worker | critical sections cut off by the lock hold deadline (the message is retried) |
 
 ## Scaling the worker
@@ -989,16 +991,46 @@ older edit can never overwrite a newer one (even across a recreated stream), and
 fields it owns (never links, reinforcement counters or not-duplicate decisions).
 Details and the field-ownership table: [docs/DESIGN.md](docs/DESIGN.md#horizontal-scaling-worker-replicas).
 
-Deleted consumer: the `MEMORY` stream keeps every message ever published, so a
-recreated durable consumer with the default delivery policy would replay the whole
-history (re-embedding every memory, re-running every link). If the `indexer` or
-`linker` consumer is deleted while the stream still holds messages, the worker does
-NOT recreate it: it logs an error, counts `cortex_worker_fetch_errors_total` and goes
-unready on `/readyz`. Recreate it deliberately with the worker's settings (explicit
-ack, AckWait 30s, `MaxDeliver` 10 for `indexer` / 50 for `linker`, filter subjects
-`memory.index`+`memory.summary` / `memory.link`) and an explicit start, either
-new-only or from the first unprocessed stream sequence; then the worker resumes
-(a wiped stream, with nothing to replay, is recovered automatically).
+Deleted consumer: `MEMORY` retains by **interest**, so acked history is gone and a
+recreated durable consumer cannot replay anything. The worker therefore recreates a
+deleted `indexer` / `linker` (and the stream, if wiped) by itself. Caveat: messages
+published while a consumer is absent are discarded by JetStream (nobody was
+interested), so keep that window short; the worker repairs it within about a second.
+Only a legacy, not yet migrated stream (see below) is guarded: there the worker does
+not recreate a consumer while the stream holds messages.
+
+## NATS retention (queue and dead letters)
+
+Two streams, both file-backed:
+
+- `MEMORY` (subjects `memory.index`, `memory.summary`, `memory.link`) is a work
+  queue with **InterestPolicy** retention: a message is deleted once every durable
+  consumer whose filter matches it (`indexer`: index+summary, `linker`: link) has
+  acked it, so disk use tracks the backlog, not history. `QUEUE_MAX_AGE` (default
+  `168h`, `0` = no cap) is a safety net: a message nobody acked within it is
+  **dropped**, so keep it well above any realistic worker outage.
+- `MEMORY_DEAD` (subject `deadletter.memory`) holds dead letters until
+  `DEAD_LETTER_MAX_AGE` (default `720h` = 30 days, `0` = keep) and is capped at 10 000
+  messages / 512 MiB (oldest dropped). `cortex dead`, requeue and purge use it.
+
+Both variables are Go durations parsed strictly (`30d` is an error: use `720h`; an
+invalid value stops the server/worker) and must have the same value on server and
+worker (each applies them at startup).
+
+Automatic migration: on startup, server and workers convert an old `MEMORY` stream
+(unbounded LimitsPolicy; JetStream cannot change retention in place). The old stream
+is only replaced once both consumers have nothing pending or unacked; its dead
+letters are copied to `MEMORY_DEAD` first (idempotent), then `MEMORY` and the
+consumers are recreated. If the workers are still behind, nothing is touched: the
+stream keeps serving, a retry runs every 30s (logged as `MEMORY stream migration
+deferred`) and it completes once the backlog drains. A KV lock (`cortex_migrations`)
+makes concurrent replicas safe. During the final seconds of the migration publishes
+fail (the client sees an error and retries) rather than being lost. Upgrade the
+server and ALL workers together: after the migration an old binary cannot start
+(retention is immutable) and an old worker's dead-letter publish fails. Rolling back
+is not supported without re-creating the old LimitsPolicy `MEMORY` stream by hand;
+roll forward. Watch `cortex_queue_oldest_message_age_seconds`: approaching
+`QUEUE_MAX_AGE` means workers are stuck and messages are about to be dropped.
 
 Upgrade notes: a `cortex_locks` bucket created by a pre-release build with memory
 storage must be deleted once (`nats kv del cortex_locks`), because JetStream cannot

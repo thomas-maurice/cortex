@@ -33,10 +33,12 @@ type pool struct {
 
 // consumerRef holds the pool's consumer and can re-create it after a NATS wipe.
 // ensure must (re)create the stream and consumer with the startup configuration.
-// Recreation is only done when streamEmptyOrGone: a recreated durable consumer
-// replays the whole stream (MEMORY keeps every message ever published), which would
-// re-embed every memory and re-run every link op, so a consumer deleted while the
-// stream still holds messages is NOT recreated automatically.
+// Recreation is only done when recreateSafe. On the interest-retention MEMORY stream
+// it always is: acked history is gone, and the messages a deleted consumer still
+// owed are removed with it, so a new consumer cannot replay anything. A LEGACY
+// (LimitsPolicy, not yet migrated) stream keeps every message ever published, so a
+// consumer recreated there would re-embed every memory; it is not recreated while
+// the stream holds messages.
 type consumerRef struct {
 	js     jetstream.JetStream
 	mu     sync.Mutex
@@ -49,14 +51,14 @@ func newConsumerRef(js jetstream.JetStream, c jetstream.Consumer, ensure func(ct
 	return &consumerRef{js: js, cons: c, ensure: ensure}
 }
 
-// streamEmptyOrGone reports whether recreating a consumer is harmless: the stream
-// is gone or holds no messages (nothing to replay).
-func streamEmptyOrGone(ctx context.Context, js jetstream.JetStream) bool {
+// recreateSafe reports whether recreating a consumer is harmless: the stream is
+// gone, holds no messages, or retains by interest (nothing acked is kept).
+func recreateSafe(ctx context.Context, js jetstream.JetStream) bool {
 	info, err := streamInfo(ctx, js)
 	if errors.Is(err, jetstream.ErrStreamNotFound) {
 		return true
 	}
-	return err == nil && info.State.Msgs == 0
+	return err == nil && (info.Config.Retention != jetstream.LimitsPolicy || info.State.Msgs == 0)
 }
 
 func (r *consumerRef) get() jetstream.Consumer {
@@ -121,18 +123,18 @@ func (h *fetchHealth) err(maxAge time.Duration) error {
 }
 
 // handleGone deals with a consumer/stream that no longer exists: recreate it when
-// that is harmless (stream gone or empty), otherwise leave it, shout (throttled)
+// that is harmless (see recreateSafe), otherwise leave it, shout (throttled)
 // and let fetchHealth turn /readyz unready so the operator notices.
 func (p *pool) handleGone(ctx context.Context, ref *consumerRef, bad jetstream.Consumer) {
-	if streamEmptyOrGone(ctx, ref.js) {
+	if recreateSafe(ctx, ref.js) {
 		if err := ref.recreate(ctx, bad); err != nil {
 			p.log.Warn("consumer re-create failed, will retry", "err", err)
 		}
 		return
 	}
 	if throttled(&p.lastGone, fetchWarnEvery) {
-		p.log.Error("durable consumer is missing but the stream still holds messages; NOT recreating it " +
-			"(a new consumer would replay the entire stream). Recreate it deliberately, see docs/DESIGN.md")
+		p.log.Error("durable consumer is missing but the legacy (unmigrated) stream still holds messages; NOT recreating it " +
+			"(a new consumer would replay the entire stream). Let the stream migration finish or recreate it deliberately, see docs/DESIGN.md")
 	}
 }
 

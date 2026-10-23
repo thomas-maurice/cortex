@@ -28,20 +28,6 @@ func Connect(url string) (*nats.Conn, jetstream.JetStream, error) {
 	return nc, js, nil
 }
 
-// EnsureStream creates (or updates) the MEMORY stream covering memory.> subjects.
-func EnsureStream(ctx context.Context, js jetstream.JetStream) error {
-	_, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
-		Name:        memory.StreamName,
-		Description: "Cortex second-brain memory index events",
-		Subjects:    []string{memory.SubjectAll},
-		Storage:     jetstream.FileStorage,
-	})
-	if err != nil {
-		return fmt.Errorf("ensure stream: %w", err)
-	}
-	return nil
-}
-
 // tenantFromContext extracts the UserID from the context identity, falling back
 // to the empty string if no identity is set (single-user / flag-off mode). The
 // UserID is the ONLY source of the tenant on the NATS payload — it is never read
@@ -108,7 +94,7 @@ func PublishLink(ctx context.Context, js jetstream.JetStream, op memory.LinkOp, 
 }
 
 // PublishDead records a record that exhausted its indexing retries onto the
-// dead-letter subject, preserving it for later inspection or requeue. The
+// dead-letter stream, preserving it for later inspection or requeue. The
 // record's UserID is already set (it was stamped on the original publish); this
 // function preserves it so a requeue targets the same tenant.
 func PublishDead(ctx context.Context, js jetstream.JetStream, dl memory.DeadLetter) error {
@@ -122,48 +108,98 @@ func PublishDead(ctx context.Context, js jetstream.JetStream, dl memory.DeadLett
 	return nil
 }
 
-// FetchDead reads all dead-lettered records without consuming them (an ephemeral
-// ordered consumer over SubjectDead), so it is safe to call for reporting.
-func FetchDead(ctx context.Context, js jetstream.JetStream) ([]memory.DeadLetter, error) {
-	cons, err := js.OrderedConsumer(ctx, memory.StreamName, jetstream.OrderedConsumerConfig{
-		FilterSubjects: []string{memory.SubjectDead},
+// readAll feeds every message stored under subject in stream (as of the start of
+// the call) to fn, through an ephemeral ordered consumer (AckNone, so it never
+// holds interest and never consumes anything). It reads exactly the number of
+// messages the consumer reports pending rather than stopping at the first short
+// batch, and errors if the stream stops delivering before that (a silently short
+// read would make the migration drop dead letters).
+func readAll(ctx context.Context, js jetstream.JetStream, stream, subject string, fn func(jetstream.Msg) error) error {
+	cons, err := js.OrderedConsumer(ctx, stream, jetstream.OrderedConsumerConfig{
+		FilterSubjects: []string{subject},
 	})
 	if err != nil {
-		return nil, fmt.Errorf("dead-letter consumer: %w", err)
+		return fmt.Errorf("ordered consumer on %s: %w", stream, err)
 	}
-
-	var out []memory.DeadLetter
-	for {
-		batch, err := cons.Fetch(100, jetstream.FetchMaxWait(time.Second))
+	info, err := cons.Info(ctx)
+	if err != nil {
+		return fmt.Errorf("ordered consumer info on %s: %w", stream, err)
+	}
+	remaining := int(info.NumPending)
+	for remaining > 0 {
+		batch, err := cons.Fetch(min(remaining, 100), jetstream.FetchMaxWait(5*time.Second))
 		if err != nil {
-			return nil, fmt.Errorf("fetch dead-letters: %w", err)
+			return fmt.Errorf("fetch from %s: %w", stream, err)
 		}
 		n := 0
 		for msg := range batch.Messages() {
-			var dl memory.DeadLetter
-			if err := json.Unmarshal(msg.Data(), &dl); err == nil {
-				out = append(out, dl)
+			if err := fn(msg); err != nil {
+				return err
 			}
 			n++
 		}
 		if err := batch.Error(); err != nil {
-			return nil, fmt.Errorf("fetch dead-letters: %w", err)
+			return fmt.Errorf("fetch from %s: %w", stream, err)
 		}
-		if n < 100 {
-			break
+		if n == 0 {
+			return fmt.Errorf("read %s: stream stopped delivering with %d messages unread", stream, remaining)
 		}
+		remaining -= n
+	}
+	return nil
+}
+
+// FetchDead reads all dead-lettered records without consuming them, so it is
+// safe to call for reporting.
+func FetchDead(ctx context.Context, js jetstream.JetStream) ([]memory.DeadLetter, error) {
+	var out []memory.DeadLetter
+	err := readAll(ctx, js, memory.DeadStreamName, memory.SubjectDead, func(msg jetstream.Msg) error {
+		var dl memory.DeadLetter
+		if err := json.Unmarshal(msg.Data(), &dl); err == nil {
+			out = append(out, dl)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("dead-letters: %w", err)
 	}
 	return out, nil
 }
 
-// PurgeDead removes all dead-lettered records from the stream.
-func PurgeDead(ctx context.Context, js jetstream.JetStream) error {
-	s, err := js.Stream(ctx, memory.StreamName)
+// DeadCount is the number of dead letters held, from stream metadata alone (cheap
+// enough for every metrics scrape, unlike FetchDead).
+func DeadCount(ctx context.Context, js jetstream.JetStream) (int64, error) {
+	s, err := js.Stream(ctx, memory.DeadStreamName)
 	if err != nil {
-		return fmt.Errorf("get stream: %w", err)
+		return 0, fmt.Errorf("get dead stream: %w", err)
 	}
-	if err := s.Purge(ctx, jetstream.WithPurgeSubject(memory.SubjectDead)); err != nil {
+	return int64(s.CachedInfo().State.Msgs), nil
+}
+
+// PurgeDead removes all dead-lettered records.
+func PurgeDead(ctx context.Context, js jetstream.JetStream) error {
+	s, err := js.Stream(ctx, memory.DeadStreamName)
+	if err != nil {
+		return fmt.Errorf("get dead stream: %w", err)
+	}
+	if err := s.Purge(ctx); err != nil {
 		return fmt.Errorf("purge dead-letters: %w", err)
 	}
 	return nil
+}
+
+// QueueOldestAge is the age of the oldest message still held by the MEMORY queue
+// (0 when empty). On the interest stream that is the oldest message not yet acked
+// by every matching consumer, so a value approaching QUEUE_MAX_AGE warns that
+// unconsumed messages are about to be dropped.
+func QueueOldestAge(ctx context.Context, js jetstream.JetStream) (time.Duration, error) {
+	s, err := js.Stream(ctx, memory.StreamName)
+	if err != nil {
+		return 0, fmt.Errorf("get stream: %w", err)
+	}
+	st := s.CachedInfo().State
+	if st.Msgs == 0 {
+		return 0, nil
+	}
+	return max(time.Since(st.FirstTime), 0), nil
 }

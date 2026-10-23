@@ -9,6 +9,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/thomas-maurice/cortex/internal/bus"
 	"github.com/thomas-maurice/cortex/internal/memory"
 )
 
@@ -72,15 +73,7 @@ func (s *Service) queueStats(ctx context.Context) (present bool, pending, inFlig
 // filter on stream info), which is cheap enough to run on every scrape — unlike
 // bus.FetchDead, which reads every record.
 func (s *Service) deadCount(ctx context.Context) (int64, error) {
-	st, err := s.js.Stream(ctx, memory.StreamName)
-	if err != nil {
-		return 0, err
-	}
-	info, err := st.Info(ctx, jetstream.WithSubjectFilter(memory.SubjectDead))
-	if err != nil {
-		return 0, err
-	}
-	return int64(info.State.Subjects[memory.SubjectDead]), nil
+	return bus.DeadCount(ctx, s.js)
 }
 
 // queueScrapeTimeout bounds the NATS lookups done at scrape time.
@@ -96,12 +89,15 @@ type queueCollector struct{ svc *Service }
 var (
 	pendingDesc = prometheus.NewDesc("cortex_index_queue_pending",
 		"Messages waiting on the JetStream index consumer.", nil, nil)
+	oldestDesc = prometheus.NewDesc("cortex_queue_oldest_message_age_seconds",
+		"Age of the oldest message still in the MEMORY queue (0 when empty). Approaching QUEUE_MAX_AGE means unconsumed messages are about to be dropped.", nil, nil)
 	deadDesc = prometheus.NewDesc("cortex_dead_letters",
 		"Dead-lettered (failed-to-index) messages currently held in the stream.", nil, nil)
 )
 
 func (c *queueCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- pendingDesc
+	ch <- oldestDesc
 	ch <- deadDesc
 }
 
@@ -112,6 +108,11 @@ func (c *queueCollector) Collect(ch chan<- prometheus.Metric) {
 		c.svc.log.Warn("metrics: index queue lookup failed", "err", err)
 	} else if present {
 		ch <- prometheus.MustNewConstMetric(pendingDesc, prometheus.GaugeValue, float64(pending))
+	}
+	if age, err := bus.QueueOldestAge(ctx, c.svc.js); err != nil {
+		c.svc.log.Warn("metrics: queue age lookup failed", "err", err)
+	} else {
+		ch <- prometheus.MustNewConstMetric(oldestDesc, prometheus.GaugeValue, age.Seconds())
 	}
 	if n, err := c.svc.deadCount(ctx); err != nil {
 		c.svc.log.Warn("metrics: dead-letter lookup failed", "err", err)
