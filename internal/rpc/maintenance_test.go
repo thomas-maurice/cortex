@@ -40,6 +40,7 @@ var maintenanceReads = setOf(
 	cortexv1connect.MemoryServiceListTagsProcedure,
 	cortexv1connect.MemoryServiceListTrashProcedure,
 	cortexv1connect.MemoryServiceListMigrationsProcedure,
+	cortexv1connect.MemoryServiceGetStorageInfoProcedure,
 	cortexv1connect.MemoryServiceBackupSelfProcedure,
 	cortexv1connect.MemoryServiceBackupAllProcedure,
 	cortexv1connect.MemoryServiceListBackupsProcedure,

@@ -241,6 +241,11 @@ port as the Connect API; open the server's address in a browser. Views:
 - **Indexing** — live state of the async index queue (pending / in-flight /
   dead-lettered) and the failed-memory list, with requeue/purge. Auto-refreshes
   while open, so a burst of ingestion is actually visible as it drains.
+- **Storage** — read-only view of what is physically in Weaviate: per logical class
+  its alias target and version (`Memory → Memory_v2`), exact object counts, vector index/distance, stored
+  dimensions (flagged if they differ from the configured model), indexing state and
+  queue length, per-tenant breakdown (by username) for admins, and any leftover
+  class from an interrupted migration. Non-admins see only their own tenant.
 - **Status** — backing-service health and memory count.
 - **Docs** — in-app setup guide: install the `cortex-mcp` binary and wire it into
   Claude Code and Claude Desktop, with copy-paste config snippets pre-filled with

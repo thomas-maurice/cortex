@@ -128,6 +128,9 @@ const (
 	// MemoryServiceListMigrationsProcedure is the fully-qualified name of the MemoryService's
 	// ListMigrations RPC.
 	MemoryServiceListMigrationsProcedure = "/cortex.v1.MemoryService/ListMigrations"
+	// MemoryServiceGetStorageInfoProcedure is the fully-qualified name of the MemoryService's
+	// GetStorageInfo RPC.
+	MemoryServiceGetStorageInfoProcedure = "/cortex.v1.MemoryService/GetStorageInfo"
 	// MemoryServiceBackupSelfProcedure is the fully-qualified name of the MemoryService's BackupSelf
 	// RPC.
 	MemoryServiceBackupSelfProcedure = "/cortex.v1.MemoryService/BackupSelf"
@@ -326,6 +329,13 @@ type MemoryServiceClient interface {
 	// a migration run / maintenance mode is in progress. Admin only. Migrations run
 	// automatically at server start; this is the read-only view (`cortex migrate status`).
 	ListMigrations(context.Context, *connect.Request[v1.ListMigrationsRequest]) (*connect.Response[v1.ListMigrationsResponse], error)
+	// GetStorageInfo is the read-only System -> Storage view: per logical class its
+	// alias target and version, exact object counts (GraphQL Aggregate
+	// meta count), vector settings, stored dimensions and indexing state,
+	// plus leftover physical classes. Admin (or non-MT) callers get everything; a
+	// non-admin in MT mode gets the same shape scoped server-side to their own tenant
+	// (scoped=true). Never scans objects.
+	GetStorageInfo(context.Context, *connect.Request[v1.GetStorageInfoRequest]) (*connect.Response[v1.GetStorageInfoResponse], error)
 	// ---- Self-service backup (any authenticated user) ----
 	// BackupSelf returns a backup of the CALLER's OWN data — their tenant's
 	// memories and conversation summaries — as a downloadable file. Not
@@ -640,6 +650,12 @@ func NewMemoryServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(memoryServiceMethods.ByName("ListMigrations")),
 			connect.WithClientOptions(opts...),
 		),
+		getStorageInfo: connect.NewClient[v1.GetStorageInfoRequest, v1.GetStorageInfoResponse](
+			httpClient,
+			baseURL+MemoryServiceGetStorageInfoProcedure,
+			connect.WithSchema(memoryServiceMethods.ByName("GetStorageInfo")),
+			connect.WithClientOptions(opts...),
+		),
 		backupSelf: connect.NewClient[v1.BackupSelfRequest, v1.BackupSelfResponse](
 			httpClient,
 			baseURL+MemoryServiceBackupSelfProcedure,
@@ -797,6 +813,7 @@ type memoryServiceClient struct {
 	purgeTrash              *connect.Client[v1.PurgeTrashRequest, v1.PurgeTrashResponse]
 	migrateMT               *connect.Client[v1.MigrateMTRequest, v1.MigrateMTResponse]
 	listMigrations          *connect.Client[v1.ListMigrationsRequest, v1.ListMigrationsResponse]
+	getStorageInfo          *connect.Client[v1.GetStorageInfoRequest, v1.GetStorageInfoResponse]
 	backupSelf              *connect.Client[v1.BackupSelfRequest, v1.BackupSelfResponse]
 	restoreSelf             *connect.Client[v1.RestoreSelfRequest, v1.RestoreSelfResponse]
 	backupAll               *connect.Client[v1.BackupAllRequest, v1.BackupAllResponse]
@@ -1006,6 +1023,11 @@ func (c *memoryServiceClient) MigrateMT(ctx context.Context, req *connect.Reques
 // ListMigrations calls cortex.v1.MemoryService.ListMigrations.
 func (c *memoryServiceClient) ListMigrations(ctx context.Context, req *connect.Request[v1.ListMigrationsRequest]) (*connect.Response[v1.ListMigrationsResponse], error) {
 	return c.listMigrations.CallUnary(ctx, req)
+}
+
+// GetStorageInfo calls cortex.v1.MemoryService.GetStorageInfo.
+func (c *memoryServiceClient) GetStorageInfo(ctx context.Context, req *connect.Request[v1.GetStorageInfoRequest]) (*connect.Response[v1.GetStorageInfoResponse], error) {
+	return c.getStorageInfo.CallUnary(ctx, req)
 }
 
 // BackupSelf calls cortex.v1.MemoryService.BackupSelf.
@@ -1244,6 +1266,13 @@ type MemoryServiceHandler interface {
 	// a migration run / maintenance mode is in progress. Admin only. Migrations run
 	// automatically at server start; this is the read-only view (`cortex migrate status`).
 	ListMigrations(context.Context, *connect.Request[v1.ListMigrationsRequest]) (*connect.Response[v1.ListMigrationsResponse], error)
+	// GetStorageInfo is the read-only System -> Storage view: per logical class its
+	// alias target and version, exact object counts (GraphQL Aggregate
+	// meta count), vector settings, stored dimensions and indexing state,
+	// plus leftover physical classes. Admin (or non-MT) callers get everything; a
+	// non-admin in MT mode gets the same shape scoped server-side to their own tenant
+	// (scoped=true). Never scans objects.
+	GetStorageInfo(context.Context, *connect.Request[v1.GetStorageInfoRequest]) (*connect.Response[v1.GetStorageInfoResponse], error)
 	// ---- Self-service backup (any authenticated user) ----
 	// BackupSelf returns a backup of the CALLER's OWN data — their tenant's
 	// memories and conversation summaries — as a downloadable file. Not
@@ -1554,6 +1583,12 @@ func NewMemoryServiceHandler(svc MemoryServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(memoryServiceMethods.ByName("ListMigrations")),
 		connect.WithHandlerOptions(opts...),
 	)
+	memoryServiceGetStorageInfoHandler := connect.NewUnaryHandler(
+		MemoryServiceGetStorageInfoProcedure,
+		svc.GetStorageInfo,
+		connect.WithSchema(memoryServiceMethods.ByName("GetStorageInfo")),
+		connect.WithHandlerOptions(opts...),
+	)
 	memoryServiceBackupSelfHandler := connect.NewUnaryHandler(
 		MemoryServiceBackupSelfProcedure,
 		svc.BackupSelf,
@@ -1746,6 +1781,8 @@ func NewMemoryServiceHandler(svc MemoryServiceHandler, opts ...connect.HandlerOp
 			memoryServiceMigrateMTHandler.ServeHTTP(w, r)
 		case MemoryServiceListMigrationsProcedure:
 			memoryServiceListMigrationsHandler.ServeHTTP(w, r)
+		case MemoryServiceGetStorageInfoProcedure:
+			memoryServiceGetStorageInfoHandler.ServeHTTP(w, r)
 		case MemoryServiceBackupSelfProcedure:
 			memoryServiceBackupSelfHandler.ServeHTTP(w, r)
 		case MemoryServiceRestoreSelfProcedure:
@@ -1943,6 +1980,10 @@ func (UnimplementedMemoryServiceHandler) MigrateMT(context.Context, *connect.Req
 
 func (UnimplementedMemoryServiceHandler) ListMigrations(context.Context, *connect.Request[v1.ListMigrationsRequest]) (*connect.Response[v1.ListMigrationsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cortex.v1.MemoryService.ListMigrations is not implemented"))
+}
+
+func (UnimplementedMemoryServiceHandler) GetStorageInfo(context.Context, *connect.Request[v1.GetStorageInfoRequest]) (*connect.Response[v1.GetStorageInfoResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cortex.v1.MemoryService.GetStorageInfo is not implemented"))
 }
 
 func (UnimplementedMemoryServiceHandler) BackupSelf(context.Context, *connect.Request[v1.BackupSelfRequest]) (*connect.Response[v1.BackupSelfResponse], error) {

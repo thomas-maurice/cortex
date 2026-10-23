@@ -97,6 +97,7 @@ user/pass check for a user store and emit per-user claims.
 | `/preferences` | **Preferences** — `global` + `preference` memories, edit/add/delete | `List`, `Save`, `UpdateMemory`, `Delete` |
 | `/backup` | **Backup** — export / import memories (JSON, no vectors) | `List`, `RestoreMemories` |
 | `/queue` | **Indexing** — live index-queue counts + dead letters; auto-refreshes | `IndexQueue`, `Dead` |
+| `/storage` | **Storage** — alias → physical class, object counts, vector settings, stored dims, orphans (System menu; scoped for non-admins) | `GetStorageInfo` |
 | `/status` | **Status** — backend health + counts | `Status` |
 
 ### Namespaces (`ui/src/views/NamespacesView.vue`)
@@ -177,6 +178,31 @@ the list of failed memories (with requeue / purge). It **polls every second whil
 mounted** — indexing is fast and bursty (and usually driven in the background by
 the agent or a bulk import), so a one-shot snapshot would almost always read
 `0/0/0`; the poll makes a burst visible as it drains.
+
+### Storage (`ui/src/views/StorageView.vue`)
+
+Read-only view of what is physically stored in Weaviate, under System. One row per
+logical class: the alias target (`Memory → Memory_v2`, or `(plain)` for a pre-alias
+class), object count, tenants, vector index / distance, stored dimensions, worst
+indexing status across shards and queue length. A header strip shows the Weaviate
+node(s), schema version, a maintenance badge and the configured embedding model with
+its dimensions; stored dims that differ from the configured ones get a "model
+mismatch" badge. Multi-tenant rows expand into a per-tenant table (username, falling
+back to the tenant id). Physical classes no alias points at are listed in an orphan
+warning card (leftover from an interrupted migration?).
+
+- **Counts are exact**: Weaviate Aggregate `meta { count }` per class and per tenant
+  (not node status, whose object count only reflects flushed segments and reads 0 for
+  freshly written classes; node status feeds indexing status and queue length only).
+  A failed count shows "unavailable"; the page still renders. A COLD/offloaded tenant cannot be counted, so it shows "unavailable" and the class total is unavailable too (fail-loud by design).
+- **Stored dims** are the `dims` provenance property of one sampled object per class
+  (no vector is fetched). Trash and the user/API-key classes have no vectors ("—").
+- **No disk usage**: Weaviate only exposes it on its unauthenticated profiling port,
+  which Cortex deliberately never calls.
+- **Scoping is server-side**: a non-admin in multi-tenant mode gets the same RPC
+  reduced to their own tenant (`scoped`: "Your data only"); no other tenant, node,
+  orphan or user/API-key class data is sent. Visible to every logged-in user.
+- Works during a schema migration (read-only RPC).
 
 ### Graph (`ui/src/views/GraphView.vue`)
 
@@ -281,7 +307,7 @@ ui/
     views/                 LoginView, MemoriesView, GraphView, ExploreView,
                            RecallPreviewView,
                            SessionsView, NamespacesView, TagsView, DuplicatesView, TrashView, PreferencesView,
-                           BackupView, QueueView (Indexing), StatusView
+                           BackupView, QueueView (Indexing), StorageView, StatusView
 internal/rpc/
   jwt.go                   HS256 issue/parse
   login.go                 POST /auth/login
