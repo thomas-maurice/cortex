@@ -101,6 +101,7 @@ import { useAuthStore } from '@/stores/auth'
 import { theme } from '@/lib/theme'
 import { nsNodeColors, nsChipStyle } from '@/lib/nsColor'
 import { confirmDialog } from '@/lib/confirm'
+import { linkKey, linkEdge } from '@/lib/links'
 import { openInspector, inspectorChanged } from '@/lib/inspector'
 import { truncate } from '@/utils/text'
 import { Link2, Loader2, RotateCw, Search, Unlink, X } from 'lucide-vue-next'
@@ -143,7 +144,6 @@ let edges = null
 // expansion, so "Clear added" can restore the base graph cleanly.
 let baseNodeIds = new Set()
 
-const LINK_COLOR = '#198754'
 const DUP_COLOR = '#fd7e14'
 
 function handleError(e) {
@@ -184,14 +184,6 @@ function refreshNamespaces() {
 // within this view's already-loaded nodes (there is no get-by-id RPC).
 function resolveMemory(id) {
   return nodes?.get('m:' + id)?.mem
-}
-
-function linkKey(a, b) {
-  return 'link:' + [a, b].sort().join('|')
-}
-
-function linkEdge(a, b) {
-  return { id: linkKey(a, b), from: a, to: b, color: { color: LINK_COLOR }, width: 3, title: 'linked (click to remove)' }
 }
 
 function dupKey(a, b) {

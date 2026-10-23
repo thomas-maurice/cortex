@@ -187,6 +187,8 @@ port as the Connect API; open the server's address in a browser. Views:
 - **Explore** — type any text; it is vectorised server-side and matched against
   your memories, rendered as a cloud radiating from a central query node (closer
   + bigger = more relevant, edge label = vector distance).
+  **Connect** mode lets you link (or unlink) the matched memories directly from
+  the cloud, handy for linking a whole topic at once.
 - **Recall preview** — paste a prompt and see what the `cortex hook recall`
   hook would inject: memories with distance bars, a divider at the cutoff, and
   greyed near misses tagged *over max distance* / *over limit*. Limit, max

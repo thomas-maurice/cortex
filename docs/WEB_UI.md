@@ -205,6 +205,12 @@ bigger = more relevant; edge length encodes distance; edge label is the distance
 A **Max dist** cutoff drops weak matches. Searches carry a monotonic request id so
 a slow query can't overwrite a newer one's results.
 
+**Connect** mode (same UX as the Graph view) links memories from the result set:
+click one memory, then another, to link them; click a green link edge to remove
+it. Existing links between results are drawn as green edges with `physics: false`
+so they don't distort the distance layout. Link/unlink are async (NATS), so the UI
+updates optimistically and does not re-run the search. Esc cancels a pending pick.
+
 ### Recall preview (`ui/src/views/RecallPreviewView.vue`)
 
 Paste a prompt → `PreviewRecall` runs the same query logic as `cortex hook
