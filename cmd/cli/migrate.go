@@ -44,7 +44,9 @@ func formatMigrations(m *cortexv1.ListMigrationsResponse) string {
 	}
 	fmt.Fprintf(&b, "schema version %d of %d (%s)\n", m.GetSchemaVersion(), m.GetLatest(), state)
 	for _, mg := range m.GetMigrations() {
-		if mg.GetApplied() {
+		if mg.GetApplied() && mg.GetAssumed() {
+			fmt.Fprintf(&b, "  %3d  assumed   %s  (fresh install, not run)  %s\n", mg.GetId(), mg.GetAppliedAt().AsTime().Format(time.RFC3339), mg.GetName())
+		} else if mg.GetApplied() {
 			fmt.Fprintf(&b, "  %3d  applied   %s  took %s  %s\n", mg.GetId(), mg.GetAppliedAt().AsTime().Format(time.RFC3339),
 				time.Duration(mg.GetDurationMs())*time.Millisecond, mg.GetName())
 		} else {

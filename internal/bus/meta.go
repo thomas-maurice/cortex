@@ -10,37 +10,36 @@ import (
 )
 
 const (
-	// MetaBucket is the small file-backed KV bucket for server-wide metadata.
+	// MetaBucket is the small file-backed KV bucket for server-wide COORDINATION
+	// state (migration lock, maintenance flag, worker heartbeats). Durable facts
+	// live in Weaviate's CortexMeta class so NATS can be wiped (see store/meta.go).
 	MetaBucket = "cortex_meta"
-	// keyUsageTrackingSince holds the RFC3339 instant usage tracking (RecordUse)
-	// first ran on this deployment. Memories cannot be judged "unused" for any
-	// period before it.
+	// keyUsageTrackingSince is where older builds kept the usage-tracking epoch.
+	// It is now durable in CortexMeta; this key is only read once to seed it.
 	keyUsageTrackingSince = "usage_tracking_since"
 )
 
-// EnsureUsageTrackingSince returns the instant usage tracking started, recording
-// now if it was never set. The write is an atomic create, so replicas starting
-// together agree on one value; an existing value is never overwritten.
-func EnsureUsageTrackingSince(ctx context.Context, js jetstream.JetStream, now time.Time) (time.Time, error) {
-	kv, err := js.CreateOrUpdateKeyValue(ctx, jetstream.KeyValueConfig{
-		Bucket:      MetaBucket,
-		Description: "Cortex server-wide metadata",
-		History:     1,
-		Storage:     jetstream.FileStorage,
-	})
-	if err != nil {
-		return time.Time{}, fmt.Errorf("ensure meta bucket %q: %w", MetaBucket, err)
+// LegacyUsageTrackingSince reads the usage-tracking epoch an older build recorded
+// in the NATS KV, so the move to CortexMeta does not reset the stale-review epoch.
+// found is false when the bucket or key is absent. It never creates anything.
+func LegacyUsageTrackingSince(ctx context.Context, js jetstream.JetStream) (t time.Time, found bool, err error) {
+	kv, err := js.KeyValue(ctx, MetaBucket)
+	if errors.Is(err, jetstream.ErrBucketNotFound) {
+		return time.Time{}, false, nil
 	}
-	if _, err := kv.Create(ctx, keyUsageTrackingSince, []byte(now.UTC().Format(time.RFC3339))); err != nil && !errors.Is(err, jetstream.ErrKeyExists) {
-		return time.Time{}, fmt.Errorf("record usage tracking start: %w", err)
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("open meta bucket %q: %w", MetaBucket, err)
 	}
 	e, err := kv.Get(ctx, keyUsageTrackingSince)
-	if err != nil {
-		return time.Time{}, fmt.Errorf("read usage tracking start: %w", err)
+	if errors.Is(err, jetstream.ErrKeyNotFound) {
+		return time.Time{}, false, nil
 	}
-	t, err := time.Parse(time.RFC3339, string(e.Value()))
 	if err != nil {
-		return time.Time{}, fmt.Errorf("parse usage tracking start %q: %w", e.Value(), err)
+		return time.Time{}, false, fmt.Errorf("read legacy usage tracking start: %w", err)
 	}
-	return t, nil
+	t, err = time.Parse(time.RFC3339, string(e.Value()))
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("parse legacy usage tracking start %q: %w", e.Value(), err)
+	}
+	return t, true, nil
 }

@@ -194,7 +194,7 @@ should encode *why* the behaviour matters, not just what it does (Rule 9).
   stock definition in `internal/store` so fresh installs are born current, and
   test in `internal/migrate` against real Weaviate (legacy shape -> `Runner.Run` ->
   assert before/after, vectors unchanged, second `Up` a no-op; model on
-  `tags_integration_test.go`). Applied state is in NATS KV `cortex_meta`; the server
+  `tags_integration_test.go`). Applied state (schema_version + `migration.NNNN` records) is DURABLE in the Weaviate `CortexMeta` class (single-tenant, no vectors, survives `DeleteAllClasses`; tests that need a clean slate also call `Store.DeleteMetaClass`); NATS KV `cortex_meta` holds only coordination (migrate_lock, maintenance, worker.* heartbeats) so NATS can be wiped (loses unindexed queue + dead letters). A fresh store is stamped Latest (records flagged `assumed`); existing data with no version re-runs every migration. The server
   migrates at boot under a lease, the worker only waits (`WaitUntilCurrent`) and
   pauses fetching in maintenance mode; new Weaviate-writing RPCs must be added to
   `maintenanceBlocked` in `internal/rpc/migrations.go` (a test enforces
@@ -225,7 +225,7 @@ should encode *why* the behaviour matters, not just what it does (Rule 9).
   NATS via `internal/natstest`; `cmd/worker` has a multi-replica convergence sim.
 - **Idempotent ids.** Object id = a UUID; the worker upserts by id, so
   redelivery/retry/reindex overwrites rather than duplicates.
-- Weaviate classes: `Memory`, `MemoryChunk`, `Trash` and `ConversationSummary` (one
+- Weaviate classes: `CortexMeta` (store metadata, see §migrations; System -> Metadata admin page = `ListMeta` RPC, `MetaView.vue`), `Memory`, `MemoryChunk`, `Trash` and `ConversationSummary` (one
   summary per conversation, upserted). A namespace conceptually spans **both** — anything that
   renames/deletes a namespace must touch both classes or it orphans summaries.
 
@@ -256,7 +256,7 @@ should encode *why* the behaviour matters, not just what it does (Rule 9).
   delivered with full text: `cortex hook recall` (injected ids only, after output, fail-open,
   300ms cap) and MCP search (non-stub)/get/recall_session/consolidate (fire-and-forget, bounded concurrency, dropped when saturated). Stale mode skips expired memories unless `include_expired` (the expiry sweep owns them).
   UI/CLI searches never count. Independent of `RERANK_WEIGHT`. Epoch `usage_tracking_since` in
-  KV `cortex_meta` (create-once at server start). Index path never writes them on an existing
+  Weaviate `CortexMeta` (create-once at server start, seeded from the legacy NATS KV value once). Index path never writes them on an existing
   memory (DESIGN ownership table). New shared-message proto fields use numbers >= 30 to avoid
   clashes between parallel branches.
 - **Observability** lives in `internal/obs` (shared registry, `/healthz` `/readyz` `/metrics`

@@ -90,7 +90,7 @@ type classAgg struct {
 
 // storageLogicalClasses is the fixed display order of the classes Cortex owns.
 func storageLogicalClasses() []string {
-	return append(MemoryClasses(), memory.UserClassName, memory.ApiKeyClassName)
+	return append(MemoryClasses(), memory.UserClassName, memory.ApiKeyClassName, memory.MetaClassName)
 }
 
 // hasVectors reports whether a logical class stores vectors (so `dims` is meaningful).

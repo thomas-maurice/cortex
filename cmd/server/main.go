@@ -28,6 +28,7 @@ import (
 	"github.com/thomas-maurice/cortex/internal/bus"
 	"github.com/thomas-maurice/cortex/internal/embed"
 	"github.com/thomas-maurice/cortex/internal/identity"
+	"github.com/thomas-maurice/cortex/internal/memory"
 	"github.com/thomas-maurice/cortex/internal/migrate"
 	"github.com/thomas-maurice/cortex/internal/obs"
 	"github.com/thomas-maurice/cortex/internal/rpc"
@@ -375,7 +376,16 @@ func main() {
 	owner := fmt.Sprintf("server %s/%d", host, os.Getpid())
 	maint := migrate.NewMaintenance(meta, owner, log)
 	runner := migrate.NewRunner(meta, &migrate.Env{Store: st, Log: log, Maint: maint}, owner)
-	runner.EnsureSchema = func(ctx context.Context) error { return ensureSchemaWithRetry(ctx, log, st) }
+	runner.EnsureSchema = func(ctx context.Context) error { return withWeaviateRetry(ctx, log, st.EnsureSchema) }
+	// The runner's first Weaviate calls run before EnsureSchema: retry them too, or a
+	// Weaviate that is still booting makes the server exit.
+	runner.ClassExists = func(ctx context.Context) (exists bool, err error) {
+		err = withWeaviateRetry(ctx, log, func(ctx context.Context) error {
+			exists, err = st.ClassExists(ctx, memory.ClassName)
+			return err
+		})
+		return exists, err
+	}
 	if err := runner.Run(ctx); err != nil {
 		log.Error("schema migration", "err", err)
 		os.Exit(1)
@@ -390,7 +400,9 @@ func main() {
 	}
 
 	embedder := embed.New(ollamaURL, ollamaModel)
-	trackingSince, err := bus.EnsureUsageTrackingSince(ctx, js, time.Now())
+	trackingSince, err := st.EnsureUsageTrackingSince(ctx, time.Now(), func(ctx context.Context) (time.Time, bool, error) {
+		return bus.LegacyUsageTrackingSince(ctx, js)
+	})
 	if err != nil {
 		// Fail conservative: "tracking started now" limits stale review rather than
 		// letting it claim history it never had.
@@ -415,6 +427,7 @@ func main() {
 		UsageTrackingSince: trackingSince,
 	}, log)
 
+	svc.SetMetaKV(meta)
 	svc.SetMigrations(runner)
 	svc.SetMaintenance(maint.Active)
 
@@ -599,13 +612,13 @@ func main() {
 	log.Info("shutting down")
 }
 
-// ensureSchemaWithRetry creates the schema, backing off while Weaviate finishes
+// withWeaviateRetry runs fn (a Weaviate call), backing off while Weaviate finishes
 // booting on a fresh stack. Gives up after ~30s.
-func ensureSchemaWithRetry(ctx context.Context, log *slog.Logger, st *store.Store) error {
+func withWeaviateRetry(ctx context.Context, log *slog.Logger, fn func(context.Context) error) error {
 	const attempts = 15
 	var err error
 	for i := 0; i < attempts; i++ {
-		if err = st.EnsureSchema(ctx); err == nil {
+		if err = fn(ctx); err == nil {
 			return nil
 		}
 		log.Info("waiting for weaviate", "attempt", i+1, "err", err)

@@ -24,10 +24,15 @@ const (
 	// the SERVER only (never the worker or a client).
 	UserClassName   = "User"
 	ApiKeyClassName = "ApiKey"
-	StreamName      = "MEMORY"
-	SubjectIndex    = "memory.index"
-	SubjectSummary  = "memory.summary"
-	SubjectLink     = "memory.link"
+	// MetaClassName is the durable store-level metadata class (schema version,
+	// applied migrations, usage-tracking epoch). Always single-tenant, no vectors,
+	// plain (not alias-backed); it survives DeleteClass/DeleteAllClasses because it
+	// describes the store, not the data. See store/meta.go.
+	MetaClassName  = "CortexMeta"
+	StreamName     = "MEMORY"
+	SubjectIndex   = "memory.index"
+	SubjectSummary = "memory.summary"
+	SubjectLink    = "memory.link"
 	// DeadStreamName holds dead letters in their OWN stream (age/size bounded),
 	// separate from the interest-retained work queue StreamName. SubjectDead lives
 	// OUTSIDE memory.> so the two streams' subjects never overlap (JetStream forbids

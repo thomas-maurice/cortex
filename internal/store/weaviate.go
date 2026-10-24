@@ -130,7 +130,11 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 	if err := s.ensureClass(ctx, summaryClass(s.multiTenant), summaryProperties()); err != nil {
 		return err
 	}
-	return s.ensureClass(ctx, trashClass(s.multiTenant), trashProperties())
+	if err := s.ensureClass(ctx, trashClass(s.multiTenant), trashProperties()); err != nil {
+		return err
+	}
+	// CortexMeta is single-tenant in every mode and not alias-backed.
+	return s.EnsureMetaClass(ctx)
 }
 
 // ensureClass brings one logical class up to date. Absent (fresh install): it is
@@ -364,8 +368,9 @@ func (s *Store) VerifySchema(ctx context.Context) ([]string, error) {
 // DeleteClass drops the Memory, MemoryChunk and ConversationSummary classes
 // and all their objects. It deliberately leaves Trash alone: trash objects carry
 // no vector, so a dimension-change rebuild is irrelevant to them (see
-// DeleteAllClasses for the callers that must drop it too). Used by reindex when a model change alters the vector dimension and
-// the classes must be rebuilt — both are dropped so their stored vectors stay
+// DeleteAllClasses for the callers that must drop it too). CortexMeta (store
+// metadata) is never dropped. Used by reindex when a model change alters the vector
+// dimension and the classes must be rebuilt — both are dropped so their stored vectors stay
 // dimension-consistent. Facts are then republished by reindex; summaries start
 // empty and are rebuilt as the agent re-summarises.
 //
@@ -388,7 +393,8 @@ func (s *Store) DeleteTrashClass(ctx context.Context) error {
 
 // DeleteAllClasses drops every memory class including Trash. Needed only where
 // the Trash tenancy mode must change too (migrate-mt, after snapshotting the
-// trash) and by tests that want a clean slate.
+// trash) and by tests that want a clean slate. CortexMeta is still kept; tests
+// drop it explicitly with DeleteMetaClass.
 func (s *Store) DeleteAllClasses(ctx context.Context) error {
 	if err := s.DeleteClass(ctx); err != nil {
 		return err

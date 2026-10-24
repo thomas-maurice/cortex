@@ -246,6 +246,9 @@ port as the Connect API; open the server's address in a browser. Views:
   dimensions (flagged if they differ from the configured model), indexing state and
   queue length, per-tenant breakdown (by username) for admins, and any leftover
   class from an interrupted migration. Non-admins see only their own tenant.
+- **Metadata** (admin) — read-only debug view of store metadata: the durable `CortexMeta`
+  entries in Weaviate (schema version, applied migrations, usage epoch) and the NATS
+  `cortex_meta` coordination keys (locks, maintenance flag, worker heartbeats).
 - **Status** — backing-service health and memory count.
 - **Docs** — in-app setup guide: install the `cortex-mcp` binary and wire it into
   Claude Code and Claude Desktop, with copy-paste config snippets pre-filled with
@@ -920,7 +923,7 @@ It does **not** count: UI or CLI searches/browsing, `cortex list`, the SessionSt
 preferences load, `SearchSimilar`. Calls are fire-and-forget and fail-open.
 
 **Tracking epoch.** The server records when usage tracking first started (`usage_tracking_since`
-in the `cortex_meta` JetStream KV bucket, set once at first start). A never-used memory's
+in the Weaviate `CortexMeta` class, set once at first start). A never-used memory's
 reference time is `max(createdAt, trackingSince)`, the min-age guard runs from that same
 reference, and `List` returns `tracking_since`; the UI and CLI show "usage tracked since
 <date>" and a notice when tracking began less than the requested window ago (results are

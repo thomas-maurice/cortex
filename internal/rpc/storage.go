@@ -72,7 +72,7 @@ func (s *Service) GetStorageInfo(ctx context.Context, _ *connect.Request[cortexv
 
 // scopeToTenant reduces a full storage response, in place, to what one tenant may
 // see: their own shard per multi-tenant class (counts, status and queue recomputed
-// from it), no orphans, no nodes, no global identity classes. Vector settings,
+// from it), no orphans, no nodes, no global identity/metadata classes. Vector settings,
 // physical names, the model and the schema version are deployment facts, not tenant
 // data, and are kept. It is the single place that does this so a new field cannot
 // leak by being forgotten elsewhere; TestScopeToTenant walks every string field.
@@ -82,7 +82,7 @@ func scopeToTenant(resp *cortexv1.GetStorageInfoResponse, tenant string) {
 	resp.Nodes = nil
 	kept := resp.Classes[:0]
 	for _, c := range resp.Classes {
-		if c.Logical == memory.UserClassName || c.Logical == memory.ApiKeyClassName {
+		if c.Logical == memory.UserClassName || c.Logical == memory.ApiKeyClassName || c.Logical == memory.MetaClassName {
 			continue
 		}
 		// A class that is not multi-tenant has no per-tenant figure to show: its

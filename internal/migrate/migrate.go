@@ -5,8 +5,12 @@
 // version, copy the data WITH its vectors (no re-embedding), and repoint the
 // class's alias (see store.SwapToVersion and docs/DESIGN.md "Schema migrations").
 //
-// Applied state lives in the NATS KV bucket cortex_meta, so every replica agrees
-// on it. The server runs pending migrations at boot, before serving, under a
+// Applied state (schema version + one record per migration) is DURABLE and lives in
+// Weaviate's CortexMeta class, next to the data it describes, so every replica
+// agrees on it and wiping NATS loses none of it. The coordination state (the
+// migration lease, the maintenance flag, worker heartbeats) lives in the NATS KV
+// bucket cortex_meta: it is disposable. State written by older builds in that
+// bucket is copied to CortexMeta once, under the lease (Runner.backfillFromKV). The server runs pending migrations at boot, before serving, under a
 // distributed lease; the worker never migrates, it waits until the schema is at
 // the version it was built for. While data is being copied a maintenance flag
 // stops writers (worker pauses fetching, server write RPCs answer Unavailable).

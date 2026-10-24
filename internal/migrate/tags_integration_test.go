@@ -30,8 +30,11 @@ func testStore(t *testing.T, mt bool) *store.Store {
 	require.NoError(t, err)
 	st.SetMultiTenant(mt)
 	ctx := context.Background()
+	// CortexMeta outlives DeleteAllClasses by design: drop it too, or the schema
+	// version of one test would leak into the next.
 	require.NoError(t, st.DeleteAllClasses(ctx))
-	t.Cleanup(func() { _ = st.DeleteAllClasses(ctx) })
+	require.NoError(t, st.DeleteMetaClass(ctx))
+	t.Cleanup(func() { _ = st.DeleteAllClasses(ctx); _ = st.DeleteMetaClass(ctx) })
 	return st
 }
 
@@ -244,7 +247,7 @@ func TestMigration1MakesTagFilterExact(t *testing.T) {
 		assert.InDelta(t, hitsBefore[i].Distance, hitsAfter[i].Distance, 1e-6)
 	}
 
-	v, _, err := SchemaVersion(ctx0, r.KV)
+	v, err := SchemaVersion(ctx0, r.Meta)
 	require.NoError(t, err)
 	assert.Equal(t, 1, v)
 	stt, err := r.Status(ctx0)
@@ -299,7 +302,7 @@ func TestMigration1OnFreshInstallDoesNothing(t *testing.T) {
 	require.NoError(t, r.Run(ctx0))
 	stop()
 	assert.False(t, sawMaintenance.Load(), "an install that is already current needs no write pause")
-	v, _, err := SchemaVersion(ctx0, r.KV)
+	v, err := SchemaVersion(ctx0, r.Meta)
 	require.NoError(t, err)
 	assert.Equal(t, 1, v)
 	for _, c := range store.MemoryClasses() {

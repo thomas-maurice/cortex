@@ -30,6 +30,7 @@ func fullStorageResponse() *cortexv1.GetStorageInfoResponse {
 			},
 			{Logical: "User", Physical: "User_v1", Aliased: true, ObjectCount: 3},
 			{Logical: "ApiKey", Physical: "ApiKey_v1", Aliased: true, ObjectCount: 4},
+			{Logical: "CortexMeta", Physical: "CortexMeta", ObjectCount: 7},
 		},
 	}
 	resp := storageToProto(info, map[string]string{"tid-alice": "alice", "tid-bob": "bobby-tables", "tid-carol": "carol"})
@@ -72,14 +73,14 @@ func TestScopeToTenantLeaksNothingAboutOthers(t *testing.T) {
 
 	assert.True(t, resp.Scoped)
 	all := strings.Join(collectStrings(resp.ProtoReflect()), "\x00")
-	for _, secret := range []string{"tid-bob", "bobby-tables", "tid-carol", "carol", "node-zeta", "Secret_orphan", "Memory_v1", "User", "ApiKey"} {
+	for _, secret := range []string{"tid-bob", "bobby-tables", "tid-carol", "carol", "node-zeta", "Secret_orphan", "Memory_v1", "User", "ApiKey", "CortexMeta"} {
 		assert.NotContains(t, all, secret)
 	}
 	assert.Contains(t, all, "alice", "own username is kept")
 	assert.Empty(t, resp.Nodes)
 	assert.Empty(t, resp.OrphanClasses)
 
-	require.Len(t, resp.Classes, 1, "global identity classes are omitted")
+	require.Len(t, resp.Classes, 1, "global identity and metadata classes are omitted")
 	mem := resp.Classes[0]
 	assert.Equal(t, "Memory_v2", mem.Physical, "deployment facts are kept")
 	assert.EqualValues(t, 1024, mem.StoredDims)
@@ -106,7 +107,7 @@ func TestScopeToTenantWithoutShard(t *testing.T) {
 func TestStorageToProtoFullKeepsEverything(t *testing.T) {
 	resp := fullStorageResponse()
 	assert.False(t, resp.Scoped)
-	assert.Len(t, resp.Classes, 3)
+	assert.Len(t, resp.Classes, 4)
 	assert.Len(t, resp.Nodes, 1)
 	assert.Len(t, resp.OrphanClasses, 2)
 	assert.Len(t, resp.Classes[0].Tenants, 3)

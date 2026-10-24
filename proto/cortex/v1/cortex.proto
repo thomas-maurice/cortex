@@ -160,6 +160,11 @@ service MemoryService {
   // (scoped=true). Never scans objects.
   rpc GetStorageInfo(GetStorageInfoRequest) returns (GetStorageInfoResponse) {}
 
+  // ListMeta is the read-only admin debug view of store metadata: the durable
+  // CortexMeta entries (Weaviate) and the NATS cortex_meta KV keys (coordination:
+  // locks, maintenance flag, worker heartbeats, plus legacy leftovers). Admin only.
+  rpc ListMeta(ListMetaRequest) returns (ListMetaResponse) {}
+
   // ---- Self-service backup (any authenticated user) ----
   // BackupSelf returns a backup of the CALLER's OWN data — their tenant's
   // memories and conversation summaries — as a downloadable file. Not
@@ -997,6 +1002,7 @@ message SchemaMigration {
   bool applied = 4;
   google.protobuf.Timestamp applied_at = 5; // unset when not applied
   int64 duration_ms = 6;                    // how long it took; 0 when not applied
+  bool assumed = 30;                        // stamped on a fresh install, never actually run
 }
 
 message ListMigrationsResponse {
@@ -1010,6 +1016,28 @@ message ListMigrationsResponse {
   string maintenance_reason = 5;
   // lock_holder names the replica currently running migrations ("" = none).
   string lock_holder = 6;
+}
+
+message ListMetaRequest {}
+
+// MetaEntry is one durable CortexMeta record; value is its JSON payload as stored.
+message MetaEntry {
+  string key = 1;
+  string value = 2;
+  google.protobuf.Timestamp updated_at = 3; // unset if unknown
+}
+
+// KVMetaEntry is one key of the NATS cortex_meta KV bucket.
+message KVMetaEntry {
+  string key = 1;
+  string value = 2;
+  uint64 revision = 3;
+  google.protobuf.Timestamp created_at = 4;
+}
+
+message ListMetaResponse {
+  repeated MetaEntry durable = 1;
+  repeated KVMetaEntry coordination = 2;
 }
 
 message GetStorageInfoRequest {}

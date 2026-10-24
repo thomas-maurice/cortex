@@ -131,6 +131,8 @@ const (
 	// MemoryServiceGetStorageInfoProcedure is the fully-qualified name of the MemoryService's
 	// GetStorageInfo RPC.
 	MemoryServiceGetStorageInfoProcedure = "/cortex.v1.MemoryService/GetStorageInfo"
+	// MemoryServiceListMetaProcedure is the fully-qualified name of the MemoryService's ListMeta RPC.
+	MemoryServiceListMetaProcedure = "/cortex.v1.MemoryService/ListMeta"
 	// MemoryServiceBackupSelfProcedure is the fully-qualified name of the MemoryService's BackupSelf
 	// RPC.
 	MemoryServiceBackupSelfProcedure = "/cortex.v1.MemoryService/BackupSelf"
@@ -336,6 +338,10 @@ type MemoryServiceClient interface {
 	// non-admin in MT mode gets the same shape scoped server-side to their own tenant
 	// (scoped=true). Never scans objects.
 	GetStorageInfo(context.Context, *connect.Request[v1.GetStorageInfoRequest]) (*connect.Response[v1.GetStorageInfoResponse], error)
+	// ListMeta is the read-only admin debug view of store metadata: the durable
+	// CortexMeta entries (Weaviate) and the NATS cortex_meta KV keys (coordination:
+	// locks, maintenance flag, worker heartbeats, plus legacy leftovers). Admin only.
+	ListMeta(context.Context, *connect.Request[v1.ListMetaRequest]) (*connect.Response[v1.ListMetaResponse], error)
 	// ---- Self-service backup (any authenticated user) ----
 	// BackupSelf returns a backup of the CALLER's OWN data — their tenant's
 	// memories and conversation summaries — as a downloadable file. Not
@@ -656,6 +662,12 @@ func NewMemoryServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(memoryServiceMethods.ByName("GetStorageInfo")),
 			connect.WithClientOptions(opts...),
 		),
+		listMeta: connect.NewClient[v1.ListMetaRequest, v1.ListMetaResponse](
+			httpClient,
+			baseURL+MemoryServiceListMetaProcedure,
+			connect.WithSchema(memoryServiceMethods.ByName("ListMeta")),
+			connect.WithClientOptions(opts...),
+		),
 		backupSelf: connect.NewClient[v1.BackupSelfRequest, v1.BackupSelfResponse](
 			httpClient,
 			baseURL+MemoryServiceBackupSelfProcedure,
@@ -814,6 +826,7 @@ type memoryServiceClient struct {
 	migrateMT               *connect.Client[v1.MigrateMTRequest, v1.MigrateMTResponse]
 	listMigrations          *connect.Client[v1.ListMigrationsRequest, v1.ListMigrationsResponse]
 	getStorageInfo          *connect.Client[v1.GetStorageInfoRequest, v1.GetStorageInfoResponse]
+	listMeta                *connect.Client[v1.ListMetaRequest, v1.ListMetaResponse]
 	backupSelf              *connect.Client[v1.BackupSelfRequest, v1.BackupSelfResponse]
 	restoreSelf             *connect.Client[v1.RestoreSelfRequest, v1.RestoreSelfResponse]
 	backupAll               *connect.Client[v1.BackupAllRequest, v1.BackupAllResponse]
@@ -1028,6 +1041,11 @@ func (c *memoryServiceClient) ListMigrations(ctx context.Context, req *connect.R
 // GetStorageInfo calls cortex.v1.MemoryService.GetStorageInfo.
 func (c *memoryServiceClient) GetStorageInfo(ctx context.Context, req *connect.Request[v1.GetStorageInfoRequest]) (*connect.Response[v1.GetStorageInfoResponse], error) {
 	return c.getStorageInfo.CallUnary(ctx, req)
+}
+
+// ListMeta calls cortex.v1.MemoryService.ListMeta.
+func (c *memoryServiceClient) ListMeta(ctx context.Context, req *connect.Request[v1.ListMetaRequest]) (*connect.Response[v1.ListMetaResponse], error) {
+	return c.listMeta.CallUnary(ctx, req)
 }
 
 // BackupSelf calls cortex.v1.MemoryService.BackupSelf.
@@ -1273,6 +1291,10 @@ type MemoryServiceHandler interface {
 	// non-admin in MT mode gets the same shape scoped server-side to their own tenant
 	// (scoped=true). Never scans objects.
 	GetStorageInfo(context.Context, *connect.Request[v1.GetStorageInfoRequest]) (*connect.Response[v1.GetStorageInfoResponse], error)
+	// ListMeta is the read-only admin debug view of store metadata: the durable
+	// CortexMeta entries (Weaviate) and the NATS cortex_meta KV keys (coordination:
+	// locks, maintenance flag, worker heartbeats, plus legacy leftovers). Admin only.
+	ListMeta(context.Context, *connect.Request[v1.ListMetaRequest]) (*connect.Response[v1.ListMetaResponse], error)
 	// ---- Self-service backup (any authenticated user) ----
 	// BackupSelf returns a backup of the CALLER's OWN data — their tenant's
 	// memories and conversation summaries — as a downloadable file. Not
@@ -1589,6 +1611,12 @@ func NewMemoryServiceHandler(svc MemoryServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(memoryServiceMethods.ByName("GetStorageInfo")),
 		connect.WithHandlerOptions(opts...),
 	)
+	memoryServiceListMetaHandler := connect.NewUnaryHandler(
+		MemoryServiceListMetaProcedure,
+		svc.ListMeta,
+		connect.WithSchema(memoryServiceMethods.ByName("ListMeta")),
+		connect.WithHandlerOptions(opts...),
+	)
 	memoryServiceBackupSelfHandler := connect.NewUnaryHandler(
 		MemoryServiceBackupSelfProcedure,
 		svc.BackupSelf,
@@ -1783,6 +1811,8 @@ func NewMemoryServiceHandler(svc MemoryServiceHandler, opts ...connect.HandlerOp
 			memoryServiceListMigrationsHandler.ServeHTTP(w, r)
 		case MemoryServiceGetStorageInfoProcedure:
 			memoryServiceGetStorageInfoHandler.ServeHTTP(w, r)
+		case MemoryServiceListMetaProcedure:
+			memoryServiceListMetaHandler.ServeHTTP(w, r)
 		case MemoryServiceBackupSelfProcedure:
 			memoryServiceBackupSelfHandler.ServeHTTP(w, r)
 		case MemoryServiceRestoreSelfProcedure:
@@ -1984,6 +2014,10 @@ func (UnimplementedMemoryServiceHandler) ListMigrations(context.Context, *connec
 
 func (UnimplementedMemoryServiceHandler) GetStorageInfo(context.Context, *connect.Request[v1.GetStorageInfoRequest]) (*connect.Response[v1.GetStorageInfoResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cortex.v1.MemoryService.GetStorageInfo is not implemented"))
+}
+
+func (UnimplementedMemoryServiceHandler) ListMeta(context.Context, *connect.Request[v1.ListMetaRequest]) (*connect.Response[v1.ListMetaResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cortex.v1.MemoryService.ListMeta is not implemented"))
 }
 
 func (UnimplementedMemoryServiceHandler) BackupSelf(context.Context, *connect.Request[v1.BackupSelfRequest]) (*connect.Response[v1.BackupSelfResponse], error) {
