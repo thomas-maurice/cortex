@@ -30,7 +30,7 @@ func seed(t *testing.T, s *stack, tenant string, rec memory.Record) {
 
 func runIndex(t *testing.T, s *stack, msg *fakeMsg) {
 	t.Helper()
-	handleIndex(context.Background(), testLog, s.m, s.js, s.locker, s.stream, s.embedder, s.stores, s.chunker, msg, 0)
+	handleIndex(context.Background(), testLog, s.m, s.js, s.locker, s.embedder, s.stores, s.chunker, msg, 0)
 }
 
 // The link read-modify-write must be exclusive: SetLinks replaces the whole list,
@@ -96,7 +96,7 @@ func TestHandleLinkOpposingOrderNoDeadlock(t *testing.T) {
 func TestIndexAndLinkSerialiseOnSameID(t *testing.T) {
 	s := newStack(t, 2, time.Minute)
 	a := uuid.NewString()
-	seed(t, s, "", memory.Record{ID: a, Text: "a0", IndexedSeq: 1})
+	seed(t, s, "", memory.Record{ID: a, Text: "a0", IndexVersion: 1})
 
 	var wg sync.WaitGroup
 	// 10 edits of a racing with 10 link adds a<->each of 10 fresh memories.
@@ -109,13 +109,13 @@ func TestIndexAndLinkSerialiseOnSameID(t *testing.T) {
 	for i, o := range others {
 		lm := linkMsg(t, memory.LinkMsg{Op: memory.LinkOpAdd, A: a, B: o})
 		wg.Go(func() { handleLink(context.Background(), testLog, s.m, s.js, s.locker, s.stores, lm) })
-		im := indexMsg(t, uint64(10+i), memory.Record{ID: a, Text: fmt.Sprintf("a%d", i+1), CreatedAt: time.Now()})
+		im := indexMsg(t, int64(10+i), memory.Record{ID: a, Text: fmt.Sprintf("a%d", i+1), CreatedAt: time.Now()})
 		wg.Go(func() { runIndex(t, s, im) })
 	}
 	wg.Wait()
 	got, _ := s.fs.peek("", a)
 	assert.ElementsMatch(t, others, got.LinkedIDs, "an index write erased a link")
-	assert.Equal(t, "a10", got.Text, "highest seq wins")
+	assert.Equal(t, "a10", got.Text, "highest version wins")
 }
 
 // ---- stale guard ----------------------------------------------------------
@@ -125,6 +125,8 @@ func TestStaleGuard(t *testing.T) {
 		return memory.Record{ID: id, Text: text, Namespace: "ns", CreatedAt: time.Now()}
 	}
 
+	// WHY: an edit v1 whose worker finishes after v2's must not revert v2, whatever
+	// the processing order (two replicas, a slow embed, a redelivery).
 	t.Run("older message after newer is skipped and counted stale", func(t *testing.T) {
 		s := newStack(t, 1, time.Minute)
 		id := uuid.NewString()
@@ -134,7 +136,7 @@ func TestStaleGuard(t *testing.T) {
 
 		got, _ := s.fs.peek("", id)
 		assert.Equal(t, "v2", got.Text, "stale v1 overwrote v2")
-		assert.EqualValues(t, 20, got.IndexedSeq)
+		assert.EqualValues(t, 20, got.IndexVersion)
 		assert.EqualValues(t, 1, old.acked.Load(), "stale message is acked, not retried")
 		assert.EqualValues(t, 1, outcome(s.m, kindIndex, outcomeStale))
 		assert.EqualValues(t, 1, outcome(s.m, kindIndex, outcomeAck))
@@ -148,21 +150,21 @@ func TestStaleGuard(t *testing.T) {
 		runIndex(t, s, indexMsg(t, 20, newRec(id, "v2")))
 		got, _ := s.fs.peek("", id)
 		assert.Equal(t, "v2", got.Text)
-		assert.EqualValues(t, 20, got.IndexedSeq)
+		assert.EqualValues(t, 20, got.IndexVersion)
 		assert.Zero(t, outcome(s.m, kindIndex, outcomeStale))
 	})
 
-	t.Run("pre-existing object without indexedSeq counts as 0", func(t *testing.T) {
+	t.Run("pre-existing object without indexVersion counts as 0", func(t *testing.T) {
 		s := newStack(t, 1, time.Minute)
 		id := uuid.NewString()
-		seed(t, s, "", memory.Record{ID: id, Text: "legacy"}) // IndexedSeq 0, like a pre-upgrade object
+		seed(t, s, "", memory.Record{ID: id, Text: "legacy"}) // IndexVersion 0, like a pre-upgrade object
 		runIndex(t, s, indexMsg(t, 5, newRec(id, "edited")))
 		got, _ := s.fs.peek("", id)
 		assert.Equal(t, "edited", got.Text)
-		assert.EqualValues(t, 5, got.IndexedSeq)
+		assert.EqualValues(t, 5, got.IndexVersion)
 	})
 
-	t.Run("redelivery of the same seq re-applies idempotently", func(t *testing.T) {
+	t.Run("redelivery of the same version re-applies idempotently", func(t *testing.T) {
 		s := newStack(t, 1, time.Minute)
 		id := uuid.NewString()
 		runIndex(t, s, indexMsg(t, 7, newRec(id, "v")))
@@ -170,7 +172,7 @@ func TestStaleGuard(t *testing.T) {
 		runIndex(t, s, again)
 		got, _ := s.fs.peek("", id)
 		assert.Equal(t, "v", got.Text)
-		assert.Zero(t, outcome(s.m, kindIndex, outcomeStale), "same seq is a redelivery, not stale")
+		assert.Zero(t, outcome(s.m, kindIndex, outcomeStale), "same version is a redelivery, not stale")
 		assert.EqualValues(t, 1, again.acked.Load())
 	})
 
@@ -188,21 +190,48 @@ func TestStaleGuard(t *testing.T) {
 
 	t.Run("summaries get the same guard", func(t *testing.T) {
 		s := newStack(t, 1, time.Minute)
-		sum := func(text string) memory.Summary {
-			return memory.Summary{ConversationID: "c1", Text: text, UpdatedAt: time.Now()}
+		sum := func(text string, version int64) memory.Summary {
+			return memory.Summary{ConversationID: "c1", Text: text, UpdatedAt: time.Now(), IndexVersion: version}
 		}
 		ts := s.fs.tenant("")
-		ok, err := commitSummary(context.Background(), s.locker, ts, sum("new"), nil, 20, fixedStream(0))
+		ok, err := commitSummary(context.Background(), s.locker, ts, sum("new", 20), nil)
 		require.NoError(t, err)
 		assert.True(t, ok)
-		ok, err = commitSummary(context.Background(), s.locker, ts, sum("old"), nil, 10, fixedStream(0))
+		ok, err = commitSummary(context.Background(), s.locker, ts, sum("old", 10), nil)
 		require.NoError(t, err)
 		assert.False(t, ok, "older summary must be skipped")
 		assert.Equal(t, "new", s.fs.sums["|c1"].Text)
-		ok, err = commitSummary(context.Background(), s.locker, ts, sum("newer"), nil, 30, fixedStream(0))
+		ok, err = commitSummary(context.Background(), s.locker, ts, sum("redelivered", 20), nil)
+		require.NoError(t, err)
+		assert.True(t, ok, "equal version is a redelivery: re-applied")
+		assert.Equal(t, "redelivered", s.fs.sums["|c1"].Text)
+		ok, err = commitSummary(context.Background(), s.locker, ts, sum("newer", 30), nil)
 		require.NoError(t, err)
 		assert.True(t, ok)
 		assert.Equal(t, "newer", s.fs.sums["|c1"].Text)
+		assert.EqualValues(t, 30, s.fs.sums["|c1"].IndexVersion)
+	})
+
+	t.Run("summary stored without a version (legacy) is overwritten", func(t *testing.T) {
+		s := newStack(t, 1, time.Minute)
+		ts := s.fs.tenant("")
+		require.NoError(t, ts.UpsertSummary(context.Background(), memory.Summary{ConversationID: "c2", Text: "legacy"}, nil))
+		ok, err := commitSummary(context.Background(), s.locker, ts,
+			memory.Summary{ConversationID: "c2", Text: "edited", UpdatedAt: time.Now(), IndexVersion: 5}, nil)
+		require.NoError(t, err)
+		assert.True(t, ok)
+		assert.Equal(t, "edited", s.fs.sums["|c2"].Text)
+	})
+
+	// A message from a pre-upgrade server carries version 0: oldest, so it never
+	// beats a versioned object, but still creates / overwrites a legacy one.
+	t.Run("unversioned message loses to a versioned object", func(t *testing.T) {
+		s := newStack(t, 1, time.Minute)
+		id := uuid.NewString()
+		seed(t, s, "", memory.Record{ID: id, Text: "versioned", IndexVersion: 3})
+		runIndex(t, s, indexMsg(t, 0, newRec(id, "unversioned")))
+		got, _ := s.fs.peek("", id)
+		assert.Equal(t, "versioned", got.Text)
 	})
 }
 
@@ -213,7 +242,7 @@ func TestIndexFieldOwnership(t *testing.T) {
 		s := newStack(t, 1, time.Minute)
 		id := uuid.NewString()
 		seed(t, s, "", memory.Record{ID: id, Text: "old", LinkedIDs: []string{"l1", "l2"},
-			AccessCount: 9, LastAccessedAt: time.Unix(1000, 0), NotDuplicateOf: []string{"nd"}, IndexedSeq: 1})
+			AccessCount: 9, LastAccessedAt: time.Unix(1000, 0), NotDuplicateOf: []string{"nd"}, IndexVersion: 1})
 		s.fs.resetAudit()
 		// The queued edit carries a STALE snapshot: no links, no counters.
 		runIndex(t, s, indexMsg(t, 5, memory.Record{ID: id, Text: "new", Namespace: "ns", CreatedAt: time.Now()}))
@@ -248,7 +277,7 @@ func TestIndexFieldOwnership(t *testing.T) {
 		// stale snapshot of notDuplicateOf) proposes both; the dismissal stored
 		// since must win.
 		s.fs.dupHits = []string{"dismissed", "other"}
-		handleIndex(context.Background(), testLog, s.m, s.js, s.locker, s.stream, s.embedder, s.stores, s.chunker,
+		handleIndex(context.Background(), testLog, s.m, s.js, s.locker, s.embedder, s.stores, s.chunker,
 			indexMsg(t, 5, memory.Record{ID: id, Text: "t2", CreatedAt: time.Now()}), 1)
 		got, _ := s.fs.peek("", id)
 		assert.Equal(t, []string{"other"}, got.DupCandidates)
@@ -260,7 +289,7 @@ func TestIndexFieldOwnership(t *testing.T) {
 	t.Run("keepTags keeps the stored tags (memory AND chunks) over a stale snapshot", func(t *testing.T) {
 		s := newStack(t, 1, time.Minute)
 		id := uuid.NewString()
-		seed(t, s, "", memory.Record{ID: id, Text: "t", Tags: []string{"kubernetes"}, IndexedSeq: 1}) // already renamed k8s -> kubernetes
+		seed(t, s, "", memory.Record{ID: id, Text: "t", Tags: []string{"kubernetes"}, IndexVersion: 1}) // already renamed k8s -> kubernetes
 		runIndex(t, s, indexMsg(t, 5, memory.Record{ID: id, Text: "edited", Tags: []string{"k8s"}, KeepTags: true, CreatedAt: time.Now()}))
 		got, _ := s.fs.peek("", id)
 		assert.Equal(t, "edited", got.Text)
@@ -273,7 +302,7 @@ func TestIndexFieldOwnership(t *testing.T) {
 	t.Run("without keepTags the message's tags win (replace_tags / import are point-in-time)", func(t *testing.T) {
 		s := newStack(t, 1, time.Minute)
 		id := uuid.NewString()
-		seed(t, s, "", memory.Record{ID: id, Text: "t", Tags: []string{"kubernetes"}, IndexedSeq: 1})
+		seed(t, s, "", memory.Record{ID: id, Text: "t", Tags: []string{"kubernetes"}, IndexVersion: 1})
 		runIndex(t, s, indexMsg(t, 5, memory.Record{ID: id, Text: "t", Tags: []string{"explicit", " explicit ", ""}, CreatedAt: time.Now()}))
 		got, _ := s.fs.peek("", id)
 		assert.Equal(t, []string{"explicit"}, got.Tags, "tags are normalised (trim, dedup, drop empty) at the worker too")
@@ -322,7 +351,7 @@ func TestContendedIDWaitsAndAppliesAfterExpiry(t *testing.T) {
 	msg.delivered = memory.MaxDeliver // last delivery: a Nak or failure would dead-letter it
 	start := time.Now()
 	process(context.Background(), msg, func(ctx context.Context, _ jetstream.Msg) {
-		handleIndex(ctx, testLog, s.m, s.js, s.locker, s.stream, s.embedder, s.stores, s.chunker, msg, 0)
+		handleIndex(ctx, testLog, s.m, s.js, s.locker, s.embedder, s.stores, s.chunker, msg, 0)
 	})
 
 	assert.GreaterOrEqual(t, time.Since(start), time.Second, "must have waited for the lease to expire")
@@ -481,7 +510,7 @@ func TestShutdownFailureIsNotDeadLettered(t *testing.T) {
 	cancel()
 	msg := indexMsg(t, 3, memory.Record{ID: uuid.NewString(), Text: "x", CreatedAt: time.Now()})
 	msg.delivered = memory.MaxDeliver
-	handleIndex(ctx, testLog, s.m, s.js, s.locker, s.stream, s.embedder, s.stores, s.chunker, msg, 0)
+	handleIndex(ctx, testLog, s.m, s.js, s.locker, s.embedder, s.stores, s.chunker, msg, 0)
 	assert.EqualValues(t, 1, msg.nakked.Load())
 	assert.Zero(t, outcome(s.m, kindIndex, outcomeDead))
 	assert.Zero(t, msg.acked.Load())
@@ -489,75 +518,6 @@ func TestShutdownFailureIsNotDeadLettered(t *testing.T) {
 	lm := linkMsg(t, memory.LinkMsg{Op: memory.LinkOpAdd, A: uuid.NewString(), B: uuid.NewString()})
 	handleLink(ctx, testLog, s.m, s.js, s.locker, s.stores, lm)
 	assert.EqualValues(t, 1, lm.nakked.Load())
-}
-
-// Sequences restart at 1 when the MEMORY stream is recreated. Without a stream
-// identity every later write would look "older than stored" and be skipped forever.
-func TestStaleGuardAcrossStreamRecreation(t *testing.T) {
-	newRec := func(id, text string) memory.Record {
-		return memory.Record{ID: id, Text: text, CreatedAt: time.Now()}
-	}
-	t.Run("stored seq from a different stream does not suppress the write", func(t *testing.T) {
-		s := newStack(t, 1, time.Minute)
-		real := s.stream.get(context.Background())
-		require.NotZero(t, real)
-		id := uuid.NewString()
-		seed(t, s, "", memory.Record{ID: id, Text: "from old stream", IndexedSeq: 100, IndexedStream: real - 5_000_000})
-		runIndex(t, s, indexMsg(t, 3, newRec(id, "from new stream")))
-		got, _ := s.fs.peek("", id)
-		assert.Equal(t, "from new stream", got.Text)
-		assert.EqualValues(t, 3, got.IndexedSeq)
-		assert.Equal(t, real, got.IndexedStream)
-		assert.Zero(t, outcome(s.m, kindIndex, outcomeStale))
-	})
-	t.Run("same stream still guards", func(t *testing.T) {
-		s := newStack(t, 1, time.Minute)
-		real := s.stream.get(context.Background())
-		id := uuid.NewString()
-		seed(t, s, "", memory.Record{ID: id, Text: "newer", IndexedSeq: 100, IndexedStream: real})
-		runIndex(t, s, indexMsg(t, 3, newRec(id, "older")))
-		got, _ := s.fs.peek("", id)
-		assert.Equal(t, "newer", got.Text)
-		assert.EqualValues(t, 1, outcome(s.m, kindIndex, outcomeStale))
-	})
-	t.Run("legacy object without identity compares sequences as before", func(t *testing.T) {
-		// Its stream is unknowable; assuming "same stream" keeps the pre-upgrade
-		// guard instead of letting any old message through.
-		s := newStack(t, 1, time.Minute)
-		id := uuid.NewString()
-		seed(t, s, "", memory.Record{ID: id, Text: "newer", IndexedSeq: 100})
-		runIndex(t, s, indexMsg(t, 3, newRec(id, "older")))
-		got, _ := s.fs.peek("", id)
-		assert.Equal(t, "newer", got.Text)
-	})
-	t.Run("summaries", func(t *testing.T) {
-		s := newStack(t, 1, time.Minute)
-		ts := s.fs.tenant("")
-		sum := func(text string) memory.Summary {
-			return memory.Summary{ConversationID: "c", Text: text, UpdatedAt: time.Now()}
-		}
-		ok, err := commitSummary(context.Background(), s.locker, ts, sum("old stream"), nil, 100, fixedStream(111))
-		require.NoError(t, err)
-		require.True(t, ok)
-		ok, err = commitSummary(context.Background(), s.locker, ts, sum("new stream"), nil, 2, fixedStream(222))
-		require.NoError(t, err)
-		assert.True(t, ok, "different stream identity: fresh")
-		ok, err = commitSummary(context.Background(), s.locker, ts, sum("stale"), nil, 1, fixedStream(222))
-		require.NoError(t, err)
-		assert.False(t, ok, "same stream, lower seq: stale")
-	})
-	t.Run("identity changes when the stream is recreated", func(t *testing.T) {
-		s := newStack(t, 1, time.Minute)
-		ctx := context.Background()
-		before := s.stream.get(ctx)
-		require.NoError(t, s.js.DeleteStream(ctx, memory.StreamName))
-		time.Sleep(5 * time.Millisecond)
-		require.NoError(t, bus.EnsureStream(ctx, s.js))
-		s.stream.refresh(ctx)
-		after := s.stream.get(ctx)
-		assert.NotEqual(t, before, after)
-		assert.NotZero(t, after)
-	})
 }
 
 // Link ids that can never exist must not burn the 50-delivery retry budget.
@@ -568,37 +528,6 @@ func TestInvalidLinkIDsTerminate(t *testing.T) {
 	assert.EqualValues(t, 1, lm.termed.Load())
 	assert.Zero(t, lm.nakked.Load())
 	assert.EqualValues(t, 1, outcome(s.m, kindLink, outcomeTerm))
-}
-
-// A stream recreated within the identity cache window restarts sequences at 1. The
-// stale guard must refresh the identity BEFORE declaring a message stale, or every
-// message looks older than stored until the cache expires.
-func TestStaleGuardRefreshesStreamIdentityBeforeSkipping(t *testing.T) {
-	s := newStack(t, 1, time.Minute)
-	ctx := context.Background()
-	before := s.stream.get(ctx) // cached
-	id := uuid.NewString()
-	seed(t, s, "", memory.Record{ID: id, Text: "old stream", IndexedSeq: 100, IndexedStream: before})
-
-	require.NoError(t, s.js.DeleteStream(ctx, memory.StreamName))
-	time.Sleep(5 * time.Millisecond)
-	require.NoError(t, bus.EnsureStream(ctx, s.js))
-	// No refresh here: the cache still holds the OLD identity.
-
-	msg := indexMsg(t, 1, memory.Record{ID: id, Text: "new stream", CreatedAt: time.Now()})
-	runIndex(t, s, msg)
-	got, _ := s.fs.peek("", id)
-	assert.Equal(t, "new stream", got.Text, "message from the recreated stream was skipped as stale")
-	assert.NotEqual(t, before, got.IndexedStream)
-	assert.Zero(t, outcome(s.m, kindIndex, outcomeStale))
-
-	// A genuinely stale message (same, now-refreshed, stream) is still skipped.
-	old := indexMsg(t, 0, memory.Record{ID: id, Text: "older", CreatedAt: time.Now()})
-	seed(t, s, "", memory.Record{ID: id, Text: "newer", IndexedSeq: 50, IndexedStream: got.IndexedStream})
-	runIndex(t, s, old)
-	got, _ = s.fs.peek("", id)
-	assert.Equal(t, "newer", got.Text)
-	assert.EqualValues(t, 1, outcome(s.m, kindIndex, outcomeStale))
 }
 
 // A critical section cut off by the hold deadline is counted and retried (not

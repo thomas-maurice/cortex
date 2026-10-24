@@ -62,8 +62,8 @@ func trashProperties() []*models.Property {
 		// Every other Memory property that the worker does NOT recompute is kept so a
 		// restore does not reset history: accessCount/lastAccessedAt (recall usage), useCount/lastUsedAt
 		// (above; actual use, drives stale review),
-		// model/dims (display). dupCandidates (recomputed at index), indexedSeq and
-		// indexedStream (re-stamped by the worker from the new queue message) are
+		// model/dims (display). dupCandidates (recomputed at index) and indexVersion
+		// (re-stamped by bus.PublishIndex when the restore republishes) are
 		// deliberately NOT kept.
 		{Name: "accessCount", DataType: []string{"int"}},
 		{Name: "lastAccessedAt", DataType: []string{"date"}},

@@ -14,11 +14,12 @@ const (
 	kindSummary = "summary"
 	kindLink    = "link"
 
-	outcomeAck   = "ack"   // processed (or acknowledged as done)
-	outcomeRetry = "retry" // NAK'd for redelivery
-	outcomeDead  = "dead"  // dead-lettered
-	outcomeTerm  = "term"  // permanently dropped without a dead-letter
-	outcomeStale = "stale" // acked and skipped: a newer version was already stored
+	outcomeAck     = "ack"     // processed (or acknowledged as done)
+	outcomeRetry   = "retry"   // NAK'd for redelivery
+	outcomeDead    = "dead"    // dead-lettered
+	outcomeTerm    = "term"    // permanently dropped without a dead-letter
+	outcomeStale   = "stale"   // acked and skipped: a newer version was already stored
+	outcomeSkipped = "skipped" // acked and skipped: create-only message for an id that is live (other message) or trashed
 )
 
 // metrics is the worker's Prometheus instrumentation. Every method is safe on a

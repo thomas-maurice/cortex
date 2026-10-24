@@ -11,12 +11,13 @@ import (
 
 // NewClient builds a MemoryService client pointed at baseURL (e.g.
 // "http://localhost:8080"), attaching the bearer token to every call. token may
-// be empty when the server runs without auth.
-func NewClient(baseURL, token string) cortexv1connect.MemoryServiceClient {
+// be empty when the server runs without auth. extra interceptors run after the
+// auth one.
+func NewClient(baseURL, token string, extra ...connect.Interceptor) cortexv1connect.MemoryServiceClient {
 	httpClient := &http.Client{Timeout: 60 * time.Second}
 	return cortexv1connect.NewMemoryServiceClient(
 		httpClient,
 		baseURL,
-		connect.WithInterceptors(clientAuthInterceptor(token)),
+		connect.WithInterceptors(append([]connect.Interceptor{clientAuthInterceptor(token)}, extra...)...),
 	)
 }

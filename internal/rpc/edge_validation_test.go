@@ -6,11 +6,14 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	cortexv1 "github.com/thomas-maurice/cortex/gen/cortex/v1"
 	"github.com/thomas-maurice/cortex/internal/bus"
@@ -265,4 +268,81 @@ func TestBadIDEchoIsTruncated(t *testing.T) {
 	require.Error(t, err)
 	assert.Less(t, len(err.Error()), 150)
 	assert.Contains(t, err.Error(), "…")
+}
+
+// lastIndexed decodes the most recent index payload published by Save.
+func lastIndexed(t *testing.T, svc *Service) memory.Record {
+	t.Helper()
+	st, err := svc.js.Stream(context.Background(), memory.StreamName)
+	require.NoError(t, err)
+	raw, err := st.GetLastMsgForSubject(context.Background(), memory.SubjectIndex)
+	require.NoError(t, err)
+	var rec memory.Record
+	require.NoError(t, json.Unmarshal(raw.Data, &rec))
+	return rec
+}
+
+// The offline outbox picks the id before the server is reachable; honouring it
+// makes that stable id the Weaviate object id, so a replay is idempotent.
+func TestSaveHonoursClientID(t *testing.T) {
+	svc, msgs := edgeTestService(t)
+	id := uuid.New()
+	resp, err := svc.Save(context.Background(), connect.NewRequest(&cortexv1.SaveRequest{
+		Text: "hello", Id: proto.String(strings.ToUpper(id.String())),
+	}))
+	require.NoError(t, err)
+	assert.Equal(t, id.String(), resp.Msg.GetId(), "canonical form returned")
+	assert.Equal(t, uint64(1), msgs())
+	rec := lastIndexed(t, svc)
+	assert.Equal(t, id.String(), rec.ID)
+	assert.True(t, rec.CreateOnly, "Save must never overwrite an existing id")
+}
+
+// Arbitrary strings must never become Weaviate object ids.
+func TestSaveRejectsMalformedClientID(t *testing.T) {
+	for _, bad := range []string{"not-a-uuid", "../etc"} {
+		svc, msgs := edgeTestService(t)
+		_, err := svc.Save(context.Background(), connect.NewRequest(&cortexv1.SaveRequest{Text: "hello", Id: proto.String(bad)}))
+		require.Error(t, err, bad)
+		assert.Equal(t, connect.CodeInvalidArgument, connectCode(t, err), bad)
+		assert.Zero(t, msgs(), "nothing published for %q", bad)
+	}
+}
+
+// Existing clients (CLI) send no id; the server must keep minting one.
+func TestSaveMintsIDWhenAbsent(t *testing.T) {
+	svc, msgs := edgeTestService(t)
+	resp, err := svc.Save(context.Background(), connect.NewRequest(&cortexv1.SaveRequest{Text: "hello"}))
+	require.NoError(t, err)
+	_, perr := uuid.Parse(resp.Msg.GetId())
+	require.NoError(t, perr)
+	assert.Equal(t, uint64(1), msgs())
+	assert.Equal(t, resp.Msg.GetId(), lastIndexed(t, svc).ID)
+}
+
+func TestSaveCreatedAtClamp(t *testing.T) {
+	ctx := context.Background()
+	save := func(t *testing.T, ca *timestamppb.Timestamp) (memory.Record, time.Time, time.Time) {
+		svc, _ := edgeTestService(t)
+		before := time.Now().UTC()
+		_, err := svc.Save(ctx, connect.NewRequest(&cortexv1.SaveRequest{Text: "hello", CreatedAt: ca}))
+		require.NoError(t, err)
+		return lastIndexed(t, svc), before, time.Now().UTC()
+	}
+
+	// A memory queued for days must not rank as fresh.
+	t.Run("past is kept", func(t *testing.T) {
+		past := time.Now().Add(-72 * time.Hour).UTC().Truncate(time.Microsecond)
+		rec, _, _ := save(t, timestamppb.New(past))
+		assert.True(t, rec.CreatedAt.Equal(past), "got %s want %s", rec.CreatedAt, past)
+	})
+	// A fast client clock must not make a memory newer than everything else.
+	t.Run("future is clamped to now", func(t *testing.T) {
+		rec, before, after := save(t, timestamppb.New(time.Now().Add(48*time.Hour)))
+		assert.False(t, rec.CreatedAt.Before(before) || rec.CreatedAt.After(after), "got %s", rec.CreatedAt)
+	})
+	t.Run("unset is now", func(t *testing.T) {
+		rec, before, after := save(t, nil)
+		assert.False(t, rec.CreatedAt.Before(before) || rec.CreatedAt.After(after), "got %s", rec.CreatedAt)
+	})
 }

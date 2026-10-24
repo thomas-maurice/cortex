@@ -43,8 +43,12 @@ func tenantFromContext(ctx context.Context) string {
 // PublishIndex publishes a record for async indexing and waits for the broker ack.
 // The record's UserID is stamped from the request context identity before
 // publishing — the worker reads it to scope its store writes to the correct tenant.
+// IndexVersion is stamped with the current time, overwriting any producer value, so
+// every publish (including a requeue or restore of an old payload) is "now" to the
+// worker's stale-write guard.
 func PublishIndex(ctx context.Context, js jetstream.JetStream, rec memory.Record) error {
 	rec.UserID = tenantFromContext(ctx)
+	rec.IndexVersion = time.Now().UnixMicro()
 	data, err := json.Marshal(rec)
 	if err != nil {
 		return err
@@ -57,9 +61,10 @@ func PublishIndex(ctx context.Context, js jetstream.JetStream, rec memory.Record
 
 // PublishSummary publishes a conversation summary for async indexing and waits
 // for the broker ack. The summary's UserID is stamped from the request context
-// identity before publishing.
+// identity before publishing, and IndexVersion is stamped like PublishIndex.
 func PublishSummary(ctx context.Context, js jetstream.JetStream, sum memory.Summary) error {
 	sum.UserID = tenantFromContext(ctx)
+	sum.IndexVersion = time.Now().UnixMicro()
 	data, err := json.Marshal(sum)
 	if err != nil {
 		return err

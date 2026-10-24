@@ -1074,12 +1074,9 @@ roll forward. Watch `cortex_queue_oldest_message_age_seconds`: approaching
 
 Upgrade notes: a `cortex_locks` bucket created by a pre-release build with memory
 storage must be deleted once (`nats kv del cortex_locks`), because JetStream cannot
-change a bucket's storage type and the worker would fail to start. Objects written
-before `indexedStream` existed carry no stream identity; if the `MEMORY` stream is
-recreated before they are next edited, a message with a low sequence can be skipped
-as stale for such an object (the guard then compares sequences as before); editing
-the memory (or re-importing it) once the stream has caught up past the stored
-sequence, or deleting it first, stamps the identity and clears it.
+change a bucket's storage type and the worker would fail to start.
+The stale-write guard (`indexVersion`, a publish-time stamp) does not depend on
+JetStream state, so wiping or recreating the `MEMORY` stream needs no special care.
 
 Caveat: multiple **server** replicas can lose reinforcement increments
 (`accessCount`, a ranking signal only) because the server read-modify-writes it

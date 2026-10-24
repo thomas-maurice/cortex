@@ -144,3 +144,14 @@ func TestMetricsAddrFromEnv(t *testing.T) {
 	t.Setenv("WORKER_METRICS_ADDR", ":9191")
 	assert.Equal(t, ":9191", metricsAddrFromEnv())
 }
+
+// Only additive "missing property" problems are waited out (the server adds
+// them on boot); anything else must be reported at once.
+func TestOnlyMissingProperties(t *testing.T) {
+	assert.False(t, onlyMissingProperties(nil))
+	assert.True(t, onlyMissingProperties([]string{`class Memory missing property "indexVersion"`}))
+	assert.False(t, onlyMissingProperties([]string{
+		`class Memory missing property "indexVersion"`,
+		`class Memory property "tags" has tokenization "word", want "field"`,
+	}))
+}

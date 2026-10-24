@@ -210,10 +210,12 @@ should encode *why* the behaviour matters, not just what it does (Rule 9).
   Per-memory-id distributed lock in the NATS KV bucket `cortex_locks`
   (`internal/dlock`; 60s TTL, file storage, create-to-acquire, delete-at-our-revision
   to release; bucket re-ensured on infra errors; link applies lock BOTH ids in sorted
-  order; the hold deadline is anchored at the FIRST lease). Index messages carry their
-  JetStream stream sequence + stream identity → persisted as `indexedSeq` /
-  `indexedStream` (Memory + ConversationSummary); under the lock a lower seq (same
-  stream) is acked as outcome `stale`. Lock contention waits in-handler (never NAK,
+  order; the hold deadline is anchored at the FIRST lease). `bus.PublishIndex`/`PublishSummary` stamp
+  every message with `IndexVersion` (unix µs, producer value overwritten) → persisted as
+  `indexVersion` (Memory + ConversationSummary); under the lock a lower version than
+  stored is acked as outcome `stale` (equal = redelivery, re-applies; stored 0 = legacy,
+  applies). No dependence on JetStream seqs/stream identity, so a NATS wipe is harmless.
+  `indexedSeq`/`indexedStream` are deprecated schema props, unread/unwritten. Lock contention waits in-handler (never NAK,
   which would burn `MaxDeliver`). The worker pulls with `Fetch(1)` loops
   (`cmd/worker/pool.go`, `WORKER_CONCURRENCY` per consumer; never a streaming Consume,
   which hoards) and `InProgress`-keepalives each message for its whole life. **Field ownership:**
@@ -233,7 +235,7 @@ should encode *why* the behaviour matters, not just what it does (Rule 9).
   delete, worker `supersedes` → reason `supersedes:<id>`; before trashing, `applySupersedes` carries the source's links to the merged memory via the link queue (ADD new↔N, REMOVE source↔N), `DeleteNamespace` per memory →
   `namespace-delete`) copy the record into the `Trash` class (same tenant/id, no vector,
   `internal/store/trash.go`) BEFORE deleting; trash write failure = nothing deleted.
-  `Memory` has no deleted flag. Entries keep accessCount/lastAccessedAt/model/dims (not dupCandidates/indexedSeq). Restore (ids, or `all`+namespace+reason bulk) = `bus.PublishIndex` (+ `PublishLink` for live
+  `Memory` has no deleted flag. Entries keep accessCount/lastAccessedAt/model/dims (not dupCandidates/indexVersion). Restore (ids, or `all`+namespace+reason bulk) = `bus.PublishIndex` (+ `PublishLink` for live
   endpoints) then drop the entry; never overwrites a live id; purge/sweep queue link REMOVEs to neighbours; `Delete.reason` ∈ {delete, stale-review, duplicate-review}. Retention: `TRASH_RETENTION`
   (default 168h, 0 = forever) + hourly sweep in cmd/server (`Service.SweepTrash` →
   `Store.PurgeExpiredTrash`, all tenants). Trash is NOT in backups. `DeleteClass` leaves

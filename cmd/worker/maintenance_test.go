@@ -29,7 +29,7 @@ func TestWorkerPausesFetchingDuringMaintenance(t *testing.T) {
 	var held atomic.Bool
 	held.Store(true)
 	d := &workerDeps{
-		log: slog.New(slog.NewTextHandler(io.Discard, nil)), m: s.m, js: s.js, locker: s.locker, stream: s.stream,
+		log: slog.New(slog.NewTextHandler(io.Discard, nil)), m: s.m, js: s.js, locker: s.locker,
 		embedder: s.embedder, chunker: s.chunker, concurrency: 2, ackWait: s.ackWait, stores: s.stores,
 		hold: func(context.Context) bool { return held.Load() },
 	}
@@ -63,7 +63,7 @@ func TestPoolReportsBusyUntilInflightFinishesThenHeld(t *testing.T) {
 	release := make(chan struct{})
 	started := make(chan struct{}, 1)
 	d := &workerDeps{
-		log: slog.New(slog.NewTextHandler(io.Discard, nil)), m: s.m, js: s.js, locker: s.locker, stream: s.stream,
+		log: slog.New(slog.NewTextHandler(io.Discard, nil)), m: s.m, js: s.js, locker: s.locker,
 		embedder: s.embedder, chunker: s.chunker, concurrency: 1, ackWait: s.ackWait,
 		stores: func(string) tenantStore { started <- struct{}{}; <-release; return s.stores("") },
 		hold:   func(context.Context) bool { return held.Load() },
@@ -100,7 +100,7 @@ func TestHeartbeatReportsInflightThroughShutdown(t *testing.T) {
 	release := make(chan struct{})
 	started := make(chan struct{}, 1)
 	d := &workerDeps{
-		log: slog.New(slog.NewTextHandler(io.Discard, nil)), m: s.m, js: s.js, locker: s.locker, stream: s.stream,
+		log: slog.New(slog.NewTextHandler(io.Discard, nil)), m: s.m, js: s.js, locker: s.locker,
 		embedder: s.embedder, chunker: s.chunker, concurrency: 1, ackWait: s.ackWait,
 		stores: func(string) tenantStore { started <- struct{}{}; <-release; return s.stores("") },
 	}

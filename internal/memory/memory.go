@@ -147,6 +147,10 @@ type Record struct {
 	// (Save, replace_tags edits, import/restore, dead-letter retry of those) leave
 	// it false.
 	KeepTags bool `json:"keepTags,omitempty"`
+	// CreateOnly (NATS payload only, never persisted) means "this message must
+	// never overwrite an existing or trashed memory with this id". Set by Save
+	// only; the worker guard that consumes it is a separate chunk.
+	CreateOnly bool `json:"createOnly,omitempty"`
 	// NeverExpires (NATS payload only, never persisted) is the Save caller's
 	// explicit "no expiry": the worker then skips the supersedes expiry inheritance
 	// (merge.InheritedExpiry) so a permanent merge of time-bound sources stays
@@ -215,15 +219,11 @@ type Record struct {
 	UseCount   int       `json:"useCount,omitempty"`
 	LastUsedAt time.Time `json:"lastUsedAt"`
 
-	// IndexedSeq is the JetStream stream sequence of the index message that last
-	// wrote this object (the worker's stale-write guard). It is set by the worker
-	// from message metadata under the id lock and persisted as a Weaviate
-	// property; whatever a producer puts here on the payload is ignored.
-	IndexedSeq uint64 `json:"indexedSeq,omitempty"`
-	// IndexedStream identifies the stream IndexedSeq belongs to (stream creation
-	// time, unix microseconds; 0 = unknown/legacy). Sequences from a recreated
-	// stream restart at 1, so the guard only compares seqs within one stream.
-	IndexedStream int64 `json:"indexedStream,omitempty"`
+	// IndexVersion is the worker's stale-write guard: unix microseconds, stamped
+	// by bus.PublishIndex at publish (whatever a producer puts here is
+	// overwritten) and persisted by the worker as-is. Under the id lock a message
+	// older than the stored version is skipped; 0 = legacy/unset.
+	IndexVersion int64 `json:"indexVersion,omitempty"`
 
 	// ValidUntil is when this memory stops being true ("deploy freeze until
 	// Friday"). The zero time means it never expires. Expired memories are hidden
@@ -278,10 +278,9 @@ type Summary struct {
 	Dims           int       `json:"dims,omitempty"`
 	// UserID is the tenant this summary belongs to (NATS payload only; not a Weaviate property).
 	UserID string `json:"userId,omitempty"`
-	// IndexedSeq: stream sequence of the message that last wrote this summary
-	// (stale-write guard, see Record.IndexedSeq). Ignored on the payload.
-	IndexedSeq    uint64 `json:"indexedSeq,omitempty"`
-	IndexedStream int64  `json:"indexedStream,omitempty"`
+	// IndexVersion: stale-write guard, see Record.IndexVersion (stamped by
+	// bus.PublishSummary).
+	IndexVersion int64 `json:"indexVersion,omitempty"`
 }
 
 // SummaryHit is a summary plus its vector distance to the query.
