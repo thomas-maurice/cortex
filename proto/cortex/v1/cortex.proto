@@ -312,6 +312,15 @@ message SaveRequest {
   // link_to: a missing/already-deleted source is skipped (logged), never fatal.
   // One-shot, not persisted as a property.
   repeated string supersedes = 7;
+  // id, when set, must be a well-formed UUID; it becomes the Weaviate object id
+  // (lets an offline client pick a stable id before the server is reachable).
+  // Omitted -> the server mints one. A save never overwrites an existing or
+  // trashed memory with that id (enforced by the worker).
+  optional string id = 8;
+  // created_at is set by offline clients to the enqueue time so a replayed save
+  // keeps when it was queued. A value after the server's now is replaced by now;
+  // omitted -> now. There is no lower clamp. Expiry resolution still uses now.
+  optional google.protobuf.Timestamp created_at = 9;
   // Optional expiry for a time-bound fact: either an absolute valid_until or a
   // relative expires_in ("7d", "36h"; days supported; > 0 and <= 10 years), not both.
   // valid_until must be in the future.

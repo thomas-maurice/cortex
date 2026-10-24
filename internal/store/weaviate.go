@@ -210,13 +210,15 @@ func memoryProperties() []*models.Property {
 		// existing memory.
 		{Name: "useCount", DataType: []string{"int"}},
 		{Name: "lastUsedAt", DataType: []string{"date"}},
-		// indexedSeq is the JetStream stream sequence of the index message that last
-		// wrote this object: the worker's stale-write guard (an older message must
-		// not overwrite a newer one). Absent on pre-existing objects, read as 0.
+		// indexVersion is the publish-time stamp (unix microseconds, set by
+		// bus.PublishIndex) of the message that last wrote this object: the worker's
+		// stale-write guard (an older message must not overwrite a newer one). Absent
+		// on pre-existing objects, read as 0.
+		{Name: "indexVersion", DataType: []string{"int"}},
+		// DEPRECATED, no longer read or written (the old JetStream seq/stream guard,
+		// replaced by indexVersion). Kept so a rolled-back binary's VerifySchema stays
+		// clean; Weaviate cannot drop a property in place.
 		{Name: "indexedSeq", DataType: []string{"int"}},
-		// indexedStream identifies the JetStream stream indexedSeq belongs to (its
-		// creation time, unix microseconds), so a recreated stream (sequences restart
-		// at 1) is not mistaken for "older than everything stored".
 		{Name: "indexedStream", DataType: []string{"int"}},
 		// validUntil is when the memory stops being true (null = never expires).
 		// Index-owned. Memories written before this property existed simply have no
@@ -254,7 +256,9 @@ func summaryProperties() []*models.Property {
 		{Name: "updatedAt", DataType: []string{"date"}},
 		{Name: "model", DataType: []string{"text"}},
 		{Name: "dims", DataType: []string{"int"}},
-		// indexedSeq/indexedStream: stale-write guard, see memoryProperties.
+		// indexVersion: stale-write guard; indexedSeq/indexedStream: deprecated,
+		// unused. See memoryProperties.
+		{Name: "indexVersion", DataType: []string{"int"}},
 		{Name: "indexedSeq", DataType: []string{"int"}},
 		{Name: "indexedStream", DataType: []string{"int"}},
 	}
@@ -622,8 +626,7 @@ func indexOwnedProps(rec memory.Record) map[string]interface{} {
 		"dims":           rec.Dims,
 		"conversationId": rec.ConversationID,
 		"dupCandidates":  dups,
-		"indexedSeq":     rec.IndexedSeq,
-		"indexedStream":  rec.IndexedStream,
+		"indexVersion":   rec.IndexVersion,
 	}
 }
 
@@ -667,7 +670,7 @@ func (ts *TenantStore) Upsert(ctx context.Context, rec memory.Record, vector []f
 // UpdateIndexFields rewrites an EXISTING memory's index-owned fields and vector
 // via a Weaviate merge (PATCH) and nothing else. Index-owned: text, vector,
 // namespace, tags, source, createdAt, conversationId, model, dims, dupCandidates,
-// indexedSeq, indexedStream. Deliberately NOT written, because other writers own
+// indexVersion. Deliberately NOT written, because other writers own
 // them and a queued index message only carries a stale snapshot:
 //
 //	validUntil                   server SetValidUntil (written by Upsert on create only)
@@ -746,8 +749,7 @@ func (ts *TenantStore) UpsertSummary(ctx context.Context, sum memory.Summary, ve
 		"updatedAt":      sum.UpdatedAt.UTC().Format(time.RFC3339),
 		"model":          sum.Model,
 		"dims":           sum.Dims,
-		"indexedSeq":     sum.IndexedSeq,
-		"indexedStream":  sum.IndexedStream,
+		"indexVersion":   sum.IndexVersion,
 	}, vector)
 }
 
@@ -808,18 +810,18 @@ func (ts *TenantStore) Get(ctx context.Context, id string) (memory.Record, bool,
 	return objectToRecord(id, props), true, nil
 }
 
-// GetSummarySeq returns the indexedSeq and indexedStream of a conversation's
-// stored summary. A missing summary, or one that predates the properties, reads as
-// 0, 0 (nil error), which the stale guard treats as "nothing newer stored".
-func (ts *TenantStore) GetSummarySeq(ctx context.Context, conversationID string) (seq uint64, stream int64, err error) {
+// GetSummaryVersion returns the indexVersion of a conversation's stored summary.
+// A missing summary, or one that predates the property, reads as 0 (nil error),
+// which the stale guard treats as "nothing newer stored".
+func (ts *TenantStore) GetSummaryVersion(ctx context.Context, conversationID string) (int64, error) {
 	props, ok, err := ts.getProps(ctx, memory.SummaryClassName, memory.SummaryID(conversationID))
 	if err != nil || !ok {
-		return 0, 0, err
+		return 0, err
 	}
 	if p, isMap := props.(map[string]interface{}); isMap {
-		return restSeq(p, "indexedSeq"), restInt64(p, "indexedStream"), nil
+		return restInt64(p, "indexVersion"), nil
 	}
-	return 0, 0, nil
+	return 0, nil
 }
 
 // getProps fetches one object's raw REST properties from className, with the
@@ -1709,8 +1711,7 @@ func objectToRecord(id string, raw models.PropertySchema) memory.Record {
 		NotDuplicateOf: restStrings(p, "notDuplicateOf"),
 		AccessCount:    restInt(p, "accessCount"),
 		UseCount:       restInt(p, "useCount"),
-		IndexedSeq:     restSeq(p, "indexedSeq"),
-		IndexedStream:  restInt64(p, "indexedStream"),
+		IndexVersion:   restInt64(p, "indexVersion"),
 	}
 	if ca := restString(p, "createdAt"); ca != "" {
 		rec.CreatedAt, _ = time.Parse(time.RFC3339, ca)
@@ -1739,16 +1740,8 @@ func restString(p map[string]interface{}, key string) string {
 	return s
 }
 
-// restSeq decodes an int property as a uint64 sequence; absent or negative is 0.
-func restSeq(p map[string]interface{}, key string) uint64 {
-	if f, ok := p[key].(float64); ok && f > 0 {
-		return uint64(f)
-	}
-	return 0
-}
-
 // restInt64 decodes an int property as int64 (float64 on the REST path is exact
-// below 2^53, which covers unix-microsecond identities).
+// below 2^53, which covers unix-microsecond timestamps).
 func restInt64(p map[string]interface{}, key string) int64 {
 	if f, ok := p[key].(float64); ok {
 		return int64(f)

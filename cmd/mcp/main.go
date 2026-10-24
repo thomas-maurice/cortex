@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -12,16 +13,20 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"connectrpc.com/connect"
 	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	cortexv1 "github.com/thomas-maurice/cortex/gen/cortex/v1"
 	"github.com/thomas-maurice/cortex/gen/cortex/v1/cortexv1connect"
 	"github.com/thomas-maurice/cortex/internal/config"
+	"github.com/thomas-maurice/cortex/internal/memory"
+	"github.com/thomas-maurice/cortex/internal/outbox"
 	"github.com/thomas-maurice/cortex/internal/recallstate"
 	"github.com/thomas-maurice/cortex/internal/rpc"
 	"github.com/thomas-maurice/cortex/internal/upgrade"
@@ -158,6 +163,61 @@ type deps struct {
 	seen        map[string]bool
 	statePath   string
 	realSession bool
+
+	// Offline outbox (internal/outbox): saves that hit a transient failure are
+	// queued here and replayed once the server is reachable. outboxPath "" =
+	// disabled (home dir unresolvable). Entries are keyed by conversationID; the
+	// per-process fallback id (realSession false) orphans them by design, the
+	// CLI flush picks them up.
+	outboxPath string
+	draining   atomic.Bool    // single-flight guard for kickDrain
+	drainWG    sync.WaitGroup // lets tests wait for the drain goroutine
+}
+
+// drainEntryTimeout bounds each outbox entry's send during a background drain,
+// so a half-dead server cannot pin the drain goroutine.
+const drainEntryTimeout = 3 * time.Second
+
+// kickDrain replays this session's queued saves in the background. It is
+// single-flight and non-blocking; called after any successful RPC (the server is
+// provably reachable right then) and once at startup.
+func (d *deps) kickDrain() {
+	if d.outboxPath == "" || !d.draining.CompareAndSwap(false, true) {
+		return
+	}
+	d.drainWG.Add(1)
+	go func() {
+		defer d.drainWG.Done()
+		defer d.draining.Store(false)
+		conv := d.conversationID
+		res, err := outbox.Drain(context.Background(), d.outboxPath, d.client, &conv, drainEntryTimeout)
+		if err != nil {
+			slog.Warn("outbox drain", "err", err)
+			return
+		}
+		for _, r := range res {
+			switch r.Outcome {
+			case outbox.OutcomeSent, outbox.OutcomeExpired:
+				slog.Info("outbox drain", "id", r.ID, "outcome", r.Outcome)
+			case outbox.OutcomeFailed, outbox.OutcomeCorrupt:
+				slog.Warn("outbox entry not sent", "id", r.ID, "outcome", r.Outcome, "err", r.Err)
+			}
+		}
+	}()
+}
+
+// drainOnSuccess is a client interceptor: any RPC that succeeds proves the server
+// is reachable, so kick a drain. No timer.
+func (d *deps) drainOnSuccess() connect.UnaryInterceptorFunc {
+	return func(next connect.UnaryFunc) connect.UnaryFunc {
+		return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
+			resp, err := next(ctx, req)
+			if err == nil {
+				d.kickDrain()
+			}
+			return resp, err
+		}
+	}
 }
 
 // withTimeout wraps a tool handler so EVERY cortex MCP call fails fast: it bounds
@@ -174,7 +234,10 @@ func withTimeout[In, Out any](
 		ctx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
 		res, out, err := h(ctx, req, in)
-		if ctx.Err() == context.DeadlineExceeded {
+		// A handler that finished with a result despite the deadline (the save
+		// handler queues offline on a timeout) keeps it: the clobber would hide
+		// "queued (offline)" and the id from Claude.
+		if ctx.Err() == context.DeadlineExceeded && (res == nil || err != nil) {
 			var zero Out
 			return nil, zero, fmt.Errorf("cortex call timed out after %s (server slow or unreachable) — failing fast so I don't block", timeout)
 		}
@@ -234,7 +297,6 @@ func main() {
 	}
 
 	d := &deps{
-		client:             rpc.NewClient(serverURL, authToken),
 		defaultNamespace:   defaultNS,
 		source:             source,
 		conversationID:     conversationID,
@@ -245,7 +307,10 @@ func main() {
 		seen:               map[string]bool{},
 		statePath:          recallstate.DefaultPath(),
 		realSession:        realSession,
+		outboxPath:         outbox.DefaultPath(),
 	}
+	d.client = rpc.NewClient(serverURL, authToken, d.drainOnSuccess())
+	d.kickDrain() // startup drain: background, never blocks the handshake
 
 	// The recall contract ships in the MCP instructions so it is loaded
 	// deterministically every session, versioned with the server — unlike a
@@ -258,6 +323,8 @@ func main() {
 		"answering or acting; a cheap empty result beats contradicting a stored decision. Save new facts, " +
 		"preferences, decisions and outcomes proactively with cortex_memory_save, and maintain one running " +
 		"cortex_session_summarize per conversation, updated at every milestone."
+
+	instructions += startupPendingNotice(d.outboxPath, time.Now())
 
 	// Startup version probe (best-effort, short deadline so a down server never
 	// delays MCP startup): when the server runs a different, compatible version,
@@ -497,6 +564,8 @@ type SaveIn struct {
 type SaveOut struct {
 	ID     string `json:"id" jsonschema:"the assigned memory ID"`
 	Status string `json:"status" jsonschema:"queued once accepted for async indexing"`
+	// PendingOffline is the total of saves sitting in the local outbox (this and earlier sessions); omitted when 0.
+	PendingOffline int `json:"pendingOffline,omitempty" jsonschema:"saves queued in the local offline outbox, not yet in Cortex"`
 }
 
 func (d *deps) save(ctx context.Context, _ *mcp.CallToolRequest, in SaveIn) (*mcp.CallToolResult, SaveOut, error) {
@@ -506,7 +575,11 @@ func (d *deps) save(ctx context.Context, _ *mcp.CallToolRequest, in SaveIn) (*mc
 	}
 	ns := d.nsOrDefault(in.Namespace)
 
-	resp, err := d.client.Save(ctx, connect.NewRequest(&cortexv1.SaveRequest{
+	// The id is minted here (not by the server) so a save that has to be queued
+	// offline already has its final id, which Claude can link to straight away.
+	id := uuid.NewString()
+	req := &cortexv1.SaveRequest{
+		Id:             &id,
 		Text:           text,
 		Namespace:      ns,
 		Tags:           config.MergeTags(in.Tags, d.autoSaveTags),
@@ -516,14 +589,75 @@ func (d *deps) save(ctx context.Context, _ *mcp.CallToolRequest, in SaveIn) (*mc
 		NeverExpires:   in.NeverExpires,
 		Source:         d.source,
 		ConversationId: d.conversationID,
-	}))
+	}
+
+	// A link/supersede target that is still queued must reach the server first,
+	// or the link consumer gives up waiting for it.
+	if d.outboxPath != "" {
+		dependsOn := append(append([]string{}, in.LinkTo...), in.Supersedes...)
+		if err := outbox.SendDeps(ctx, d.outboxPath, d.client, dependsOn, nil); err != nil {
+			if outbox.IsTransient(err) {
+				return d.saveOffline(req, ns, err)
+			}
+			slog.Warn("queued dependency not sent; saving anyway", "err", err)
+		}
+	}
+
+	resp, err := d.client.Save(ctx, connect.NewRequest(req))
 	if err != nil {
+		if outbox.IsTransient(err) {
+			return d.saveOffline(req, ns, err)
+		}
 		return nil, SaveOut{}, err
 	}
 
 	out := SaveOut{ID: resp.Msg.GetId(), Status: resp.Msg.GetStatus()}
+	if out.ID != id {
+		slog.Warn("server returned a different memory id than the one sent (old server ignoring SaveRequest.id?)", "sent", id, "got", out.ID)
+	}
 	msg := fmt.Sprintf("Memory queued for indexing (id=%s, namespace=%s)", out.ID, ns)
 	return text2result(msg), out, nil
+}
+
+// saveOffline stores req in the outbox after a transient failure (cause) and
+// reports it as queued, with the id the memory will keep. The relative expiry is
+// made absolute and created_at set to now, so the replay keeps when Claude saved
+// it. It deliberately ignores the (possibly expired) call context: bbolt takes none.
+func (d *deps) saveOffline(req *cortexv1.SaveRequest, ns string, cause error) (*mcp.CallToolResult, SaveOut, error) {
+	if d.outboxPath == "" {
+		return nil, SaveOut{}, cause
+	}
+	now := time.Now()
+	if req.GetExpiresIn() != "" {
+		dur, err := memory.ParseExpiresIn(req.GetExpiresIn())
+		if err != nil {
+			return nil, SaveOut{}, err
+		}
+		req.ValidUntil = timestamppb.New(now.Add(dur))
+		req.ExpiresIn = ""
+	}
+	req.CreatedAt = timestamppb.New(now)
+	raw, err := proto.Marshal(req)
+	if err != nil {
+		return nil, SaveOut{}, err
+	}
+	err = outbox.Enqueue(d.outboxPath, outbox.Entry{
+		ID:             req.GetId(),
+		Request:        raw,
+		ConversationID: d.conversationID,
+		EnqueuedAt:     now.UnixMicro(),
+		Preview:        outbox.PreviewOf(req.GetText()),
+	})
+	if errors.Is(err, outbox.ErrFull) {
+		return nil, SaveOut{}, fmt.Errorf("the Cortex server is unreachable (%v) and the local outbox is full: this memory was NOT stored; ask the user to run `cortex outbox flush`", cause)
+	}
+	if err != nil {
+		return nil, SaveOut{}, fmt.Errorf("the Cortex server is unreachable (%v) and the memory could not be queued locally (%v): NOT stored", cause, err)
+	}
+	slog.Warn("save queued offline", "id", req.GetId(), "cause", cause)
+	out := SaveOut{ID: req.GetId(), Status: queuedStatus}
+	out.PendingOffline, _, _ = d.pendingCounts()
+	return text2result(d.savedOfflineMessage(out.ID, ns)), out, nil
 }
 
 // ---- memory_search ----
@@ -564,10 +698,14 @@ type SearchHit struct {
 	// excerpt IS the whole text. On a stub, Text already holds the excerpt
 	// instead of the generic prefix, so Matched is left empty (no duplication).
 	Matched string `json:"matched,omitempty"`
+	// Status is "queued (offline)" for a memory that only exists in the local outbox (cortex_memory_get).
+	Status string `json:"status,omitempty"`
 }
 
 type SearchOut struct {
 	Hits []SearchHit `json:"hits"`
+	// PendingOffline: saves queued locally and not searchable yet; omitted when 0.
+	PendingOffline int `json:"pendingOffline,omitempty" jsonschema:"saves queued in the local offline outbox, not searchable yet"`
 }
 
 func (d *deps) search(ctx context.Context, _ *mcp.CallToolRequest, in SearchIn) (*mcp.CallToolResult, SearchOut, error) {
@@ -597,7 +735,7 @@ func (d *deps) search(ctx context.Context, _ *mcp.CallToolRequest, in SearchIn) 
 		IncludeExpired: in.IncludeExpired,
 	}))
 	if err != nil {
-		return nil, SearchOut{}, err
+		return nil, SearchOut{}, d.unreachableErr(err)
 	}
 
 	hits := resp.Msg.GetHits()
@@ -617,6 +755,8 @@ func (d *deps) search(ctx context.Context, _ *mcp.CallToolRequest, in SearchIn) 
 	}
 
 	out := SearchOut{Hits: make([]SearchHit, 0, len(hits))}
+	pendingText, pendingN := d.pendingNote()
+	out.PendingOffline = pendingN
 	var b strings.Builder
 	if len(hits) == 0 {
 		b.WriteString("No memories found.")
@@ -680,6 +820,9 @@ func (d *deps) search(ctx context.Context, _ *mcp.CallToolRequest, in SearchIn) 
 	}
 	if stubbed > 0 {
 		fmt.Fprintf(&b, "\n%d result(s) stubbed (already delivered this session). If the earlier copy is gone (e.g. compacted away), re-run with fresh=true.\n", stubbed)
+	}
+	if pendingText != "" {
+		b.WriteString("\n" + pendingText + "\n")
 	}
 	if hookState != nil {
 		hookState.Add(delivered...)
@@ -776,7 +919,14 @@ func (d *deps) get(ctx context.Context, _ *mcp.CallToolRequest, in GetIn) (*mcp.
 	}
 	resp, err := d.client.GetMemory(ctx, connect.NewRequest(&cortexv1.GetMemoryRequest{Id: id}))
 	if err != nil {
-		return nil, SearchHit{}, err
+		// A queued id is not on the server yet (NotFound) or the server is down.
+		if connect.CodeOf(err) == connect.CodeNotFound || outbox.IsTransient(err) {
+			if e, found := d.queuedEntry(id); found {
+				hit := queuedHit(e)
+				return text2result(fmt.Sprintf("id=%s [%s] (%s — stored locally, NOT in Cortex yet) %s", hit.ID, hit.Namespace, queuedStatus, hit.Text)), hit, nil
+			}
+		}
+		return nil, SearchHit{}, d.unreachableErr(err)
 	}
 	m := resp.Msg.GetMemory()
 	hit := memToHit(m)
@@ -859,8 +1009,28 @@ func (d *deps) del(ctx context.Context, _ *mcp.CallToolRequest, in DeleteIn) (*m
 	if id == "" {
 		return nil, DeleteOut{}, fmt.Errorf("id must not be empty")
 	}
+	// A still-queued id is dropped from the local outbox first (the model-facing
+	// `cortex outbox drop`), so a later drain cannot send it.
+	var removed bool
+	if d.outboxPath != "" {
+		var derr error
+		if _, removed, derr = outbox.Delete(d.outboxPath, id); derr != nil {
+			slog.Warn("outbox delete failed", "id", id, "err", derr)
+		}
+	}
 	resp, err := d.client.Delete(ctx, connect.NewRequest(&cortexv1.DeleteRequest{Id: id}))
 	if err != nil {
+		if removed && connect.CodeOf(err) == connect.CodeNotFound {
+			return text2result("removed from offline outbox " + id), DeleteOut{Status: "removed from offline outbox"}, nil
+		}
+		if removed && outbox.IsTransient(err) {
+			// The server copy (if a drain already synced it) is untouched.
+			return text2result("removed from offline outbox " + id + "; Cortex is unreachable, so if it was already synced the server copy remains (delete again when online)"),
+				DeleteOut{Status: "removed from offline outbox"}, nil
+		}
+		if removed {
+			return nil, DeleteOut{}, fmt.Errorf("removed %s from the offline outbox, but the server delete failed: %w", id, err)
+		}
 		return nil, DeleteOut{}, err
 	}
 	return text2result("deleted " + id), DeleteOut{Status: resp.Msg.GetStatus()}, nil
@@ -1055,16 +1225,49 @@ func (d *deps) summarize(ctx context.Context, _ *mcp.CallToolRequest, in Summari
 	// session summary lands in the same namespace as the facts saved during it
 	// rather than the server's global fallback.
 	ns := d.nsOrDefault(in.Namespace)
-	resp, err := d.client.SummarizeSession(ctx, connect.NewRequest(&cortexv1.SummarizeSessionRequest{
+	req := &cortexv1.SummarizeSessionRequest{
 		ConversationId: d.conversationID,
 		Text:           text,
 		Namespace:      ns,
-	}))
+	}
+	// Clear any older offline slot BEFORE sending, not after: the drain that a
+	// successful RPC kicks could otherwise send the stale slot over this newer
+	// summary. If this send fails transiently, the new text becomes the slot.
+	if d.outboxPath != "" {
+		if _, _, err := outbox.DeleteSummary(d.outboxPath, d.conversationID, 0); err != nil {
+			slog.Warn("could not clear offline summary slot", "err", err)
+		}
+	}
+	resp, err := d.client.SummarizeSession(ctx, connect.NewRequest(req))
 	if err != nil {
+		if outbox.IsTransient(err) {
+			return d.summarizeOffline(req, err)
+		}
 		return nil, SummarizeOut{}, err
 	}
 	out := SummarizeOut{ConversationID: resp.Msg.GetConversationId(), Status: resp.Msg.GetStatus()}
 	return text2result("session summary updated (conversation=" + out.ConversationID + ")"), out, nil
+}
+
+// summarizeOffline stores req as this conversation's single pending summary
+// (latest wins) after a transient failure (cause).
+func (d *deps) summarizeOffline(req *cortexv1.SummarizeSessionRequest, cause error) (*mcp.CallToolResult, SummarizeOut, error) {
+	if d.outboxPath == "" {
+		return nil, SummarizeOut{}, cause
+	}
+	raw, err := proto.Marshal(req)
+	if err == nil {
+		err = outbox.PutSummary(d.outboxPath, outbox.SummaryEntry{
+			ConversationID: req.GetConversationId(),
+			Request:        raw,
+			Preview:        outbox.PreviewOf(req.GetText()),
+		})
+	}
+	if err != nil {
+		return nil, SummarizeOut{}, fmt.Errorf("the Cortex server is unreachable (%v) and the summary could not be stored locally (%v): NOT stored", cause, err)
+	}
+	slog.Warn("summary stored offline", "conversation", req.GetConversationId(), "cause", cause)
+	return text2result("summary stored offline; will sync"), SummarizeOut{ConversationID: req.GetConversationId(), Status: queuedStatus}, nil
 }
 
 // ---- recall_session ----
@@ -1080,6 +1283,8 @@ type RecallOut struct {
 	Matched bool        `json:"matched"`
 	Summary string      `json:"summary,omitempty"`
 	Facts   []SearchHit `json:"facts,omitempty"`
+	// PendingOffline: saves queued locally and not searchable yet; omitted when 0.
+	PendingOffline int `json:"pendingOffline,omitempty" jsonschema:"saves queued in the local offline outbox, not searchable yet"`
 }
 
 func (d *deps) recall(ctx context.Context, _ *mcp.CallToolRequest, in RecallIn) (*mcp.CallToolResult, RecallOut, error) {
@@ -1099,16 +1304,23 @@ func (d *deps) recall(ctx context.Context, _ *mcp.CallToolRequest, in RecallIn) 
 		MaxDistance: in.MaxDistance,
 	}))
 	if err != nil {
-		return nil, RecallOut{}, err
+		return nil, RecallOut{}, d.unreachableErr(err)
 	}
 
+	pendingText, pendingN := d.pendingNote()
+	withNote := func(s string) string {
+		if pendingText == "" {
+			return s
+		}
+		return s + "\n\n" + pendingText
+	}
 	if !resp.Msg.GetMatched() {
-		return text2result("No matching past session found."), RecallOut{Matched: false}, nil
+		return text2result(withNote("No matching past session found.")), RecallOut{Matched: false, PendingOffline: pendingN}, nil
 	}
 
 	sum := resp.Msg.GetSummary()
 	facts := resp.Msg.GetFacts()
-	out := RecallOut{Matched: true, Summary: sum.GetText(), Facts: make([]SearchHit, 0, len(facts))}
+	out := RecallOut{Matched: true, PendingOffline: pendingN, Summary: sum.GetText(), Facts: make([]SearchHit, 0, len(facts))}
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "Session summary (conversation=%s):\n%s\n", sum.GetConversationId(), sum.GetText())
@@ -1123,7 +1335,7 @@ func (d *deps) recall(ctx context.Context, _ *mcp.CallToolRequest, in RecallIn) 
 		fmt.Fprintf(&b, "%d. [%s] %s%s\n", i+1, f.GetNamespace(), expiryPrefix(fh), f.GetText())
 	}
 	d.recordUse("mcp-recall-session", factIDs)
-	return text2result(strings.TrimSpace(b.String())), out, nil
+	return text2result(withNote(strings.TrimSpace(b.String()))), out, nil
 }
 
 // ---- review_candidates ----

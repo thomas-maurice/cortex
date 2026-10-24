@@ -185,8 +185,8 @@ in one process are serialised by a single mutex in `internal/bus` (the nats-serv
 
 Processes that lose the lock (or see a backlog) get `ErrMigrationPending`, keep serving
 the old stream, and `EnsureAndMigrate` retries every 30s. Stream identity (`Created`)
-changes, which the existing `indexedStream` guard already handles (sequences restart
-at 1).
+changes, which the version guard is independent of (it compares publish-time
+`indexVersion` stamps, not stream sequences).
 
 **Upgrade, mixed versions, rollback.** Upgrade the server and ALL workers together.
 After the migration `MEMORY` is InterestPolicy: an OLD binary calls `CreateOrUpdate`
@@ -219,7 +219,7 @@ that write fails; chunk cascade is unchanged. `RestoreFromTrash` validates every
 trash entry. `PurgeTrash` is permanent. The entry keeps every Memory property the worker does not
 recompute — `accessCount`, `lastAccessedAt`, `model`, `dims` plus the metadata listed above —
 so a delete+restore does not reset recall history; `dupCandidates` (recomputed at index) and
-`indexedSeq`/`indexedStream` (re-stamped by the worker) are dropped. `RestoreFromTrash{all,
+`indexVersion` (re-stamped by `bus.PublishIndex` on the restore publish) are dropped. `RestoreFromTrash{all,
 namespace, reason}` is the bulk form (gated by `scanGate`, per-entry, counts failures, no id
 cap). Cross-request links: restore publishes link ADDs only to live/same-batch endpoints; an
 endpoint still in the trash is skipped because its own entry holds the reciprocal `linkedIds`,
@@ -520,25 +520,23 @@ be processed concurrently and out of order, and three mechanisms keep that corre
    fails only because the worker is stopping hands its message back instead of
    counting a processing failure (redelivery still costs one delivery; JetStream
    has no uncounted hand-back).
-3. **Version guard.** Each index/summary message is stamped with its JetStream
-   stream sequence, persisted as `indexedSeq` on the Memory / ConversationSummary
-   object, together with `indexedStream` (the stream's creation time, unix
-   microseconds). Under the lock, a message whose sequence is lower than the stored
-   one is acked and skipped (metric outcome `stale`), so edit v1 finishing after
-   v2 cannot overwrite it. Sequences restart at 1 if the MEMORY stream is
-   recreated, so they are only compared when the stored and current stream
-   identities match; if they differ the message is fresh and applies. Objects
-   written before these properties (no identity) compare sequences as-is: their
-   stream cannot be known, and assuming "same stream" keeps the guard. Reindex,
-   restore, import and dead-letter requeue publish new messages, so they get
-   higher sequences and still apply. Missing properties read as 0. A redelivery of
-   the same sequence re-applies (idempotent). The worker caches the stream identity
-   and refreshes it every 30s, and always refreshes it synchronously before
-   skipping a message as stale, so a recreated stream is noticed immediately.
-   Caveat: a legacy object (`indexedStream` unset) has no identity, so after a
-   stream recreation a low-sequence message can be skipped as stale for it until
-   a message with a higher sequence rewrites it (which stamps the identity), or it
-   is deleted and re-imported.
+3. **Version guard.** `bus.PublishIndex` / `bus.PublishSummary` stamp every
+   index/summary message with `IndexVersion` = the publish time (unix microseconds),
+   overwriting whatever the producer set. The worker persists it as-is as
+   `indexVersion` on the Memory / ConversationSummary object. Under the lock, a
+   message whose version is lower than the stored one is acked and skipped (metric
+   outcome `stale`), so edit v1 finishing after v2 cannot overwrite it. An equal
+   version is a redelivery of the same message and re-applies (idempotent; lets a
+   half-finished supersedes complete). A missing/0 stored version (legacy object)
+   always applies; a message from a pre-upgrade server carries 0 and counts as
+   oldest. Reindex, restore, import and dead-letter requeue are new publishes, so
+   they get a fresh stamp and still apply. The guard does not depend on JetStream
+   state (sequences, stream identity), so wiping or recreating NATS is a non-event.
+   Accepted limitation: the stamp is the publishing server's clock, so replicas
+   with skewed clocks could order two edits of one memory issued within the skew
+   window wrongly; not designed around (one memory is practically never written
+   from two machines). Direct Weaviate PATCHes (tags, expiry) are not ordered
+   against queued messages.
    Upgrade: a `cortex_locks` bucket left by a pre-release build with memory
    storage must be deleted once (`nats kv del cortex_locks`); JetStream cannot
    change a bucket's storage type.
@@ -558,7 +556,7 @@ integration test), which is why server-side merges need no KV lock.
 | `text`, vector, `namespace`, `source`, `createdAt`, `conversationId`, `model`, `dims` | index (worker) | writes |
 | `tags` | index (worker) AND server tag rename/delete (`RenameTag`/`DeleteTag`, merge of `tags` on the memory and its chunks) | writes |
 | `dupCandidates` | index (recomputed; server `DismissDuplicate` may prune) | writes, minus ids in the stored `notDuplicateOf` |
-| `indexedSeq` | index (worker) | writes |
+| `indexVersion` | stamped by the bus at publish, persisted by index (worker) | writes |
 | `validUntil` (expiry) | server `SetValidUntil` (single-property merge); the index path writes it ONLY when it creates the memory | never writes (a queued reindex/edit/restore message must not revert an expiry edit) |
 | chunks (`MemoryChunk`) | index (worker) | replaced under the lock |
 | `linkedIds` | link consumer (`SetLinks`, under both ids' locks) | never writes |

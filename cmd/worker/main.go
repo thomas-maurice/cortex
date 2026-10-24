@@ -14,7 +14,6 @@ import (
 	"os/signal"
 	"slices"
 	"strconv"
-	"sync"
 	"syscall"
 	"time"
 
@@ -82,7 +81,7 @@ func envBool(key string, def bool) bool {
 // Per-memory-id locking. Workers scale horizontally; every read-modify-write on
 // one memory (index write, link edit) or one summary runs under a lock in the
 // lockBucket KV bucket. The 60s TTL only reclaims a crashed holder's lock
-// (no lease refresh); the indexedSeq guard is the backstop if a holder outlives it.
+// (no lease refresh); the indexVersion guard is the backstop if a holder outlives it.
 const (
 	lockBucket = dlock.DefaultBucket
 	lockTTL    = dlock.DefaultTTL
@@ -216,7 +215,7 @@ func main() {
 	workerID := fmt.Sprintf("%s-%d-%s", host, os.Getpid(), uuid.NewString()[:8])
 	maint := migrate.NewMaintenance(meta, "worker "+workerID, log)
 	deps := &workerDeps{
-		log: log, m: m, js: js, locker: locker, stream: newStreamIdent(js), embedder: embedder,
+		log: log, m: m, js: js, locker: locker, embedder: embedder,
 		stores: func(userID string) tenantStore { return st.Tenant(userID) }, chunker: chunker,
 		dedupDistance: dedupDistance, concurrency: concurrency, ackWait: ackWait, busOpts: busOpts,
 		hold: maint.Active, holdGen: maint.CachedGen,
@@ -268,7 +267,6 @@ type workerDeps struct {
 	m             *metrics
 	js            jetstream.JetStream
 	locker        *dlock.Locker
-	stream        *streamIdent
 	embedder      *embed.Client
 	stores        tenantStores
 	chunker       *chunk.Chunker
@@ -312,7 +310,7 @@ func startHeartbeat(ctx context.Context, hb *migrate.Heartbeat, index, link *poo
 // startPools creates the two durable consumers (the stream must already exist) and
 // starts `concurrency` loops on each, every loop pulling ONE message at a time (see
 // pool): bounded, and no replica can hoard a backlog. Correctness across goroutines
-// and replicas rests on the per-id locks and the indexedSeq guard. The pools
+// and replicas rests on the per-id locks and the indexVersion guard. The pools
 // re-create a consumer (stream re-ensured first) only when that cannot replay history
 // (always true on the interest-retention stream; a legacy unmigrated stream is guarded).
 func (d *workerDeps) startPools(ctx context.Context) (index, link *pool, err error) {
@@ -359,7 +357,7 @@ func (d *workerDeps) startPools(ctx context.Context) (index, link *pool, err err
 	index.holdGen, link.holdGen = d.holdGen, d.holdGen
 	index.run(ctx, newConsumerRef(d.js, idx, recreate(idxCfg)),
 		func(wctx context.Context, msg jetstream.Msg) {
-			handle(wctx, d.log, d.m, d.js, d.locker, d.stream, d.embedder, d.stores, d.chunker, msg, d.dedupDistance)
+			handle(wctx, d.log, d.m, d.js, d.locker, d.embedder, d.stores, d.chunker, msg, d.dedupDistance)
 		})
 	link.run(ctx, newConsumerRef(d.js, lnk, recreate(lnkCfg)),
 		func(wctx context.Context, msg jetstream.Msg) {
@@ -404,12 +402,12 @@ func checkSchema(ctx context.Context, log *slog.Logger, st *store.Store) {
 
 // handle dispatches by subject: fact-index events and conversation-summary
 // events share one durable consumer.
-func handle(ctx context.Context, log *slog.Logger, m *metrics, js jetstream.JetStream, locker *dlock.Locker, stream *streamIdent, embedder *embed.Client, stores tenantStores, chunker *chunk.Chunker, msg jetstream.Msg, dedupDistance float32) {
+func handle(ctx context.Context, log *slog.Logger, m *metrics, js jetstream.JetStream, locker *dlock.Locker, embedder *embed.Client, stores tenantStores, chunker *chunk.Chunker, msg jetstream.Msg, dedupDistance float32) {
 	if msg.Subject() == memory.SubjectSummary {
-		handleSummary(ctx, log, m, js, locker, stream, embedder, stores, msg)
+		handleSummary(ctx, log, m, js, locker, embedder, stores, msg)
 		return
 	}
-	handleIndex(ctx, log, m, js, locker, stream, embedder, stores, chunker, msg, dedupDistance)
+	handleIndex(ctx, log, m, js, locker, embedder, stores, chunker, msg, dedupDistance)
 }
 
 // deadLetterPublisher is the signature for publishing a dead-letter record.
@@ -454,7 +452,7 @@ func deadLetterMalformed(ctx context.Context, log *slog.Logger, m *metrics, kind
 // conversation, replaced in place). Summaries are reproducible — the agent
 // re-summarises periodically — so on permanent failure we log loudly and ack
 // rather than dead-letter.
-func handleSummary(ctx context.Context, log *slog.Logger, m *metrics, js jetstream.JetStream, locker *dlock.Locker, stream *streamIdent, embedder *embed.Client, stores tenantStores, msg jetstream.Msg) {
+func handleSummary(ctx context.Context, log *slog.Logger, m *metrics, js jetstream.JetStream, locker *dlock.Locker, embedder *embed.Client, stores tenantStores, msg jetstream.Msg) {
 	var sum memory.Summary
 	if err := json.Unmarshal(msg.Data(), &sum); err != nil {
 		pub := func(dl memory.DeadLetter) error { return bus.PublishDead(ctx, js, dl) }
@@ -481,7 +479,7 @@ func handleSummary(ctx context.Context, log *slog.Logger, m *metrics, js jetstre
 			sum.UpdatedAt = time.Now().UTC()
 		}
 		storeStart := time.Now()
-		applied, err = commitSummary(ctx, locker, ts, sum, vec, streamSeq(msg), stream)
+		applied, err = commitSummary(ctx, locker, ts, sum, vec)
 		noteHoldExpiry(ctx, log, m, kindSummary, sum.ConversationID, err)
 		if err != nil {
 			procErr = fmt.Errorf("upsert: %w", err)
@@ -539,15 +537,6 @@ func ackAs(log *slog.Logger, m *metrics, kind string, msg jetstream.Msg, outcome
 	m.count(kind, outcome)
 }
 
-// streamSeq is the JetStream stream sequence of msg: a monotonic, cluster-wide
-// version for the publish order. 0 when unavailable (tests).
-func streamSeq(msg jetstream.Msg) uint64 {
-	if md, err := msg.Metadata(); err == nil {
-		return md.Sequence.Stream
-	}
-	return 0
-}
-
 // noteHoldExpiry logs and counts a critical section cut off by the lock hold
 // deadline (not by worker shutdown). The error text carries the phase that was
 // running (read stored / upsert / chunk index / set links ...); the message is
@@ -577,67 +566,6 @@ func abortForShutdown(ctx context.Context, log *slog.Logger, msg jetstream.Msg) 
 	return true
 }
 
-// streamIdent caches the identity of the MEMORY stream (its creation time, unix
-// microseconds). JetStream sequences restart at 1 when a stream is recreated, so
-// the stale-write guard only compares sequences recorded under the same identity.
-// Cached, refreshed after streamIdentMaxAge so a recreation is noticed; a failed
-// refresh keeps the last known value (0 = unknown, which disables the identity
-// check and falls back to comparing sequences).
-type streamIdent struct {
-	js  jetstream.JetStream
-	mu  sync.Mutex
-	val int64
-	at  time.Time
-}
-
-const streamIdentMaxAge = 30 * time.Second
-
-// streamIdentity is what the commit functions need from a streamIdent (an
-// interface so tests can pin identities).
-type streamIdentity interface {
-	get(ctx context.Context) int64
-	refresh(ctx context.Context)
-}
-
-// staleAfterRefresh evaluates the stale guard and, before declaring a message
-// stale, refreshes the cached stream identity and re-evaluates: a stream recreated
-// within the cache window would otherwise make every message look older than
-// stored for up to streamIdentMaxAge. Stale is rare, so the lookup is cheap.
-// It returns the verdict and the identity to stamp on a write.
-func staleAfterRefresh(ctx context.Context, sid streamIdentity, storedSeq uint64, storedStream int64, seq uint64) (isStale bool, stream int64) {
-	stream = sid.get(ctx)
-	if !superseded(storedSeq, storedStream, seq, stream) {
-		return false, stream
-	}
-	sid.refresh(ctx)
-	stream = sid.get(ctx)
-	return superseded(storedSeq, storedStream, seq, stream), stream
-}
-
-func newStreamIdent(js jetstream.JetStream) *streamIdent { return &streamIdent{js: js} }
-
-func (s *streamIdent) get(ctx context.Context) int64 {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.val == 0 || time.Since(s.at) > streamIdentMaxAge {
-		s.refreshLocked(ctx)
-	}
-	return s.val
-}
-
-func (s *streamIdent) refresh(ctx context.Context) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.refreshLocked(ctx)
-}
-
-func (s *streamIdent) refreshLocked(ctx context.Context) {
-	s.at = time.Now()
-	if info, err := streamInfo(ctx, s.js); err == nil {
-		s.val = info.Created.UnixMicro()
-	}
-}
-
 // streamInfo returns the MEMORY stream's current info (js.Stream fetches it, so
 // CachedInfo is fresh).
 func streamInfo(ctx context.Context, js jetstream.JetStream) (*jetstream.StreamInfo, error) {
@@ -646,18 +574,6 @@ func streamInfo(ctx context.Context, js jetstream.JetStream) (*jetstream.StreamI
 		return nil, err
 	}
 	return st.CachedInfo(), nil
-}
-
-// superseded reports whether a stored (seq, stream) is newer than the message's.
-// Sequences are only comparable within one stream: if both identities are known
-// and differ, the stream was recreated since the stored write, so the message is
-// fresh. If either is unknown (legacy object, lookup failure) sequences are
-// compared as-is.
-func superseded(storedSeq uint64, storedStream int64, seq uint64, stream int64) bool {
-	if storedStream != 0 && stream != 0 && storedStream != stream {
-		return false
-	}
-	return storedSeq > seq
 }
 
 // tenantStore is everything the handlers use from a tenant-scoped store.
@@ -678,34 +594,54 @@ type tenantStore interface {
 	// SetValidUntil is the sole writer of an existing memory's expiry; the worker
 	// only uses it so a merge of time-bound memories inherits the latest expiry.
 	SetValidUntil(ctx context.Context, id string, until time.Time) error
-	GetSummarySeq(ctx context.Context, conversationID string) (seq uint64, stream int64, err error)
+	// GetTrash backs the create-only guard (commitIndex): a trashed id must not be re-created.
+	GetTrash(ctx context.Context, id string) (memory.TrashEntry, bool, error)
+	GetSummaryVersion(ctx context.Context, conversationID string) (int64, error)
 	UpsertSummary(ctx context.Context, sum memory.Summary, vector []float32) error
 	SearchMemoryVectors(ctx context.Context, vec []float32, opts store.SearchOpts) ([]memory.Hit, error)
 }
 
+// skipReason says why commitIndex wrote nothing.
+type skipReason int
+
+const (
+	skipNone    skipReason = iota
+	skipStale              // a newer version is already stored
+	skipExists             // create-only, but the id is live from another message
+	skipTrashed            // create-only, but the id is in the trash
+)
+
 // tenantStores resolves the tenant-scoped store for a payload's UserID.
 type tenantStores func(userID string) tenantStore
 
+// isStale reports whether a message stamped `version` (bus.PublishIndex/
+// PublishSummary, unix microseconds) is older than the stored object's. Strictly
+// less: an equal stamp is a redelivery of this very message, which re-applies
+// (idempotent; lets a half-finished supersedes complete). A missing or legacy
+// object reads as 0, which is never newer; a message from a pre-upgrade server
+// carries 0 and is treated as oldest.
+func isStale(storedVersion, version int64) bool {
+	return version < storedVersion
+}
+
 // commitSummary upserts sum under the conversation's lock unless a summary from a
-// newer queue message is already stored (then applied=false). Summaries are one
+// newer queue message is already stored (then applied=false, see isStale). Summaries are one
 // object per conversation, so without this an older message finishing after a
 // newer one (two workers, or a redelivery) would regress the summary.
-func commitSummary(ctx context.Context, locker *dlock.Locker, ts tenantStore, sum memory.Summary, vec []float32, seq uint64, sid streamIdentity) (applied bool, err error) {
+func commitSummary(ctx context.Context, locker *dlock.Locker, ts tenantStore, sum memory.Summary, vec []float32) (applied bool, err error) {
 	hctx, release, err := locker.AcquireAll(ctx, []string{dlock.Key("sum", sum.UserID, sum.ConversationID)}, locker.Wait())
 	if err != nil {
 		return false, fmt.Errorf("lock: %w", err)
 	}
 	defer release()
 
-	storedSeq, storedStream, err := ts.GetSummarySeq(hctx, sum.ConversationID)
+	storedVersion, err := ts.GetSummaryVersion(hctx, sum.ConversationID)
 	if err != nil {
 		return false, err
 	}
-	isStale, stream := staleAfterRefresh(hctx, sid, storedSeq, storedStream, seq)
-	if isStale {
+	if isStale(storedVersion, sum.IndexVersion) {
 		return false, nil
 	}
-	sum.IndexedSeq, sum.IndexedStream = seq, stream
 	if err := ts.UpsertSummary(hctx, sum, vec); err != nil {
 		return false, err
 	}
@@ -1015,9 +951,16 @@ func embedChunks(ctx context.Context, embedder *embed.Client, chunker *chunk.Chu
 //     edit carrying a stale snapshot of them cannot erase a link or a
 //     reinforcement made since it was published.
 //
+// A CreateOnly message (a client-minted-id Save, possibly replayed from an offline
+// outbox) additionally never overwrites or resurrects: it is skipped when the id is
+// live under a different IndexVersion (written by another message, a stored 0 being a
+// legacy object) or sits in the trash. Equal versions are a redelivery of this very
+// message and proceed, so an interrupted supersedes still completes. skip names why
+// nothing was written when applied is false.
+//
 // With no chunker, ReplaceChunks(nil) purges chunks left from when chunking was
 // enabled.
-func commitIndex(ctx context.Context, log *slog.Logger, js jetstream.JetStream, locker *dlock.Locker, ts tenantStore, rec memory.Record, vec []float32, cvs []store.ChunkVec, seq uint64, sid streamIdentity) (applied bool, err error) {
+func commitIndex(ctx context.Context, log *slog.Logger, js jetstream.JetStream, locker *dlock.Locker, ts tenantStore, rec memory.Record, vec []float32, cvs []store.ChunkVec) (applied bool, skip skipReason, err error) {
 	// hctx is bounded inside the first lease; see Locker.AcquireAll.
 	// A merge (supersedes) read-modify-writes the sources and the counterparts of
 	// their dismissals too, so it holds all of their locks (sorted, one AcquireAll).
@@ -1025,7 +968,7 @@ func commitIndex(ctx context.Context, log *slog.Logger, js jetstream.JetStream, 
 	if srcIDs := planSupersedes(rec.ID, rec.Supersedes); len(srcIDs) > 0 {
 		var lerr error
 		if lockIDs, lerr = merge.LockIDs(ctx, ts, rec.ID, srcIDs); lerr != nil {
-			return false, fmt.Errorf("lock set: %w", lerr)
+			return false, skipNone, fmt.Errorf("lock set: %w", lerr)
 		}
 	}
 	keys := make([]string, len(lockIDs))
@@ -1034,22 +977,35 @@ func commitIndex(ctx context.Context, log *slog.Logger, js jetstream.JetStream, 
 	}
 	hctx, release, err := locker.AcquireAll(ctx, keys, locker.Wait())
 	if err != nil {
-		return false, fmt.Errorf("lock: %w", err)
+		return false, skipNone, fmt.Errorf("lock: %w", err)
 	}
 	defer release()
 
 	stored, exists, err := ts.Get(hctx, rec.ID)
 	if err != nil {
-		return false, fmt.Errorf("read stored: %w", err)
+		return false, skipNone, fmt.Errorf("read stored: %w", err)
 	}
-	// Strictly greater: a redelivery of this very message (same seq) re-applies,
-	// which is idempotent and lets a half-finished supersedes complete.
-	// A missing memory reads as seq 0 / identity 0, which is never superseded.
-	isStale, stream := staleAfterRefresh(hctx, sid, stored.IndexedSeq, stored.IndexedStream, seq)
-	if isStale {
-		return false, nil
+	// A missing memory reads as version 0, which is never newer (see isStale).
+	if isStale(stored.IndexVersion, rec.IndexVersion) {
+		return false, skipStale, nil
 	}
-	rec.IndexedSeq, rec.IndexedStream = seq, stream
+	if rec.CreateOnly {
+		if exists && stored.IndexVersion != rec.IndexVersion {
+			log.Info("create-only: already present", "id", rec.ID, "stored_version", stored.IndexVersion, "version", rec.IndexVersion)
+			return false, skipExists, nil
+		}
+		if !exists {
+			_, inTrash, err := ts.GetTrash(hctx, rec.ID)
+			if err != nil {
+				return false, skipNone, fmt.Errorf("read trash: %w", err)
+			}
+			if inTrash {
+				log.Info("create-only: id is in trash", "id", rec.ID)
+				return false, skipTrashed, nil
+			}
+		}
+		rec.CreateOnly = false // NATS-only; keep it off every persisted record
+	}
 	rec.Tags = memory.NormalizeTags(rec.Tags) // backstop for producers that skip it (import/restore)
 	if exists {
 		// createdAt only ever moves earlier and an existing conversationId is never
@@ -1069,7 +1025,7 @@ func commitIndex(ctx context.Context, log *slog.Logger, js jetstream.JetStream, 
 		for _, id := range srcIDs {
 			src, found, err := ts.Get(hctx, id)
 			if err != nil {
-				return false, fmt.Errorf("read superseded %s: %w", id, err)
+				return false, skipNone, fmt.Errorf("read superseded %s: %w", id, err)
 			}
 			if found {
 				srcs = append(srcs, src)
@@ -1094,12 +1050,12 @@ func commitIndex(ctx context.Context, log *slog.Logger, js jetstream.JetStream, 
 	if err != nil {
 		// The full-memory vector is still stored (dedup + find-similar use it),
 		// but it is no longer the primary search target.
-		return false, fmt.Errorf("upsert: %w", err)
+		return false, skipNone, fmt.Errorf("upsert: %w", err)
 	}
 	// Chunks are what Search matches against, so a chunk failure must retry:
 	// the memory would otherwise exist but be unfindable. Idempotent on retry.
 	if err := ts.ReplaceChunks(hctx, rec, cvs); err != nil {
-		return false, fmt.Errorf("chunk index: %w", err)
+		return false, skipNone, fmt.Errorf("chunk index: %w", err)
 	}
 	// validUntil is not index-owned, so a merge inherits its sources' expiry here,
 	// under the lock and BEFORE any source is trashed (see merge.InheritedExpiry;
@@ -1111,7 +1067,7 @@ func commitIndex(ctx context.Context, log *slog.Logger, js jetstream.JetStream, 
 		}
 		if until := merge.InheritedExpiry(keepUntil, srcs, len(srcIDs)); !until.IsZero() {
 			if err := ts.SetValidUntil(hctx, rec.ID, until); err != nil {
-				return false, fmt.Errorf("inherit expiry: %w", err)
+				return false, skipNone, fmt.Errorf("inherit expiry: %w", err)
 			}
 		}
 	}
@@ -1123,9 +1079,9 @@ func commitIndex(ctx context.Context, log *slog.Logger, js jetstream.JetStream, 
 	lctx := identity.Into(hctx, identity.Identity{UserID: rec.UserID})
 	pub := func(op memory.LinkOp, a, b string) error { return bus.PublishLink(lctx, js, op, a, b) }
 	if err := applySupersedes(hctx, log, ts, rec, pub, lockIDs); err != nil {
-		return false, fmt.Errorf("supersedes: %w", err)
+		return false, skipNone, fmt.Errorf("supersedes: %w", err)
 	}
-	return true, nil
+	return true, skipNone, nil
 }
 
 // withoutIDs returns xs minus any element of drop.
@@ -1142,7 +1098,7 @@ func withoutIDs(xs, drop []string) []string {
 	return out
 }
 
-func handleIndex(ctx context.Context, log *slog.Logger, m *metrics, js jetstream.JetStream, locker *dlock.Locker, stream *streamIdent, embedder *embed.Client, stores tenantStores, chunker *chunk.Chunker, msg jetstream.Msg, dedupDistance float32) {
+func handleIndex(ctx context.Context, log *slog.Logger, m *metrics, js jetstream.JetStream, locker *dlock.Locker, embedder *embed.Client, stores tenantStores, chunker *chunk.Chunker, msg jetstream.Msg, dedupDistance float32) {
 	defer m.observeIndex(time.Now())
 	var rec memory.Record
 	if err := json.Unmarshal(msg.Data(), &rec); err != nil {
@@ -1161,6 +1117,7 @@ func handleIndex(ctx context.Context, log *slog.Logger, m *metrics, js jetstream
 
 	var procErr error
 	var applied bool
+	var skip skipReason
 	var embedDur, storeDur time.Duration
 	var nChunks int
 	embedStart := time.Now()
@@ -1182,7 +1139,7 @@ func handleIndex(ctx context.Context, log *slog.Logger, m *metrics, js jetstream
 		if procErr == nil {
 			embedDur = time.Since(embedStart)
 			storeStart := time.Now()
-			applied, procErr = commitIndex(ctx, log, js, locker, ts, rec, vec, cvs, streamSeq(msg), stream)
+			applied, skip, procErr = commitIndex(ctx, log, js, locker, ts, rec, vec, cvs)
 			noteHoldExpiry(ctx, log, m, kindIndex, rec.ID, procErr)
 			nChunks = len(cvs)
 			storeDur = time.Since(storeStart)
@@ -1190,8 +1147,13 @@ func handleIndex(ctx context.Context, log *slog.Logger, m *metrics, js jetstream
 	}
 
 	if procErr == nil && !applied {
-		log.Info("stale index message skipped, a newer version is already stored", "id", rec.ID, "seq", streamSeq(msg))
-		ackAs(log, m, kindIndex, msg, outcomeStale)
+		if skip == skipStale {
+			log.Info("stale index message skipped, a newer version is already stored", "id", rec.ID, "version", rec.IndexVersion)
+			ackAs(log, m, kindIndex, msg, outcomeStale)
+		} else {
+			log.Info("create-only index message skipped, nothing written", "id", rec.ID, "version", rec.IndexVersion)
+			ackAs(log, m, kindIndex, msg, outcomeSkipped)
+		}
 		return
 	}
 	if procErr == nil {

@@ -288,7 +288,21 @@ func (s *Service) Save(ctx context.Context, req *connect.Request[cortexv1.SaveRe
 		return nil, err
 	}
 
+	// A client-supplied id (offline outbox) becomes the object id; absent -> mint.
+	id := uuid.NewString()
+	if supplied := strings.TrimSpace(req.Msg.GetId()); supplied != "" {
+		if id, err = normalizeMemoryID("id", supplied); err != nil {
+			return nil, err
+		}
+	}
+
 	now := time.Now().UTC()
+	// A replayed save keeps its queue time, but never a future one (fast client
+	// clock); no lower clamp.
+	createdAt := now
+	if ca := req.Msg.GetCreatedAt(); ca != nil && ca.IsValid() && ca.AsTime().Before(now) {
+		createdAt = ca.AsTime().UTC()
+	}
 	validUntil, _, err := resolveExpiry(req.Msg.GetValidUntil(), strings.TrimSpace(req.Msg.GetExpiresIn()), now)
 	if err != nil {
 		return nil, err
@@ -298,16 +312,17 @@ func (s *Service) Save(ctx context.Context, req *connect.Request[cortexv1.SaveRe
 	}
 
 	rec := memory.Record{
-		ID:             uuid.NewString(),
+		ID:             id,
 		Text:           text,
 		Namespace:      ns,
 		Tags:           memory.NormalizeTags(req.Msg.GetTags()),
 		Source:         src,
-		CreatedAt:      now,
+		CreatedAt:      createdAt,
 		ConversationID: req.Msg.GetConversationId(),
 		Supersedes:     supersedes,
 		ValidUntil:     validUntil,
 		NeverExpires:   req.Msg.GetNeverExpires(),
+		CreateOnly:     true,
 	}
 	// UserID is stamped by PublishIndex from context; not read from req.Msg.
 	if err := bus.PublishIndex(ctx, s.js, rec); err != nil {

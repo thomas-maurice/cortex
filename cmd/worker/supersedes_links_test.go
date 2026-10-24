@@ -166,7 +166,7 @@ func TestMaxProcessingEndsWedgedMessage(t *testing.T) {
 	msg.delivered = memory.MaxDeliver
 	start := time.Now()
 	process(context.Background(), msg, func(ctx context.Context, _ jetstream.Msg) {
-		handleIndex(ctx, testLog, s.m, s.js, s.locker, s.stream, s.embedder, s.stores, s.chunker, msg, 0)
+		handleIndex(ctx, testLog, s.m, s.js, s.locker, s.embedder, s.stores, s.chunker, msg, 0)
 	})
 	assert.Less(t, time.Since(start), 10*time.Second, "must not wait for the lock")
 	assert.EqualValues(t, 1, outcome(s.m, kindIndex, outcomeDead), "settled as a failure and dead-lettered")

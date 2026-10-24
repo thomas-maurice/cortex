@@ -174,7 +174,7 @@ func runConvergence(t *testing.T, seed uint64) {
 		assert.Equal(t, []string{lastText[id]}, s.fs.chunks[simTenant+"|"+id], "chunks must match the final text (id %s)", id)
 		assert.Equal(t, reinforces[id], got.AccessCount, "reinforcement lost to an index write (id %s)", id)
 		assert.ElementsMatch(t, dismissed[id], got.NotDuplicateOf, "notDuplicateOf lost to an index write (id %s)", id)
-		assert.Positive(t, got.IndexedSeq)
+		assert.Positive(t, got.IndexVersion)
 
 		var wantLinks []string
 		for _, p := range pairs {

@@ -44,9 +44,13 @@ type fakeStore struct {
 	// chunkTags records the tags each memory's chunks were last written with.
 	chunkTags map[string][]string
 	sums      map[string]*memory.Summary
-	rngMu     sync.Mutex
-	rng       *rand.Rand
-	log       []string // audit trail of write ops, "<op> <id>"
+	// trash holds what DeleteWithReason removed (the real store copies to the Trash class first).
+	trash map[string]*memory.TrashEntry
+	// trashErr, when set, is returned by every GetTrash (a Weaviate read failure).
+	trashErr error
+	rngMu    sync.Mutex
+	rng      *rand.Rand
+	log      []string // audit trail of write ops, "<op> <id>"
 	// deleteReasons records the trash reason of every delete, "<id> <reason>".
 	deleteReasons []string
 	// dupHits are returned by SearchMemoryVectors (dedup neighbours).
@@ -69,6 +73,7 @@ func newFakeStore(seed uint64) *fakeStore {
 		chunks:    map[string][]string{},
 		chunkTags: map[string][]string{},
 		sums:      map[string]*memory.Summary{},
+		trash:     map[string]*memory.TrashEntry{},
 		rng:       rand.New(rand.NewPCG(seed, 99)),
 	}
 }
@@ -158,7 +163,7 @@ func (ft *fakeTenant) UpdateIndexFields(ctx context.Context, rec memory.Record, 
 	o.Tags, o.ConversationID = slices.Clone(rec.Tags), rec.ConversationID
 	o.Model, o.Dims = rec.Model, rec.Dims
 	o.DupCandidates = slices.Clone(rec.DupCandidates)
-	o.IndexedSeq, o.IndexedStream = rec.IndexedSeq, rec.IndexedStream
+	o.IndexVersion = rec.IndexVersion
 	ft.f.log = append(ft.f.log, "merge-index "+rec.ID)
 	return nil
 }
@@ -215,20 +220,37 @@ func (ft *fakeTenant) DeleteWithReason(_ context.Context, id, reason string) err
 	ft.f.mu.Lock()
 	defer ft.f.mu.Unlock()
 	ft.f.deleteReasons = append(ft.f.deleteReasons, id+" "+reason)
+	if o, ok := ft.f.objs[ft.key(id)]; ok {
+		ft.f.trash[ft.key(id)] = &memory.TrashEntry{Record: clone(*o), Reason: reason}
+	}
 	delete(ft.f.objs, ft.key(id))
 	delete(ft.f.chunks, ft.key(id))
 	return nil
 }
 
-func (ft *fakeTenant) GetSummarySeq(_ context.Context, convID string) (uint64, int64, error) {
+func (ft *fakeTenant) GetTrash(_ context.Context, id string) (memory.TrashEntry, bool, error) {
+	ft.f.yield()
+	ft.f.mu.Lock()
+	defer ft.f.mu.Unlock()
+	if ft.f.trashErr != nil {
+		return memory.TrashEntry{}, false, ft.f.trashErr
+	}
+	e, ok := ft.f.trash[ft.key(id)]
+	if !ok {
+		return memory.TrashEntry{}, false, nil
+	}
+	return *e, true, nil
+}
+
+func (ft *fakeTenant) GetSummaryVersion(_ context.Context, convID string) (int64, error) {
 	ft.f.yield()
 	ft.f.mu.Lock()
 	defer ft.f.mu.Unlock()
 	s, ok := ft.f.sums[ft.key(convID)]
 	if !ok {
-		return 0, 0, nil
+		return 0, nil
 	}
-	return s.IndexedSeq, s.IndexedStream, nil
+	return s.IndexVersion, nil
 }
 
 func (ft *fakeTenant) UpsertSummary(_ context.Context, sum memory.Summary, _ []float32) error {
@@ -300,11 +322,14 @@ func (m *fakeMsg) Metadata() (*jetstream.MsgMetadata, error) {
 
 var _ jetstream.Msg = (*fakeMsg)(nil)
 
-func indexMsg(t *testing.T, seq uint64, rec memory.Record) *fakeMsg {
+// indexMsg builds an index message stamped with `version` (what bus.PublishIndex
+// does with the clock in production).
+func indexMsg(t *testing.T, version int64, rec memory.Record) *fakeMsg {
 	t.Helper()
+	rec.IndexVersion = version
 	b, err := json.Marshal(rec)
 	require.NoError(t, err)
-	return &fakeMsg{data: b, subject: memory.SubjectIndex, seq: seq, delivered: 1}
+	return &fakeMsg{data: b, subject: memory.SubjectIndex, seq: 1, delivered: 1}
 }
 
 func linkMsg(t *testing.T, lm memory.LinkMsg) *fakeMsg {
@@ -327,7 +352,6 @@ type stack struct {
 	reg      *prometheus.Registry
 	m        *metrics
 	stores   tenantStores
-	stream   *streamIdent
 	ackWait  time.Duration
 }
 
@@ -343,7 +367,7 @@ func newStack(t *testing.T, seed uint64, lockTTL time.Duration) *stack {
 	fs := newFakeStore(seed)
 	reg := prometheus.NewRegistry()
 	return &stack{t: t, nc: nc, js: js, locker: locker, fs: fs, embedder: fakeEmbedder(t), chunker: ch,
-		reg: reg, m: newMetrics(reg), stores: fs.tenant, stream: newStreamIdent(js), ackWait: 30 * time.Second}
+		reg: reg, m: newMetrics(reg), stores: fs.tenant, ackWait: 30 * time.Second}
 }
 
 // worker is one simulated replica.
@@ -361,7 +385,7 @@ func (s *stack) startWorker(concurrency int) *worker {
 	w := &worker{}
 	ctx, cancel := context.WithCancel(context.Background())
 	d := &workerDeps{
-		log: slog.New(slog.NewTextHandler(io.Discard, nil)), m: s.m, js: s.js, locker: s.locker, stream: s.stream,
+		log: slog.New(slog.NewTextHandler(io.Discard, nil)), m: s.m, js: s.js, locker: s.locker,
 		embedder: s.embedder, chunker: s.chunker, concurrency: concurrency, ackWait: s.ackWait,
 		stores: func(u string) tenantStore { w.handled.Add(1); return s.stores(u) },
 	}
@@ -440,9 +464,3 @@ func (s *stack) assertNoLocksHeld() {
 func tenantCtx(tenant string) context.Context {
 	return identity.Into(context.Background(), identity.Identity{UserID: tenant})
 }
-
-// fixedStream is a streamIdentity with a pinned value.
-type fixedStream int64
-
-func (f fixedStream) get(context.Context) int64 { return int64(f) }
-func (fixedStream) refresh(context.Context)     {}
