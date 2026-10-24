@@ -179,7 +179,7 @@ func main() {
 		log.Error("open meta bucket", "err", err)
 		os.Exit(1)
 	}
-	if err := migrate.WaitUntilCurrent(ctx, meta, migrate.Latest(), log, 2*time.Second); err != nil {
+	if err := migrate.WaitUntilCurrent(ctx, st, migrate.Latest(), log, 2*time.Second); err != nil {
 		log.Error("waiting for schema migrations", "err", err)
 		os.Exit(1)
 	}

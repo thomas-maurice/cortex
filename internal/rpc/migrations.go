@@ -49,7 +49,7 @@ func (s *Service) ListMigrations(ctx context.Context, _ *connect.Request[cortexv
 		LockHolder:    st.LockHolder,
 	}
 	for _, m := range st.Migrations {
-		sm := &cortexv1.SchemaMigration{Id: int32(m.ID), Name: m.Name, Description: m.Description, Applied: m.Applied}
+		sm := &cortexv1.SchemaMigration{Id: int32(m.ID), Name: m.Name, Description: m.Description, Applied: m.Applied, Assumed: m.Assumed}
 		if m.Applied {
 			sm.AppliedAt = timestamppb.New(m.AppliedAt)
 			sm.DurationMs = m.Duration.Milliseconds()

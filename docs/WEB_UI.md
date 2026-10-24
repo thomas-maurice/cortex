@@ -97,6 +97,7 @@ user/pass check for a user store and emit per-user claims.
 | `/preferences` | **Preferences** — `global` + `preference` memories, edit/add/delete | `List`, `Save`, `UpdateMemory`, `Delete` |
 | `/backup` | **Backup** — export / import memories (JSON, no vectors) | `List`, `RestoreMemories` |
 | `/queue` | **Indexing** — live index-queue counts + dead letters; auto-refreshes | `IndexQueue`, `Dead` |
+| `/meta` | **Metadata** — durable `CortexMeta` entries (Weaviate) and NATS coordination keys, pretty-printed JSON (System menu, admin only) | `ListMeta` |
 | `/storage` | **Storage** — alias → physical class, object counts, vector settings, stored dims, orphans (System menu; scoped for non-admins) | `GetStorageInfo` |
 | `/status` | **Status** — backend health + counts | `Status` |
 
@@ -310,7 +311,7 @@ ui/
     views/                 LoginView, MemoriesView, GraphView, ExploreView,
                            RecallPreviewView,
                            SessionsView, NamespacesView, TagsView, DuplicatesView, TrashView, PreferencesView,
-                           BackupView, QueueView (Indexing), StorageView, StatusView
+                           BackupView, QueueView (Indexing), StorageView, MetaView, StatusView
 internal/rpc/
   jwt.go                   HS256 issue/parse
   login.go                 POST /auth/login

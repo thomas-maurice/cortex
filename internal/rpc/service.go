@@ -64,7 +64,7 @@ const reinforceTimeout = 10 * time.Second
 // Config holds the server-side defaults applied to inbound requests.
 type Config struct {
 	// UsageTrackingSince is when usage tracking (RecordUse) started on this
-	// deployment (bus.EnsureUsageTrackingSince). Stale review reports it so clients
+	// deployment (store.EnsureUsageTrackingSince). Stale review reports it so clients
 	// can tell how far back "unused" can be judged. Zero = unknown.
 	UsageTrackingSince time.Time
 	DefaultNamespace   string  // namespace stamped when a request omits one
@@ -161,6 +161,8 @@ type Service struct {
 	maintenance func(context.Context) bool
 	// migrations reports schema-migration state for ListMigrations (SetMigrations).
 	migrations MigrationReporter
+	// metaKV is the NATS cortex_meta bucket listed by ListMeta (SetMetaKV).
+	metaKV jetstream.KeyValue
 	// afterGate, when non-nil, runs right after a gate is acquired; a non-nil
 	// return aborts the call. Test seam only (lets a test hold a call in flight).
 	afterGate func() error

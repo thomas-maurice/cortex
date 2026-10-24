@@ -89,6 +89,12 @@ const router = createRouter({
       meta: { requiresAuth: true },
     },
     {
+      path: '/meta',
+      name: 'meta',
+      component: () => import('@/views/MetaView.vue'),
+      meta: { requiresAuth: true, requiresAdmin: true },
+    },
+    {
       path: '/status',
       name: 'status',
       component: () => import('@/views/StatusView.vue'),

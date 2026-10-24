@@ -51,6 +51,17 @@ func TestStorageInfoIntegration(t *testing.T) {
 	}
 	require.NotNil(t, mem)
 
+	// CortexMeta is a plain system class: listed for admins, never an orphan.
+	var meta *ClassStorage
+	for i := range info.Classes {
+		if info.Classes[i].Logical == memory.MetaClassName {
+			meta = &info.Classes[i]
+		}
+	}
+	require.NotNil(t, meta, "CortexMeta is shown as a normal system class")
+	assert.False(t, meta.MultiTenant, "CortexMeta is single-tenant even in MT mode")
+	assert.NotContains(t, info.Orphans, memory.MetaClassName)
+
 	// Counts come from Aggregate, so they are exact (node status would read 0 here).
 	assert.EqualValues(t, n*len(tenants), mem.ObjectCount)
 

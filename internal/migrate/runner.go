@@ -7,10 +7,13 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
+
+	"github.com/thomas-maurice/cortex/internal/memory"
 )
 
 // Applied is the persisted record of one finished migration.
@@ -19,15 +22,28 @@ type Applied struct {
 	Name      string        `json:"name"`
 	AppliedAt time.Time     `json:"applied_at"`
 	Duration  time.Duration `json:"duration"`
+	// Assumed marks a record stamped without running the migration: the store was
+	// created fresh (born current), so the migration had nothing to do.
+	Assumed bool `json:"assumed,omitempty"`
 }
 
 // Runner applies pending migrations. Construct with NewRunner.
 type Runner struct {
-	KV    jetstream.KeyValue
+	// KV holds COORDINATION state only (lock, maintenance, heartbeats), plus the
+	// legacy schema_version/migration.* keys read once by the backfill.
+	KV jetstream.KeyValue
+	// Meta holds the durable schema version and applied records (default: the store).
+	Meta  MetaStore
 	Env   *Env
 	Owner string
 	Log   *slog.Logger
 
+	// ClassExists reports whether the Memory class exists; checked BEFORE EnsureSchema
+	// to tell a fresh store (born current) from existing data (default: the store's).
+	ClassExists func(context.Context) (bool, error)
+	// EnsureMetaClass creates the CortexMeta class alone (default: the store's); the
+	// fresh-install marker needs it before EnsureSchema runs.
+	EnsureMetaClass func(context.Context) error
 	// EnsureSchema runs under the lock before any migration (default: the store's).
 	EnsureSchema func(context.Context) error
 	// Migrations is the history to apply (default: the package registry).
@@ -45,11 +61,17 @@ func NewRunner(kv jetstream.KeyValue, env *Env, owner string) *Runner {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Runner{
+	r := &Runner{
 		KV: kv, Env: env, Owner: owner, Log: log, Migrations: registry,
-		EnsureSchema: env.Store.EnsureSchema,
-		LeaseTTL:     30 * time.Second, MaxWait: 30 * time.Minute, Poll: time.Second,
+		LeaseTTL: 30 * time.Second, MaxWait: 30 * time.Minute, Poll: time.Second,
 	}
+	if env.Store != nil {
+		r.Meta = env.Store
+		r.EnsureSchema = env.Store.EnsureSchema
+		r.EnsureMetaClass = env.Store.EnsureMetaClass
+		r.ClassExists = func(ctx context.Context) (bool, error) { return env.Store.ClassExists(ctx, memory.ClassName) }
+	}
+	return r
 }
 
 // Run brings the store up to date: take the migration lock (waiting, with logs, if
@@ -80,11 +102,27 @@ func (r *Runner) Run(ctx context.Context) (err error) {
 	defer r.Env.Maint.Disable(context.WithoutCancel(ctx))
 	r.Env.Maint.clearStale(runCtx)
 
+	existed, err := r.ClassExists(runCtx)
+	if err != nil {
+		return fmt.Errorf("check existing store: %w", err)
+	}
+	if !existed {
+		// Fresh store: remember it durably before the Memory class appears. An empty
+		// pre-existing class is NOT fresh (it still has the old shape).
+		if err := r.EnsureMetaClass(runCtx); err != nil {
+			return fmt.Errorf("ensure meta class: %w", err)
+		}
+		if err := r.Meta.PutMeta(runCtx, keyFreshPending, []byte("1")); err != nil {
+			return fmt.Errorf("record fresh install: %w", err)
+		}
+	}
 	if err := r.EnsureSchema(runCtx); err != nil {
 		return fmt.Errorf("ensure schema: %w", err)
 	}
-
-	version, rev, err := SchemaVersion(runCtx, r.KV)
+	if err := r.backfillFromKV(runCtx); err != nil {
+		return err
+	}
+	version, err := r.resolveVersion(runCtx, existed)
 	if err != nil {
 		return err
 	}
@@ -109,13 +147,14 @@ func (r *Runner) Run(ctx context.Context) (err error) {
 		}
 		dur := time.Since(start)
 		rec, _ := json.Marshal(Applied{ID: m.ID, Name: m.Name, AppliedAt: time.Now().UTC(), Duration: dur}) // plain struct
-		if _, err := r.KV.Put(runCtx, appliedKey(m.ID), rec); err != nil {
+		if err := r.Meta.PutMeta(runCtx, appliedKey(m.ID), rec); err != nil {
 			return fmt.Errorf("record migration %d: %w", m.ID, err)
 		}
-		if err := setSchemaVersion(runCtx, r.KV, m.ID, rev); err != nil {
+		if err := setSchemaVersion(runCtx, r.Meta, m.ID); err != nil {
 			return err
 		}
-		_, rev, _ = SchemaVersion(runCtx, r.KV) // fresh revision for the next CAS
+		r.mirrorToKV(runCtx, appliedKey(m.ID), rec)
+		r.mirrorToKV(runCtx, keySchemaVersion, []byte(strconv.Itoa(m.ID)))
 		version = m.ID
 		log.Info("schema migration applied", "took", dur.Round(time.Millisecond))
 	}
@@ -181,6 +220,7 @@ type MigrationStatus struct {
 	Applied   bool
 	AppliedAt time.Time
 	Duration  time.Duration
+	Assumed   bool // stamped on a fresh install, never actually run
 }
 
 // Status is the report behind `cortex migrate status`.
@@ -192,13 +232,13 @@ type Status struct {
 	LockHolder    string
 }
 
-// Status reads applied state from the meta bucket (read-only).
+// Status reads applied state from the durable metadata (read-only).
 func (r *Runner) Status(ctx context.Context) (*Status, error) {
-	version, _, err := SchemaVersion(ctx, r.KV)
+	version, err := SchemaVersion(ctx, r.Meta)
 	if err != nil {
 		return nil, err
 	}
-	applied, err := listApplied(ctx, r.KV)
+	applied, err := listApplied(ctx, r.Meta)
 	if err != nil {
 		return nil, err
 	}
@@ -206,7 +246,7 @@ func (r *Runner) Status(ctx context.Context) (*Status, error) {
 	for _, m := range r.Migrations {
 		ms := MigrationStatus{Migration: m}
 		if a, ok := applied[m.ID]; ok {
-			ms.Applied, ms.AppliedAt, ms.Duration = true, a.AppliedAt, a.Duration
+			ms.Applied, ms.AppliedAt, ms.Duration, ms.Assumed = true, a.AppliedAt, a.Duration, a.Assumed
 		}
 		st.Migrations = append(st.Migrations, ms)
 	}
@@ -214,43 +254,140 @@ func (r *Runner) Status(ctx context.Context) (*Status, error) {
 	return st, err
 }
 
-func listApplied(ctx context.Context, kv jetstream.KeyValue) (map[int]Applied, error) {
-	keys, err := kv.Keys(ctx)
-	if errors.Is(err, jetstream.ErrNoKeysFound) {
-		return nil, nil
-	}
+func listApplied(ctx context.Context, m MetaStore) (map[int]Applied, error) {
+	entries, err := m.ListMeta(ctx, keyAppliedPrefix)
 	if err != nil {
-		return nil, fmt.Errorf("list meta keys: %w", err)
+		return nil, err
 	}
-	sort.Strings(keys)
 	out := map[int]Applied{}
-	for _, k := range keys {
-		if !strings.HasPrefix(k, keyAppliedPrefix) {
-			continue
-		}
-		e, err := kv.Get(ctx, k)
-		if err != nil {
-			return nil, fmt.Errorf("read %s: %w", k, err)
-		}
+	for _, e := range entries {
 		var a Applied
-		if err := json.Unmarshal(e.Value(), &a); err != nil {
-			return nil, fmt.Errorf("parse %s: %w", k, err)
+		if err := json.Unmarshal(e.Value, &a); err != nil {
+			return nil, fmt.Errorf("parse %s: %w", e.Key, err)
 		}
 		out[a.ID] = a
 	}
 	return out, nil
 }
 
+// backfillFromKV is the one-time move of durable state out of NATS: when the durable
+// store has no schema_version but the legacy KV bucket does, copy it and every
+// migration.NNNN record (verbatim, so AppliedAt/Duration survive). schema_version is
+// written LAST so a crash mid-copy is simply redone. The KV keys are left in place
+// (an older binary keeps working) and are never read again once the durable
+// store has a version.
+func (r *Runner) backfillFromKV(ctx context.Context) error {
+	if _, found, err := r.Meta.GetMeta(ctx, keySchemaVersion); err != nil {
+		return fmt.Errorf("read schema version: %w", err)
+	} else if found {
+		return nil
+	}
+	e, err := r.KV.Get(ctx, keySchemaVersion)
+	if errors.Is(err, jetstream.ErrKeyNotFound) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read legacy schema version: %w", err)
+	}
+	if _, err := strconv.Atoi(string(e.Value())); err != nil {
+		return fmt.Errorf("parse legacy schema version %q: %w", e.Value(), err)
+	}
+	keys, err := r.KV.Keys(ctx)
+	if err != nil && !errors.Is(err, jetstream.ErrNoKeysFound) {
+		return fmt.Errorf("list legacy meta keys: %w", err)
+	}
+	sort.Strings(keys)
+	n := 0
+	for _, k := range keys {
+		if !strings.HasPrefix(k, keyAppliedPrefix) {
+			continue
+		}
+		ke, err := r.KV.Get(ctx, k)
+		if err != nil {
+			return fmt.Errorf("read legacy %s: %w", k, err)
+		}
+		if err := r.Meta.PutMeta(ctx, k, ke.Value()); err != nil {
+			return fmt.Errorf("backfill %s: %w", k, err)
+		}
+		n++
+	}
+	if err := r.Meta.PutMeta(ctx, keySchemaVersion, e.Value()); err != nil {
+		return fmt.Errorf("backfill schema version: %w", err)
+	}
+	r.Log.Info("moved schema state from the NATS KV to the durable store (CortexMeta)", "schema_version", string(e.Value()), "applied_records", n)
+	return nil
+}
+
+// resolveVersion returns the stored schema version. With none recorded anywhere:
+//   - a FRESH store (the Memory class did not exist before this boot's EnsureSchema,
+//     or the fresh_install_pending marker survives from a boot that crashed)
+//     was born current: stamp Latest and an "assumed" record per migration;
+//   - EXISTING data of unknown version (NATS was reset before versions moved to
+//     Weaviate) starts from 0: migrations are idempotent and shape-checked, so they
+//     no-op on a current store and fix an old one. Assuming Latest would silently
+//     skip a migration on a pre-migration store.
+func (r *Runner) resolveVersion(ctx context.Context, existed bool) (int, error) {
+	_, found, err := r.Meta.GetMeta(ctx, keySchemaVersion)
+	if err != nil {
+		return 0, fmt.Errorf("read schema version: %w", err)
+	}
+	_, pending, err := r.Meta.GetMeta(ctx, keyFreshPending)
+	if err != nil {
+		return 0, fmt.Errorf("read fresh-install marker: %w", err)
+	}
+	if found {
+		if pending {
+			if err := r.Meta.DeleteMeta(ctx, keyFreshPending); err != nil {
+				return 0, err
+			}
+		}
+		return SchemaVersion(ctx, r.Meta)
+	}
+	if existed && !pending {
+		r.Log.Warn("the store has data but no recorded schema version (NATS state was lost before versions lived in Weaviate); re-running every migration from 0, they are idempotent and no-op on a current store")
+		return 0, nil
+	}
+	now := time.Now().UTC()
+	for _, m := range r.Migrations {
+		rec, _ := json.Marshal(Applied{ID: m.ID, Name: m.Name, AppliedAt: now, Assumed: true}) // plain struct
+		if err := r.Meta.PutMeta(ctx, appliedKey(m.ID), rec); err != nil {
+			return 0, fmt.Errorf("record assumed migration %d: %w", m.ID, err)
+		}
+		r.mirrorToKV(ctx, appliedKey(m.ID), rec)
+	}
+	v := latest(r.Migrations)
+	if err := setSchemaVersion(ctx, r.Meta, v); err != nil {
+		return 0, err
+	}
+	r.mirrorToKV(ctx, keySchemaVersion, []byte(strconv.Itoa(v)))
+	if err := r.Meta.DeleteMeta(ctx, keyFreshPending); err != nil {
+		return 0, err
+	}
+	r.Log.Info("fresh store: born at the current schema, stamped without running migrations", "schema_version", v)
+	return v, nil
+}
+
+// mirrorToKV copies a durable schema-state key to the NATS KV, best-effort. It exists
+// ONLY for old binaries (a rolling upgrade: an old worker's WaitUntilCurrent still
+// reads schema_version from the KV) and can be removed in a later release. New code
+// never reads these keys from the KV except in the one-time backfill. NATS is
+// disposable, so a failure only logs.
+func (r *Runner) mirrorToKV(ctx context.Context, key string, val []byte) {
+	if _, err := r.KV.Put(ctx, key, val); err != nil {
+		r.Log.Warn("could not mirror schema state to the NATS KV (old-build workers may wait)", "key", key, "err", err)
+	}
+}
+
 // WaitUntilCurrent blocks until the store's schema version reaches need (normally
 // Latest()). The worker calls it before consuming so a worker can never write into
 // a store another replica is still migrating (or that predates its schema).
-func WaitUntilCurrent(ctx context.Context, kv jetstream.KeyValue, need int, log *slog.Logger, poll time.Duration) error {
+func WaitUntilCurrent(ctx context.Context, m MetaStore, need int, log *slog.Logger, poll time.Duration) error {
 	if log == nil {
 		log = slog.Default()
 	}
 	lastLog := time.Time{}
 	for {
-		v, _, err := SchemaVersion(ctx, kv)
+		v, err := SchemaVersion(ctx, m)
 		if err == nil && v >= need {
 			return nil
 		}

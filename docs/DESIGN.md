@@ -571,7 +571,7 @@ integration test), which is why server-side merges need no KV lock.
 counts. The wait is bounded (2s per id): if the lock cannot be taken the id is skipped
 (debug log, not counted in `recorded`) because this is a best-effort usage signal that
 must never block callers for long. Usage tracking has a
-server-wide epoch (`usage_tracking_since` in the `cortex_meta` KV bucket, create-once at
+server-wide epoch (`usage_tracking_since` in the Weaviate `CortexMeta` class, create-once at
 server start): usage before it was invisible, so never-used memories are judged from
 `max(createdAt, epoch)`.
 
@@ -699,9 +699,30 @@ name, in both single-tenant and multi-tenant mode.
 - `Store.ClassDefinition(name)` is the single authoritative current definition; a
   migration derives the next version from it.
 
-**State and running.** Applied state lives in the NATS KV bucket `cortex_meta`
-(`schema_version`, one `migration.NNNN` record per applied migration with name,
-time and duration). The SERVER runs pending migrations at boot, before serving
+**Where state lives (NATS is disposable).** DURABLE facts about the store live in
+Weaviate, next to the data they describe, in the `CortexMeta` class: `schema_version`,
+one `migration.NNNN` record per applied migration (name, time, duration, `assumed`
+flag) and `usage_tracking_since`. The class is plain (not alias-backed), always
+single-tenant (even with `CORTEX_MULTI_TENANT=true`), has no vectors, is object-id
+addressed (UUIDv5 of the key, `Store.GetMeta/PutMeta/CreateMetaIfAbsent/ListMeta`,
+`internal/store/meta.go`) and survives `DeleteClass`/`DeleteAllClasses` (tests drop it
+with `DeleteMetaClass`). COORDINATION state stays in the NATS KV bucket `cortex_meta`:
+`migrate_lock`, `maintenance`, `worker.*` heartbeats, the migrate-mt lock, and the
+`cortex_locks` bucket. NATS can therefore be wiped without forgetting the schema
+version; what a wipe DOES lose is the not-yet-indexed queue messages (`MEMORY`) and the
+dead letters (`MEMORY_DEAD`). `schema_version` is written without compare-and-set: it
+is only written under the migration lease. Version resolution in `Runner.Run`, under
+the lease after `EnsureSchema`: (1) one-time backfill: CortexMeta has no version but the
+legacy KV does -> copy `schema_version` and every `migration.NNNN` verbatim (the KV keys
+are kept so an older binary keeps working, and never read again); (2) still none and the
+Memory class did not exist before this boot -> FRESH store, born current: stamp
+`Latest` with an `assumed` record per migration (`migrate status` shows "assumed", not
+"applied"); (3) still none but data exists (NATS reset before this change) -> WARN and
+run every migration from 0 (idempotent and shape-checked, no-ops on a current store;
+assuming Latest could skip a migration on a pre-#1 store). The runner also mirrors `schema_version` and the applied records to the NATS KV, best-effort (a failure only logs), purely so an old-build worker's KV-based wait keeps working during a rolling upgrade; new code never reads them from the KV except in the one-time backfill, and the mirror can go in a later release. A fresh boot writes a durable `fresh_install_pending` marker before `EnsureSchema` and removes it once the version is stamped, so a crash in between stays "fresh". Admins can inspect both
+sides on the System -> Metadata page (`ListMeta` RPC, read-only).
+
+**Running.** The SERVER runs pending migrations at boot, before serving
 (`migrate.Runner.Run`): it takes a lease lock (`migrate_lock`, owner + expiry,
 refreshed while held, taken over after expiry), runs `EnsureSchema` under it (so a
 booting replica can never observe another's half-done cutover), then applies each

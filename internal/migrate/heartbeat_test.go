@@ -101,7 +101,7 @@ func TestEnvEnterFailsAndClearsFlagOnDrainTimeout(t *testing.T) {
 	r := testRunner(t, js, "migrator", []Migration{m})
 	r.Env = env
 	require.Error(t, r.Run(ctx))
-	v, _, _ := SchemaVersion(ctx, kv)
+	v, _ := SchemaVersion(ctx, r.Meta)
 	assert.Equal(t, 0, v)
 	st, err := env.Maint.Get(ctx)
 	require.NoError(t, err)
