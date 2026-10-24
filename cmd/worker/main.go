@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"slices"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -383,8 +384,22 @@ func metricsAddrFromEnv() string { return envOrEmpty("WORKER_METRICS_ADDR", ":90
 // EnsureSchema, logging a clear OK or loud, actionable warnings (e.g. a class
 // created before the tokenization fix needs a rebuild/reindex). Advisory only, so
 // it never aborts boot.
+//
+// A missing property is what an upgrade looks like while the server (booting
+// alongside) has not run its additive EnsureSchema yet, so those are re-checked
+// for a short while before warning; it also keeps this worker from writing a
+// property the store does not have yet (auto-schema is off).
 func checkSchema(ctx context.Context, log *slog.Logger, st *store.Store) {
 	problems, err := st.VerifySchema(ctx)
+	for i := 0; i < schemaSettleTries && err == nil && onlyMissingProperties(problems); i++ {
+		log.Debug("weaviate schema not yet upgraded by the server; re-checking", "issues", len(problems))
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(time.Second):
+		}
+		problems, err = st.VerifySchema(ctx)
+	}
 	if err != nil {
 		log.Warn("schema verification could not run", "err", err)
 		return
@@ -398,6 +413,24 @@ func checkSchema(ctx context.Context, log *slog.Logger, st *store.Store) {
 	}
 	log.Warn("weaviate schema needs attention — indexing/search still work, but a `cortex reindex` / class rebuild is recommended",
 		"issues", len(problems))
+}
+
+// schemaSettleTries bounds how long (seconds) checkSchema waits for the server
+// to add new properties before reporting them.
+const schemaSettleTries = 30
+
+// onlyMissingProperties reports whether every problem is an additive one the
+// server's EnsureSchema fixes on boot (see store.VerifySchema).
+func onlyMissingProperties(problems []string) bool {
+	if len(problems) == 0 {
+		return false
+	}
+	for _, p := range problems {
+		if !strings.Contains(p, " missing property ") {
+			return false
+		}
+	}
+	return true
 }
 
 // handle dispatches by subject: fact-index events and conversation-summary

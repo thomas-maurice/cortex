@@ -118,16 +118,48 @@ func startupPendingNotice(path string, now time.Time) string {
 		return ""
 	}
 	st, err := outbox.ReadStats(path)
-	if err != nil || st.Total == 0 {
+	if err != nil {
 		return ""
 	}
-	what := fmt.Sprintf("%d memories from earlier sessions are", st.Total)
-	if st.Total == 1 {
-		what = "1 memory from an earlier session is"
+	sums, err := outbox.ListSummaries(path)
+	if err != nil {
+		sums = nil // best-effort hint: the memory count above is still worth reporting
 	}
-	return fmt.Sprintf("\n\n%s queued locally and not yet in Cortex (oldest %s old). "+
+	if st.Total == 0 && len(sums) == 0 {
+		return ""
+	}
+	oldest := st.OldestEnqueuedAt
+	for _, s := range sums {
+		if !s.Corrupt && s.EnqueuedAt > 0 && (oldest == 0 || s.EnqueuedAt < oldest) {
+			oldest = s.EnqueuedAt
+		}
+	}
+	var parts []string
+	switch st.Total {
+	case 0:
+	case 1:
+		parts = append(parts, "1 memory")
+	default:
+		parts = append(parts, fmt.Sprintf("%d memories", st.Total))
+	}
+	switch len(sums) {
+	case 0:
+	case 1:
+		parts = append(parts, "1 session summary")
+	default:
+		parts = append(parts, fmt.Sprintf("%d session summaries", len(sums)))
+	}
+	age := ""
+	if oldest > 0 {
+		age = fmt.Sprintf(" (oldest %s old)", humanAge(now.Sub(time.UnixMicro(oldest))))
+	}
+	from := "from earlier sessions are"
+	if st.Total+len(sums) == 1 {
+		from = "from an earlier session is"
+	}
+	return fmt.Sprintf("\n\n%s %s queued locally and not yet in Cortex%s. "+
 		"Tell the user, and suggest `cortex outbox flush` when the server is reachable.",
-		what, humanAge(now.Sub(time.UnixMicro(st.OldestEnqueuedAt))))
+		strings.Join(parts, " and "), from, age)
 }
 
 func humanAge(d time.Duration) string {

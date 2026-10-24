@@ -95,7 +95,11 @@ func TestOutboxDropUnknownDoesNotAbortRest(t *testing.T) {
 	seed(t, p, "y", "A", 2, nil)
 	seed(t, p, "z", "A", 3, nil)
 	var out strings.Builder
-	require.NoError(t, outboxDrop(&out, p, []string{"x", "nope", "z"}))
+	// An unknown id is an error (exit 1, so scripts notice the typo), but the
+	// other ids are still dropped.
+	err := outboxDrop(&out, p, []string{"x", "nope", "z"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "nope: not queued")
 	assert.Contains(t, out.String(), "dropped x text-x")
 	assert.Contains(t, out.String(), "not queued: nope")
 	assert.Contains(t, out.String(), "dropped z text-z", "ids after the unknown one must still be dropped")
@@ -210,7 +214,7 @@ func TestOutboxPurgeAndDropSummaries(t *testing.T) {
 	seedSummary(t, p, "A", "sum A")
 	seedSummary(t, p, "B", "sum B")
 
-	require.NoError(t, outboxDrop(io.Discard, p, []string{"a1", "A"}))
+	require.Error(t, outboxDrop(io.Discard, p, []string{"a1", "A"}), "A is a conversation, not a queued id")
 	sums, err := outbox.ListSummaries(p)
 	require.NoError(t, err)
 	assert.Len(t, sums, 2, "drop must not delete slots, even by conversation id")

@@ -182,4 +182,16 @@ func TestStartupPendingNotice(t *testing.T) {
 	assert.Contains(t, n, "1 memory from an earlier session is queued")
 	assert.Contains(t, n, "3 h")
 	assert.Contains(t, n, "cortex outbox flush")
+
+	// A pending session summary is leftover state too; the model must hear about it.
+	err := outbox.PutSummary(d.outboxPath, outbox.SummaryEntry{ConversationID: "earlier", Request: []byte("x")})
+	require.NoError(t, err)
+	n = startupPendingNotice(d.outboxPath, time.Now().Add(3*time.Hour))
+	assert.Contains(t, n, "1 memory and 1 session summary from earlier sessions are queued")
+
+	// Summary only.
+	d2 := newOutboxDeps(t, &readClient{})
+	err = outbox.PutSummary(d2.outboxPath, outbox.SummaryEntry{ConversationID: "earlier", Request: []byte("x")})
+	require.NoError(t, err)
+	assert.Contains(t, startupPendingNotice(d2.outboxPath, time.Now()), "1 session summary from an earlier session is queued")
 }

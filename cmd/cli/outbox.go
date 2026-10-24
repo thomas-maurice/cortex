@@ -201,6 +201,7 @@ func outboxDrop(w io.Writer, path string, ids []string) error {
 		}
 		if !found {
 			pf(w, "not queued: %s\n", id)
+			errs = append(errs, fmt.Errorf("%s: not queued", id))
 			continue
 		}
 		pf(w, "dropped %s %s\n", e.ID, e.Preview)
